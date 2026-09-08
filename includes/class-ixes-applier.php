@@ -218,8 +218,8 @@ class IXES_Applier {
 			$table = substr( basename( $f ), strlen( 'rows-' ), -5 ); // strip 'rows-' prefix and '.json' suffix
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
 			$snap = json_decode( file_get_contents( $f ), true );
-			$pk = $snap['pk'];
-			foreach ( (array) $snap['rows'] as $row ) { $wpdb->replace( $table, $row ); $n++; }
+			if ( ! is_array( $snap ) ) continue;
+			foreach ( (array) ( $snap['rows'] ?? [] ) as $row ) { $wpdb->replace( $table, $row ); $n++; }
 		}
 		foreach ( (array) ( $meta['inserted'] ?? [] ) as $table => $i ) {
 			if ( ! IXES_Transfer::valid_table( $table ) || empty( $i['ids'] ) ) continue;
