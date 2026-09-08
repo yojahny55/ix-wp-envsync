@@ -9,7 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  */
 class IXES_Hashcache {
 
-	const PRUNE_OVER = 20000;
+	const PRUNE_OVER  = 20000;
+	const PRUNE_EVERY = 3600;
+	const PRUNED_AT   = '__pruned_at'; // bookkeeping key inside the cache file, never a rel path
 
 	private static $data   = null;
 	private static $loaded = null; // path of the file currently in $data
@@ -54,18 +56,31 @@ class IXES_Hashcache {
 
 	public static function save() {
 		if ( ! self::$dirty || ! is_array( self::$data ) ) return;
-		// ponytail: prune only past PRUNE_OVER entries; a stat() per entry on every save is not worth it
-		if ( count( self::$data ) > self::PRUNE_OVER && defined( 'WP_CONTENT_DIR' ) ) {
-			foreach ( self::$data as $rel => $unused ) {
-				if ( ! file_exists( WP_CONTENT_DIR . '/' . $rel ) ) unset( self::$data[ $rel ] );
-			}
-		}
-		$f   = self::file();
-		$tmp = $f . '.tmp';
-		if ( @file_put_contents( $tmp, json_encode( self::$data ) ) !== false ) {
+		self::prune();
+		$f = self::file();
+		// unique temp name: file_manifest and file_chunk requests can overlap, and a shared
+		// "<file>.tmp" lets two writers interleave into one corrupt file
+		$tmp = @tempnam( dirname( $f ), 'ixes' );
+		if ( $tmp && @file_put_contents( $tmp, json_encode( self::$data ) ) !== false ) {
+			@chmod( $tmp, 0644 );
 			@rename( $tmp, $f );
+		} elseif ( $tmp ) {
+			@unlink( $tmp );
 		}
 		self::$dirty = false;
+	}
+
+	// ponytail: prune at most hourly and only past PRUNE_OVER entries; file_chunk saves once per
+	// 2 MB chunk, so an unconditional stat() per entry would be the new O(n^2)
+	private static function prune() {
+		if ( count( self::$data ) <= self::PRUNE_OVER || ! defined( 'WP_CONTENT_DIR' ) ) return;
+		$last = isset( self::$data[ self::PRUNED_AT ] ) ? (int) self::$data[ self::PRUNED_AT ] : 0;
+		if ( time() - $last < self::PRUNE_EVERY ) return;
+		foreach ( self::$data as $rel => $unused ) {
+			if ( $rel === self::PRUNED_AT ) continue;
+			if ( ! file_exists( WP_CONTENT_DIR . '/' . $rel ) ) unset( self::$data[ $rel ] );
+		}
+		self::$data[ self::PRUNED_AT ] = time();
 	}
 
 	public static function flush() {

@@ -282,9 +282,12 @@ class IXES_Transfer {
 
 	/**
 	 * Top-level wp-content children with file counts and byte sizes.
-	 * Deliberately ignores the exclude list -- the point is to show what
-	 * excluding a folder would save, including already-excluded ones.
-	 * Never hashes; stat only.
+	 * Returns [ 'dirs' => [ [ 'path' => 'name/', 'files' => n, 'bytes' => n ], ... ],
+	 *           'root' => [ 'files' => n, 'bytes' => n ] ] where 'root' is the GRAND TOTAL
+	 * across all of wp-content, not the loose files at its root -- those are one entry in
+	 * 'dirs', labelled "(files at wp-content root)".
+	 * Deliberately ignores the exclude list -- the point is to show what excluding a folder
+	 * would save, including already-excluded ones. Never hashes; stat only.
 	 */
 	public static function dir_sizes() {
 		$root  = untrailingslashit( WP_CONTENT_DIR );

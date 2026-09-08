@@ -23,4 +23,7 @@ Pull a full snapshot from prod or staging. Push back only what you changed. Prod
 - Same table schema on both sides (v0.1 does not create tables).
 - Pull is not resumable: if it fails part-way, fix the cause and run it again from the start.
 - HTTPS on remotes (or `define('ENVSYNC_ALLOW_HTTP', true)` for local dev).
+- File hashes are cached by modification time and size. A file rewritten in place to the same size
+  within the same second, or restored with its mtime preserved (`touch -r`, `rsync --archive`),
+  looks unchanged and stops syncing. Pass `--flush-cache` to `pull` or `diff` to rehash everything.
 - Not a backup tool. Keep your backups.

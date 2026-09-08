@@ -9,9 +9,11 @@ class IXES_Admin {
 	public static function page() {
 		if ( ! current_user_can( 'manage_options' ) ) return;
 		if ( isset( $_POST['ixes_rotate'] ) && check_admin_referer( 'ixes_rotate' ) ) IXES_Auth::install_token();
-		$saved_excludes = self::save_excludes();
+		if ( isset( $_POST['ixes_refresh_dirs'] ) && check_admin_referer( 'ixes_excludes' ) ) self::forget_dir_sizes();
+		list( $saved_excludes, $excludes_error ) = self::save_excludes();
 		$token = get_transient( 'ixes_token_show' );
 		echo '<div class="wrap"><h1>EnvSync</h1>';
+		if ( $excludes_error ) echo '<div class="notice notice-error"><p>' . esc_html( $excludes_error ) . '</p></div>';
 
 		echo '<h2>This site\'s token</h2>';
 		if ( $token ) echo '<p>Copy it now, it is shown once:</p><code style="font-size:14px;user-select:all">' . esc_html( $token ) . '</code>';
@@ -63,18 +65,19 @@ class IXES_Admin {
 		return in_array( $n, self::JUNK, true ) || strpos( $n, 'backup' ) !== false;
 	}
 
-	/** Handles the exclude form; returns the env name that was saved, or ''. */
+	/** Handles the exclude form; returns [ saved env name, error message ]. */
 	private static function save_excludes() {
-		if ( ! isset( $_POST['ixes_excludes_env'] ) ) return '';
+		if ( ! isset( $_POST['ixes_excludes_env'] ) || isset( $_POST['ixes_refresh_dirs'] ) ) return [ '', '' ];
 		check_admin_referer( 'ixes_excludes' );
-		if ( ! current_user_can( 'manage_options' ) ) return '';
+		if ( ! current_user_can( 'manage_options' ) ) return [ '', '' ];
 		$name = sanitize_key( wp_unslash( $_POST['ixes_excludes_env'] ) );
 		$env  = IXES_Env::get( $name );
-		if ( ! $env ) return '';
+		if ( ! $env ) return [ '', '' ];
 
 		$defaults = IXES_Env::default_excludes();
 		$picked   = [];
-		foreach ( (array) wp_unslash( $_POST['ixes_exclude'] ?? [] ) as $f ) {
+		// is_string first: a crafted POST can nest arrays, which would fatal in sanitize_text_field
+		foreach ( array_filter( (array) wp_unslash( $_POST['ixes_exclude'] ?? [] ), 'is_string' ) as $f ) {
 			$f = trim( sanitize_text_field( $f ) );
 			// only top-level "name/" forms come from this screen
 			if ( preg_match( '#^[^/]+/$#', $f ) && ! in_array( $f, $defaults, true ) ) $picked[] = $f;
@@ -82,39 +85,61 @@ class IXES_Admin {
 		// keep whatever the CLI put there that this screen cannot express (single files, nested paths)
 		$keep = [];
 		foreach ( (array) ( $env['excludes'] ?? [] ) as $f ) {
-			if ( ! preg_match( '#^[^/]+/$#', (string) $f ) ) $keep[] = $f;
+			if ( is_string( $f ) && ! preg_match( '#^[^/]+/$#', $f ) ) $keep[] = $f;
 		}
 		$env['excludes'] = array_values( array_unique( array_merge( $keep, $picked ) ) );
+		// once saved from this screen the operator's ticks are authoritative: stop pre-ticking
+		// recommendations, or unticking one would silently come back on the next save
+		$env['excludes_configured'] = true;
 		try {
 			IXES_Env::add( $env );
 		} catch ( InvalidArgumentException $e ) {
-			echo '<div class="notice notice-error"><p>' . esc_html( $e->getMessage() ) . '</p></div>';
-			return '';
+			return [ '', $e->getMessage() ];
 		}
-		return $name;
+		return [ $name, '' ];
+	}
+
+	private static function forget_dir_sizes() {
+		delete_transient( 'ixes_dirs_local' );
+		foreach ( IXES_Env::all() as $e ) delete_transient( 'ixes_dirs_' . $e['name'] );
+	}
+
+	/** wp-content sizes, cached 5 minutes; $env null means this site. */
+	private static function dir_sizes( $env = null ) {
+		$key = 'ixes_dirs_' . ( $env ? $env['name'] : 'local' );
+		$hit = get_transient( $key );
+		if ( is_array( $hit ) ) return $hit;
+		$res = $env ? ( new IXES_Client( $env ) )->post( '/dirs', [] ) : IXES_Transfer::dir_sizes();
+		if ( is_wp_error( $res ) ) return $res; // do not cache a failure
+		set_transient( $key, $res, 300 );
+		return $res;
 	}
 
 	private static function excludes_section( array $envs, $saved ) {
 		if ( ! $envs ) return;
-		$local    = IXES_Transfer::dir_sizes();
+		$local    = self::dir_sizes();
+		if ( is_wp_error( $local ) || ! isset( $local['dirs'] ) ) $local = [ 'dirs' => [] ];
 		$defaults = IXES_Env::default_excludes();
 
-		echo '<h2>Sync excludes</h2><p>Every top-level folder in <code>wp-content</code>, with what it costs on each side. Ticked folders are skipped by pull, diff and push.</p>';
+		echo '<h2>Sync excludes</h2><p>Every top-level folder in <code>wp-content</code>, with what it costs on each side. Ticked folders are skipped by pull, diff and push. Sizes are cached for 5 minutes.</p>';
+		echo '<p><em>Files are compared by modification time and size, so a file rewritten in place to the same size within the same second, or restored with its mtime preserved, is treated as unchanged and stops syncing. Run <code>wp envsync diff &lt;env&gt; --flush-cache</code> if a change is not being picked up.</em></p>';
 		if ( $saved ) echo '<div class="notice notice-success inline"><p>' . esc_html( sprintf( 'Excludes saved for %s.', $saved ) ) . '</p></div>';
 
 		foreach ( $envs as $e ) {
 			$rows   = [];
 			$err    = '';
 			$remote = [];
-			// one call per env, once per page render; a slow or dead remote must not break the page
-			$res = ( new IXES_Client( $e ) )->post( '/dirs', [] );
+			// one call per env, once per page render, cached 5 minutes; a slow or dead remote
+			// must not break the page
+			$res = self::dir_sizes( $e );
 			if ( is_wp_error( $res ) ) {
 				$err = $res->get_error_message();
 			} else {
 				foreach ( (array) ( $res['dirs'] ?? [] ) as $d ) $remote[ (string) $d['path'] ] = $d;
 			}
 
-			$cur = (array) ( $e['excludes'] ?? [] );
+			$cur       = (array) ( $e['excludes'] ?? [] );
+			$configured = ! empty( $e['excludes_configured'] );
 			foreach ( array_unique( array_merge( array_column( $local['dirs'], 'path' ), array_keys( $remote ) ) ) as $path ) {
 				$l = null;
 				foreach ( $local['dirs'] as $d ) if ( $d['path'] === $path ) { $l = $d; break; }
@@ -149,7 +174,7 @@ class IXES_Admin {
 					$box = sprintf(
 						'<input type="checkbox" name="ixes_exclude[]" value="%s"%s>',
 						esc_attr( $row['path'] ),
-						( $row['on'] || $row['rec'] ) ? ' checked' : ''
+						( $row['on'] || ( $row['rec'] && ! $configured ) ) ? ' checked' : ''
 					);
 				}
 				printf(
@@ -166,6 +191,8 @@ class IXES_Admin {
 			wp_nonce_field( 'ixes_excludes' );
 			printf( '<input type="hidden" name="ixes_excludes_env" value="%s">', esc_attr( $e['name'] ) );
 			submit_button( 'Save excludes', 'primary', 'ixes_save_excludes_' . $e['name'], false );
+			echo ' ';
+			submit_button( 'Refresh sizes', 'secondary', 'ixes_refresh_dirs', false );
 			echo '</form>';
 		}
 	}
