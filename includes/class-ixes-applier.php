@@ -10,7 +10,11 @@ class IXES_Applier {
 	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
 	private static function maintenance( $on ) {
 		$f = ABSPATH . '.maintenance';
-		if ( $on ) file_put_contents( $f, '<?php $upgrading = ' . time() . ';' );
+		// core requires .maintenance before plugins load, so the exemption for our own REST calls
+		// has to live inside the file itself (an $upgrading in the past means "not in maintenance")
+		$body = "<?php\n\$upgrading = " . time() . ";\n"
+			. "if ( isset( \$_SERVER['REQUEST_URI'] ) && strpos( \$_SERVER['REQUEST_URI'], '" . IXES_Rest::NS . "' ) !== false ) \$upgrading = 1;\n";
+		if ( $on ) file_put_contents( $f, $body );
 		elseif ( file_exists( $f ) ) unlink( $f );
 	}
 	private static function remote_pairs() { return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() ); }
