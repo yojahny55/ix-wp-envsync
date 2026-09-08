@@ -123,8 +123,11 @@ class IXES_Transfer {
 		$files = [];
 		foreach ( $slice as $rel ) {
 			$p = WP_CONTENT_DIR . '/' . $rel;
-			if ( is_readable( $p ) ) $files[ $rel ] = IXES_Hasher::hash_file( $p, $algo );
+			if ( ! is_readable( $p ) ) continue;
+			$h = IXES_Hashcache::hash( $p, $rel, $algo );
+			if ( $h !== false ) $files[ $rel ] = $h;
 		}
+		IXES_Hashcache::save();
 		$next = ( $start + $limit < count( $all ) ) ? end( $slice ) : null;
 		return [ 'files' => $files, 'next' => $next ];
 	}
@@ -141,7 +144,11 @@ class IXES_Transfer {
 		$p = WP_CONTENT_DIR . '/' . $rel;
 		if ( ! is_file( $p ) ) return new WP_Error( 'not_found', 'no such file', [ 'status' => 404 ] );
 		$fh = fopen( $p, 'rb' ); fseek( $fh, $offset ); $data = fread( $fh, $size ); fclose( $fh );
-		return [ 'data' => base64_encode( $data === false ? '' : $data ), 'size' => strlen( (string) $data ), 'total' => filesize( $p ), 'sha256' => hash_file( 'sha256', $p ) ];
+		// cached: this used to rehash the whole file on every 2 MB chunk (O(n^2) on big media)
+		$sha = IXES_Hashcache::hash( $p, $rel, 'sha256' );
+		IXES_Hashcache::save();
+		if ( $sha === false ) return new WP_Error( 'io', 'cannot hash file', [ 'status' => 500 ] );
+		return [ 'data' => base64_encode( $data === false ? '' : $data ), 'size' => strlen( (string) $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
 	}
 
 	// ---------- hub side ----------
@@ -265,8 +272,63 @@ class IXES_Transfer {
 
 	public static function local_manifest( array $excludes, $algo ) {
 		$out = [];
-		foreach ( self::all_files( $excludes ) as $rel ) $out[ $rel ] = IXES_Hasher::hash_file( WP_CONTENT_DIR . '/' . $rel, $algo );
+		foreach ( self::all_files( $excludes ) as $rel ) {
+			$h = IXES_Hashcache::hash( WP_CONTENT_DIR . '/' . $rel, $rel, $algo );
+			if ( $h !== false ) $out[ $rel ] = $h;
+		}
+		IXES_Hashcache::save();
 		return $out;
+	}
+
+	/**
+	 * Top-level wp-content children with file counts and byte sizes.
+	 * Deliberately ignores the exclude list -- the point is to show what
+	 * excluding a folder would save, including already-excluded ones.
+	 * Never hashes; stat only.
+	 */
+	public static function dir_sizes() {
+		$root  = untrailingslashit( WP_CONTENT_DIR );
+		$dirs  = [];
+		$loose = [ 'path' => '(files at wp-content root)', 'files' => 0, 'bytes' => 0 ];
+		$dh    = @opendir( $root );
+		if ( ! $dh ) return [ 'dirs' => [], 'root' => [ 'files' => 0, 'bytes' => 0 ] ];
+		while ( ( $n = readdir( $dh ) ) !== false ) {
+			if ( $n === '.' || $n === '..' ) continue;
+			$p = $root . '/' . $n;
+			if ( is_dir( $p ) ) {
+				if ( $n === 'envsync' || strpos( $n, 'envsync-' ) === 0 ) continue; // our own storage dir
+				$s      = self::dir_stat( $p );
+				$dirs[] = [ 'path' => $n . '/', 'files' => $s[0], 'bytes' => $s[1] ];
+			} elseif ( is_file( $p ) ) {
+				$loose['files']++;
+				$loose['bytes'] += (int) @filesize( $p );
+			}
+		}
+		closedir( $dh );
+		usort( $dirs, function ( $a, $b ) { return $b['bytes'] === $a['bytes'] ? 0 : ( $b['bytes'] < $a['bytes'] ? -1 : 1 ); } );
+		if ( $loose['files'] ) $dirs[] = $loose;
+		$files = 0; $bytes = 0;
+		foreach ( $dirs as $d ) { $files += $d['files']; $bytes += $d['bytes']; }
+		return [ 'dirs' => $dirs, 'root' => [ 'files' => $files, 'bytes' => $bytes ] ];
+	}
+
+	private static function dir_stat( $abs ) {
+		$files = 0; $bytes = 0;
+		try {
+			$it = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator( $abs, FilesystemIterator::SKIP_DOTS | FilesystemIterator::CURRENT_AS_FILEINFO ),
+				RecursiveIteratorIterator::LEAVES_ONLY,
+				RecursiveIteratorIterator::CATCH_GET_CHILD
+			);
+			foreach ( $it as $f ) {
+				if ( ! $f->isFile() || $f->isLink() ) continue;
+				$files++;
+				$bytes += (int) $f->getSize();
+			}
+		} catch ( Exception $e ) {
+			// unreadable subtree: report what we counted so far
+		}
+		return [ $files, $bytes ];
 	}
 
 	public static function offset_auto_increment() {

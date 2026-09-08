@@ -75,8 +75,12 @@ class IXES_CLI {
 	 *
 	 * [--dry-run]
 	 * : Show the plan and stop.
+	 *
+	 * [--flush-cache]
+	 * : Discard the file hash cache and rehash everything.
 	 */
 	public function pull( $args, $assoc ) {
+		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
 		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c ) );
 		$rows = array_sum( array_column( $plan['tables'], 'rows' ) );
@@ -107,8 +111,12 @@ class IXES_CLI {
 	 *
 	 * [--id=<pk>]
 	 * : Primary key of the row to field-diff.
+	 *
+	 * [--flush-cache]
+	 * : Discard the file hash cache and rehash everything.
 	 */
 	public function diff( $args, $assoc ) {
+		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
 		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c ) );
 		$path = IXES_Planner::save( $plan );

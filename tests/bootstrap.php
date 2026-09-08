@@ -14,6 +14,17 @@ if ( ! function_exists( 'maybe_unserialize' ) ) {
 if ( ! function_exists( 'maybe_serialize' ) ) {
 	function maybe_serialize( $v ) { return ( is_array( $v ) || is_object( $v ) ) ? serialize( $v ) : $v; }
 }
+// Storage dir for IXES_Hashcache; tests point $GLOBALS['ixes_test_storage'] at a temp dir.
+if ( ! function_exists( 'ixes_storage_dir' ) ) {
+	function ixes_storage_dir() {
+		if ( empty( $GLOBALS['ixes_test_storage'] ) ) {
+			$GLOBALS['ixes_test_storage'] = sys_get_temp_dir() . '/ixes-test-' . getmypid();
+		}
+		if ( ! is_dir( $GLOBALS['ixes_test_storage'] ) ) mkdir( $GLOBALS['ixes_test_storage'], 0777, true );
+		return $GLOBALS['ixes_test_storage'];
+	}
+}
+
 spl_autoload_register( function ( $class ) {
 	if ( strpos( $class, 'IXES_' ) !== 0 ) return;
 	$file = __DIR__ . '/../includes/class-' . strtolower( str_replace( '_', '-', $class ) ) . '.php';
