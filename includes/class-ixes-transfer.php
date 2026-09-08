@@ -51,6 +51,10 @@ class IXES_Transfer {
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` LIMIT %d OFFSET %d", $limit, $off ), ARRAY_A );
 			$next = count( $rows ) === $limit ? $off + $limit : null;
 		}
+		// never transfer environment-local options (siteurl/home/cron/transients/ixes_*)
+		if ( $table === $wpdb->options ) {
+			$rows = array_values( array_filter( $rows, function ( $r ) { return ! IXES_Env::option_excluded( $r['option_name'] ); } ) );
+		}
 		return [ 'rows' => $rows, 'next' => $next ];
 	}
 
@@ -196,6 +200,20 @@ class IXES_Transfer {
 			$inserted += count( $batch );
 		}
 		return $inserted;
+	}
+
+	// keep this site's own excluded options (env registry, token, siteurl/home, cron, transients) across a full pull
+	public static function preserve_local_options( array $tables ) {
+		global $wpdb;
+		if ( ! in_array( $wpdb->options, $tables, true ) ) return;
+		$tmp = self::tmp_name( $wpdb->options );
+		$pk  = self::pk_of( $wpdb->options );
+		foreach ( $wpdb->get_results( "SELECT * FROM `{$wpdb->options}`", ARRAY_A ) as $r ) {
+			if ( ! IXES_Env::option_excluded( $r['option_name'] ) ) continue;
+			if ( $pk ) unset( $r[ $pk ] );
+			$wpdb->query( $wpdb->prepare( "DELETE FROM `{$tmp}` WHERE option_name = %s", $r['option_name'] ) );
+			$wpdb->insert( $tmp, $r );
+		}
 	}
 
 	public static function import_commit( array $tables ) {

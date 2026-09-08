@@ -71,6 +71,7 @@ class IXES_Pull {
 			$done[] = $name;
 		}
 		if ( ! $done ) return new WP_Error( 'nothing_imported', 'no tables were imported' );
+		IXES_Transfer::preserve_local_options( $done );
 		$commit = IXES_Transfer::import_commit( $done );
 		if ( is_wp_error( $commit ) ) { IXES_Transfer::drop_tmp_tables( $done ); return $commit; }
 		$bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
