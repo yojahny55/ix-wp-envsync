@@ -1,0 +1,8 @@
+{
+  "name": "yojahny55/ix-wp-envsync",
+  "description": "Sync WordPress environments: full pull, 3-way diffed push, prod wins.",
+  "license": "GPL-2.0-or-later",
+  "require": { "php": ">=7.4" },
+  "require-dev": { "phpunit/phpunit": "^9.6" },
+  "scripts": { "test": "phpunit" }
+}
