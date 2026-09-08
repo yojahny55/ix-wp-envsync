@@ -30,8 +30,18 @@ class IXES_Transfer {
 		return $keys[0]['Column_name'];
 	}
 
+	public static function valid_table( $name ) {
+		global $wpdb;
+		foreach ( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) as $t ) {
+			if ( strpos( $t, $wpdb->prefix . 'ixes_' ) === 0 ) continue;
+			if ( $t === $name ) return true;
+		}
+		return false;
+	}
+
 	public static function dump( $table, $from_pk, $limit ) {
 		global $wpdb;
+		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$pk = self::pk_of( $table );
 		if ( $pk ) {
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` > %s ORDER BY `{$pk}` LIMIT %d", $from_pk === null ? '' : $from_pk, $limit ), ARRAY_A );
@@ -46,7 +56,9 @@ class IXES_Transfer {
 
 	public static function hash_rows( $table, $from_pk, $limit, array $pairs, $algo ) {
 		global $wpdb;
+		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$d  = self::dump( $table, $from_pk, $limit );
+		if ( is_wp_error( $d ) ) return $d;
 		$pk = self::pk_of( $table );
 		$out = [];
 		$is_options = ( $table === $wpdb->options );
@@ -91,7 +103,16 @@ class IXES_Transfer {
 		$start = 0;
 		if ( $cursor !== null && $cursor !== '' ) {
 			$i = array_search( $cursor, $all, true );
-			$start = $i === false ? 0 : $i + 1;
+			if ( $i !== false ) {
+				$start = $i + 1;
+			} else {
+				// cursor no longer present (file added/removed mid-manifest): resume at first path sorted after it
+				$start = count( $all );
+				foreach ( $all as $idx => $rel ) {
+					if ( strcmp( $rel, $cursor ) > 0 ) { $start = $idx; break; }
+				}
+				if ( $start >= count( $all ) ) return [ 'files' => [], 'next' => null ];
+			}
 		}
 		$slice = array_slice( $all, $start, $limit );
 		$files = [];
@@ -125,50 +146,80 @@ class IXES_Transfer {
 		return $wpdb->prefix . 'ixes_tmp_' . substr( $table, strlen( $wpdb->prefix ) );
 	}
 
+	private static $local_columns = [];
+
+	public static function local_columns( $table ) {
+		global $wpdb;
+		if ( ! isset( self::$local_columns[ $table ] ) ) {
+			$cols = $wpdb->get_col( "SHOW COLUMNS FROM `{$table}`" );
+			self::$local_columns[ $table ] = is_array( $cols ) ? $cols : [];
+		}
+		return self::$local_columns[ $table ];
+	}
+
 	public static function import_begin( $table ) {
 		global $wpdb;
+		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$tmp = self::tmp_name( $table );
 		$wpdb->query( "DROP TABLE IF EXISTS `{$tmp}`" );
 		if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) ) return new WP_Error( 'no_table', "local table {$table} missing; schema must match (v0.1)" );
 		$wpdb->query( "CREATE TABLE `{$tmp}` LIKE `{$table}`" );
+		self::local_columns( $table ); // prime cache once per import
 		return true;
 	}
 
 	public static function import_rows( $table, array $rows, array $pairs ) {
 		global $wpdb;
 		if ( ! $rows ) return 0;
-		$tmp  = self::tmp_name( $table );
-		$cols = array_keys( $rows[0] );
-		$vals = [];
-		foreach ( $rows as $r ) {
-			$cells = [];
-			foreach ( $cols as $c ) {
-				$v = isset( $r[ $c ] ) ? $r[ $c ] : null;
-				if ( $v === null ) { $cells[] = 'NULL'; continue; }
-				$v = IXES_Hasher::normalize( $v, $pairs );
-				$cells[] = "'" . esc_sql( (string) $v ) . "'";
-			}
-			$vals[] = '(' . implode( ',', $cells ) . ')';
+		$tmp   = self::tmp_name( $table );
+		$local = self::local_columns( $table );
+		$cols  = array_keys( $rows[0] );
+		foreach ( $cols as $c ) {
+			if ( ! in_array( $c, $local, true ) ) return new WP_Error( 'bad_columns', "table {$table}: remote column '{$c}' does not exist locally" );
 		}
-		$sql = "INSERT INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
-		$wpdb->query( $sql );
-		return count( $rows );
+		$inserted = 0;
+		foreach ( array_chunk( $rows, 500 ) as $batch ) {
+			$vals = [];
+			foreach ( $batch as $r ) {
+				$cells = [];
+				foreach ( $cols as $c ) {
+					$v = isset( $r[ $c ] ) ? $r[ $c ] : null;
+					if ( $v === null ) { $cells[] = 'NULL'; continue; }
+					$v = IXES_Hasher::normalize( $v, $pairs );
+					$cells[] = "'" . esc_sql( (string) $v ) . "'";
+				}
+				$vals[] = '(' . implode( ',', $cells ) . ')';
+			}
+			$sql = "INSERT INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
+			$ok  = $wpdb->query( $sql );
+			if ( $ok === false ) return new WP_Error( 'import_failed', "table {$table}: " . $wpdb->last_error );
+			$inserted += count( $batch );
+		}
+		return $inserted;
 	}
 
 	public static function import_commit( array $tables ) {
 		global $wpdb;
+		if ( ! $tables ) return true;
 		$parts = [];
 		foreach ( $tables as $t ) {
 			$tmp = self::tmp_name( $t );
 			$parts[] = "`{$t}` TO `{$t}_ixes_old`, `{$tmp}` TO `{$t}`";
 		}
-		$wpdb->query( 'RENAME TABLE ' . implode( ', ', $parts ) );
+		$ok = $wpdb->query( 'RENAME TABLE ' . implode( ', ', $parts ) );
+		if ( $ok === false ) return new WP_Error( 'commit_failed', $wpdb->last_error );
 		foreach ( $tables as $t ) $wpdb->query( "DROP TABLE IF EXISTS `{$t}_ixes_old`" );
+		return true;
+	}
+
+	public static function drop_tmp_tables( array $tables ) {
+		global $wpdb;
+		foreach ( $tables as $t ) $wpdb->query( "DROP TABLE IF EXISTS `" . self::tmp_name( $t ) . "`" );
 	}
 
 	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256 ) {
 		$rel = self::safe_rel( $rel );
-		if ( ! $rel ) return new WP_Error( 'bad_path', 'path refused' );
+		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused' );
 		$dest = WP_CONTENT_DIR . '/' . $rel;
 		$tmp  = $dest . '.ixes-tmp';
 		wp_mkdir_p( dirname( $dest ) );
@@ -184,7 +235,8 @@ class IXES_Transfer {
 
 	public static function delete_file( $rel ) {
 		$rel = self::safe_rel( $rel );
-		if ( $rel && is_file( WP_CONTENT_DIR . '/' . $rel ) ) unlink( WP_CONTENT_DIR . '/' . $rel );
+		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return;
+		if ( is_file( WP_CONTENT_DIR . '/' . $rel ) ) unlink( WP_CONTENT_DIR . '/' . $rel );
 	}
 
 	public static function local_manifest( array $excludes, $algo ) {

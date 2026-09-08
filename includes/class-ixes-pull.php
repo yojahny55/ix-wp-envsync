@@ -18,8 +18,10 @@ class IXES_Pull {
 	}
 
 	public static function plan( array $env, IXES_Client $c ) {
+		global $wpdb;
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
+		if ( $info['prefix'] !== $wpdb->prefix ) return new WP_Error( 'prefix_mismatch', "remote prefix '{$info['prefix']}' differs from local '{$wpdb->prefix}'; v0.1 requires identical prefixes" );
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );
 		$remote = [];
@@ -52,8 +54,11 @@ class IXES_Pull {
 			$b = IXES_Transfer::import_begin( $name );
 			if ( is_wp_error( $b ) ) { $log( 'skip: ' . $b->get_error_message() ); continue; }
 			$pk = $t['pk'];
-			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000 ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan ) {
-				IXES_Transfer::import_rows( $name, $res['rows'], $pairs );
+			$row_err = null;
+			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000 ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, &$row_err ) {
+				if ( $row_err ) return; // already failed this table; stop touching the db further
+				$ins = IXES_Transfer::import_rows( $name, $res['rows'], $pairs );
+				if ( is_wp_error( $ins ) ) { $row_err = $ins; return; }
 				$map = [];
 				foreach ( $res['rows'] as $row ) {
 					$h = IXES_Hasher::hash_row( $row, $hash_pairs, $plan['algo'] );
@@ -61,10 +66,13 @@ class IXES_Pull {
 				}
 				$bl->write_rows( $name, $map );
 			} );
-			if ( is_wp_error( $r ) ) return $r;
+			if ( is_wp_error( $r ) ) { IXES_Transfer::drop_tmp_tables( array_merge( $done, [ $name ] ) ); return $r; }
+			if ( $row_err ) { IXES_Transfer::drop_tmp_tables( array_merge( $done, [ $name ] ) ); return $row_err; }
 			$done[] = $name;
 		}
-		IXES_Transfer::import_commit( $done );
+		if ( ! $done ) return new WP_Error( 'nothing_imported', 'no tables were imported' );
+		$commit = IXES_Transfer::import_commit( $done );
+		if ( is_wp_error( $commit ) ) { IXES_Transfer::drop_tmp_tables( $done ); return $commit; }
 		$bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
 
 		$n = count( $plan['files']['transfer'] );
