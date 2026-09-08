@@ -52,12 +52,15 @@ class IXES_Admin {
 		echo '</div>';
 	}
 
-	const BIG = 104857600; // 100 MB: a folder this big on either side is worth a look
-	const JUNK = [ 'ai1wm-backups', 'updraft', 'backup', 'backups', 'cache', 'wpvivid', 'duplicator' ];
+	const BIG  = 104857600; // 100 MB: shown as a neutral note, never a recommendation
+	const JUNK = [ 'ai1wm-backups', 'updraft', 'updraftplus', 'backup', 'backups', 'cache', 'wpvivid', 'duplicator' ];
+	// core content: never recommended or pre-ticked, whatever its name or size. Still manually tickable.
+	const NEVER = [ 'uploads', 'themes', 'plugins', 'mu-plugins', 'languages' ];
 
-	private static function recommended( $folder, $bytes ) {
+	private static function recommended( $folder ) {
 		$n = rtrim( $folder, '/' );
-		return in_array( $n, self::JUNK, true ) || strpos( $n, 'backup' ) !== false || $bytes > self::BIG;
+		if ( in_array( $n, self::NEVER, true ) ) return false;
+		return in_array( $n, self::JUNK, true ) || strpos( $n, 'backup' ) !== false;
 	}
 
 	/** Handles the exclude form; returns the env name that was saved, or ''. */
@@ -124,7 +127,8 @@ class IXES_Admin {
 					'bytes'   => $bytes,
 					'default' => in_array( $path, $defaults, true ),
 					'on'      => in_array( $path, $cur, true ),
-					'rec'     => self::recommended( $path, $bytes ),
+					'rec'     => self::recommended( $path ),
+					'large'   => $bytes > self::BIG,
 				];
 			}
 			usort( $rows, function ( $a, $b ) { return $b['bytes'] === $a['bytes'] ? 0 : ( $b['bytes'] < $a['bytes'] ? -1 : 1 ); } );
@@ -133,7 +137,10 @@ class IXES_Admin {
 			if ( $err ) echo '<div class="notice notice-warning inline"><p>' . esc_html( 'Remote sizes unavailable: ' . $err ) . '</p></div>';
 			echo '<form method="post"><table class="widefat striped" style="max-width:900px"><thead><tr><th>Folder</th><th>Local</th><th>Prod</th><th>Files</th><th>Excluded</th></tr></thead><tbody>';
 			foreach ( $rows as $row ) {
-				$badge = $row['rec'] && ! $row['default'] ? ' <span class="dashicons dashicons-warning" style="color:#b32d2e"></span> <em>Recommended</em>' : '';
+				if ( $row['default'] ) $badge = '';
+				elseif ( $row['rec'] ) $badge = ' <span class="dashicons dashicons-warning" style="color:#b32d2e"></span> <em>Recommended</em>';
+				elseif ( $row['large'] ) $badge = ' <span style="color:#646970">large</span>'; // neutral note: your call
+				else $badge = '';
 				if ( $row['default'] ) {
 					$box = '<em>always</em>';
 				} elseif ( ! preg_match( '#^[^/]+/$#', $row['path'] ) ) {
