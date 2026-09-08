@@ -65,7 +65,7 @@ Steps, all resumable by job id stored on the hub:
 4. Find/replace during import: `source.url → target.url`, `source.abspath → target.abspath`, plus env `extra_replace`. Serialized-safe (recursive unserialize/replace/serialize, fallback string replace on failure).
 5. Files: transfer only paths whose hash differs from target manifest; delete target files absent on source inside synced dirs.
 6. Default excludes: `cache/`, `wp-config.php`, `.htaccess`, `.env`, `debug.log`, `object-cache.php`, `advanced-cache.php`, `wp-content/envsync/`, `ixes_*` options/tables. Editable per env.
-7. Baseline (hub only): write `wp-content/envsync/baseline-<env>.sqlite` with tables `rows(table, pk, hash)` and `files(path, hash)`. Row hashing normalises URLs and abspath to placeholders before hashing.
+7. Baseline (hub only): write `baseline-<env>.sqlite` in the storage dir with tables `rows(table, pk, hash)` and `files(path, hash)`. Row hashing normalises URLs (scheme-full, JSON-escaped and protocol-relative), abspath, and each env `extra_replace` value to placeholders before hashing; both sides receive their own side of each pair so hashes compare equal.
 8. ID offset on hub (see model).
 9. Flush rewrite rules, object cache, and set `siteurl`/`home` to target.
 
@@ -91,6 +91,8 @@ Options table:
 - never pushed: `siteurl`, `home`, `_transient_*`, `_site_transient_*`, `cron`, `ixes_*`, `recently_activated`.
 - `active_plugins`: apply local's (activations − deactivations since base) onto prod's list.
 
+Apply-time staleness: every pushed/deleted row carries the remote hash the plan saw (`null` for inserts); the remote rehashes and skips rows that changed or appeared since, reporting them as stale. Files carry the expected remote hash on their first chunk and are refused the same way.
+
 No baseline for this env: 2-way diff local vs remote, everything shown as "overwrite", push refuses without `--force`.
 
 ## 5. Plan, preview, apply
@@ -112,7 +114,10 @@ Admin page on hub: env list, last five plans with outcome, read-only plan table.
 ## 6. Safety and rollback
 
 - `wp envsync rollback <env> [--job=]` restores the snapshot from a job; last three kept.
-- Never-pushed list (section 3 excludes) enforced in code, not only config.
+- Never-pushed list (section 3 excludes) enforced in code on the remote, not only on the hub.
+- Storage dir `wp-content/envsync-<16 hex random>/` (suffix in option `ixes_storage_suffix`) so snapshots and plans are not enumerable on hosts where `.htaccess` is inert; also `index.php` + `.htaccess` deny.
+- The `active_plugins` option is snapshotted before the option step and restored on rollback.
+- The remote token grants write access to the DB and wp-content (plugin PHP); documented as an admin-equivalent credential.
 - Explicit doc note: not a backup tool.
 
 ## 7. Structure
@@ -146,3 +151,4 @@ ix-wp-envsync/
 - Hash: `xxh128` when PHP ≥ 8.1 on both sides, else `sha1`. Algo negotiated in `info`.
 - Baseline store: sqlite via PDO; fallback to a JSON file if PDO sqlite is missing on the hub.
 - Minimum PHP 7.4 on remotes, 8.1 on hub.
+- v0.1 requires identical table prefixes on both sides (detected at plan time, errors out). Prefix translation deferred.
