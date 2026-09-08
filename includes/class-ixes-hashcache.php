@@ -37,6 +37,8 @@ class IXES_Hashcache {
 		self::load();
 		$st = @stat( $abs );
 		if ( $st === false ) return false;
+		// A file actually named like the prune stamp would clobber it: never cache that one.
+		if ( $rel === self::PRUNED_AT ) return @hash_file( $algo, $abs );
 		$m = (int) $st['mtime'];
 		$s = (int) $st['size'];
 

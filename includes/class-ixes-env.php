@@ -33,7 +33,9 @@ class IXES_Env {
 	}
 
 	public static function default_excludes() {
-		return [ 'cache/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'envsync-', 'upgrade/', 'uploads/wc-logs/' ];
+		// '.git/' and 'node_modules/' are dev artifacts: syncing a repo into a public
+		// web directory leaks source and history, and node_modules wrecks the manifest.
+		return [ 'cache/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'envsync-', 'upgrade/', 'uploads/wc-logs/', '.git/', 'node_modules/' ];
 	}
 
 	// extra_replace is a list of [prod_value, local_value]; returns the two index-aligned lists
