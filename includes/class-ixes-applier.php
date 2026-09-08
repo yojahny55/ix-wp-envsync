@@ -95,6 +95,16 @@ class IXES_Applier {
 		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
 	}
 
+	// true when the local file is exactly what the hub expected: $expect null means "must not exist here"
+	private static function file_matches( $rel, $expect, $algo ) {
+		$rel = IXES_Transfer::safe_rel( $rel );
+		if ( ! $rel ) return false;
+		$abs = WP_CONTENT_DIR . '/' . $rel;
+		if ( ! is_file( $abs ) ) return $expect === null || $expect === false;
+		if ( $expect === null || ! in_array( (string) $algo, hash_algos(), true ) ) return false;
+		return hash_file( (string) $algo, $abs ) === $expect;
+	}
+
 	public static function job_step( array $p ) {
 		global $wpdb;
 		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
@@ -143,14 +153,25 @@ class IXES_Applier {
 		}
 
 		if ( $kind === 'file' ) {
-			$r = IXES_Transfer::write_file_chunk( (string) ( $p['path'] ?? '' ), (int) ( $p['offset'] ?? 0 ), base64_decode( (string) ( $p['data'] ?? '' ) ), ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
+			$rel = (string) ( $p['path'] ?? '' );
+			// prod wins: refuse the whole file if its current content is not what the plan saw (null expect = must not exist)
+			if ( (int) ( $p['offset'] ?? 0 ) === 0 && array_key_exists( 'expect', $p ) && ! self::file_matches( $rel, $p['expect'], $p['algo'] ?? 'sha1' ) ) {
+				return [ 'ok' => false, 'refused' => [ $rel ] ];
+			}
+			$r = IXES_Transfer::write_file_chunk( $rel, (int) ( $p['offset'] ?? 0 ), base64_decode( (string) ( $p['data'] ?? '' ) ), ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
 			if ( is_wp_error( $r ) ) return $r;
 			return [ 'ok' => true ];
 		}
 
 		if ( $kind === 'delete_files' ) {
-			foreach ( (array) $p['paths'] as $rel ) IXES_Transfer::delete_file( $rel );
-			return [ 'ok' => true ];
+			$expect  = (array) ( $p['expect'] ?? [] );
+			$algo    = $p['algo'] ?? 'sha1';
+			$refused = [];
+			foreach ( (array) $p['paths'] as $rel ) {
+				if ( $expect && ! self::file_matches( $rel, $expect[ $rel ] ?? null, $algo ) ) { $refused[] = $rel; continue; }
+				IXES_Transfer::delete_file( $rel );
+			}
+			return [ 'ok' => true, 'refused' => $refused ];
 		}
 
 		if ( $kind === 'option' ) {
@@ -266,21 +287,29 @@ class IXES_Applier {
 		$fail = function ( $err ) use ( $c, $job ) { $c->post( '/job/abort', [ 'job' => $job ] ); return $err; };
 
 		// files first
+		$file_hashes = (array) ( $plan['remote_file_hashes'] ?? [] );
 		foreach ( $plan['files']['push'] as $rel ) {
 			$abs = WP_CONTENT_DIR . '/' . $rel;
 			if ( ! is_file( $abs ) ) continue;
 			$sha = hash_file( 'sha256', $abs ); $total = filesize( $abs ); $offset = 0;
 			$fh = fopen( $abs, 'rb' );
+			$refused = false;
 			do {
 				$data = fread( $fh, 2097152 ); $offset += strlen( $data ); $final = $offset >= $total || $data === '';
-				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'file', 'path' => $rel, 'offset' => $offset - strlen( $data ), 'data' => base64_encode( $data ), 'final' => $final, 'sha256' => $sha ] );
+				$step = [ 'job' => $job, 'kind' => 'file', 'path' => $rel, 'offset' => $offset - strlen( $data ), 'data' => base64_encode( $data ), 'final' => $final, 'sha256' => $sha ];
+				if ( $step['offset'] === 0 && array_key_exists( $rel, $file_hashes ) ) { $step['expect'] = $file_hashes[ $rel ]; $step['algo'] = $plan['algo']; }
+				$r = $c->post( '/job/step', $step );
 				if ( is_wp_error( $r ) ) { fclose( $fh ); return $fail( $r ); }
+				if ( ! empty( $r['refused'] ) ) { $stale[] = "file: {$rel}"; $refused = true; break; }
 			} while ( ! $final );
-			fclose( $fh ); $log( "file {$rel}" );
+			fclose( $fh );
+			if ( ! $refused ) $log( "file {$rel}" );
 		}
 		if ( $plan['files']['delete'] ) {
-			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'] ] );
+			$expect = array_intersect_key( $file_hashes, array_flip( $plan['files']['delete'] ) );
+			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ] );
 			if ( is_wp_error( $r ) ) return $fail( $r );
+			foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "file: {$ref}";
 		}
 
 		// tables in FK-safe order, unknown tables after, options last

@@ -57,6 +57,9 @@ class IXES_Planner {
 		$local_files = IXES_Transfer::local_manifest( $ex, $algo );
 		$fd = IXES_Differ::diff( $two_way ? [] : $bl->files(), $local_files, $remote_files );
 		$plan['files'] = [ 'push' => array_merge( $fd['push'], $fd['insert'] ), 'delete' => $fd['delete'], 'conflict' => $fd['conflict'], 'kept' => $fd['kept'] ];
+		// what prod's copy of each touched file hashed to (null = not there), so the remote can refuse if it changed since
+		$plan['remote_file_hashes'] = [];
+		foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
 		return $plan;
 	}
 
@@ -94,7 +97,7 @@ class IXES_Planner {
 	}
 
 	public static function render_json( array $plan ) {
-		$p = $plan; unset( $p['remote_hashes'] );
+		$p = $plan; unset( $p['remote_hashes'], $p['remote_file_hashes'] );
 		return wp_json_encode( $p, JSON_PRETTY_PRINT );
 	}
 
