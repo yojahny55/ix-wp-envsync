@@ -26,4 +26,12 @@ class PlannerRenderTest extends TestCase {
 		$plan = [ 'tables' => [], 'files' => [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ], 'active_plugins' => null ];
 		$this->assertTrue( IXES_Planner::is_empty( $plan ) );
 	}
+
+	public function test_active_plugins_null_is_empty_but_list_is_not() {
+		$files = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
+		$plan_null = [ 'tables' => [], 'files' => $files, 'active_plugins' => null ];
+		$this->assertTrue( IXES_Planner::is_empty( $plan_null ) );
+		$plan_list = [ 'tables' => [], 'files' => $files, 'active_plugins' => [ 'foo/foo.php' ] ];
+		$this->assertFalse( IXES_Planner::is_empty( $plan_list ) );
+	}
 }

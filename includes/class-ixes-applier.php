@@ -66,6 +66,15 @@ class IXES_Applier {
 		return $stale;
 	}
 
+	// read-modify-write meta.json once per step (not per row) to record no-PK rows this step inserted, so rollback can delete them
+	private static function record_set_inserted( $job, $table, array $rows ) {
+		$dir = self::job_dir( $job );
+		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return;
+		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		$meta['set_inserted'][ $table ] = array_merge( (array) ( $meta['set_inserted'][ $table ] ?? [] ), $rows );
+		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
+	}
+
 	public static function job_step( array $p ) {
 		global $wpdb;
 		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
@@ -78,22 +87,37 @@ class IXES_Applier {
 			$algo = $p['algo'] ?? 'sha1';
 			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo ) : [];
 			$skip = array_flip( $stale );
+			$refused = [];
+			$is_options = ( $table === $wpdb->options );
 
 			if ( $kind === 'rows' ) {
+				$inserted_rows = [];
 				foreach ( (array) $p['rows'] as $row ) {
 					if ( $pk && isset( $skip[ $row[ $pk ] ] ) ) continue;
+					if ( $is_options && isset( $row['option_name'] ) && IXES_Env::option_excluded( $row['option_name'] ) ) { $refused[] = $row['option_name']; continue; }
 					foreach ( $row as $k => $v ) if ( $v !== null ) $row[ $k ] = IXES_Hasher::normalize( $v, (array) $p['pairs'] );
-					if ( ! $pk ) { $wpdb->insert( $table, $row ); continue; }
+					if ( ! $pk ) {
+						if ( $wpdb->insert( $table, $row ) ) $inserted_rows[] = $row;
+						continue;
+					}
 					$wpdb->replace( $table, $row );
 				}
+				if ( $inserted_rows ) self::record_set_inserted( $p['job'], $table, $inserted_rows );
 			} else {
 				$ids = array_values( array_diff( (array) $p['ids'], $stale ) );
+				if ( $is_options && $ids ) {
+					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $ids ) );
+					$named = $wpdb->get_results( "SELECT `{$pk}` AS ixes_pk, option_name FROM `{$table}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
+					$bad = [];
+					foreach ( $named as $row ) if ( IXES_Env::option_excluded( $row['option_name'] ) ) { $refused[] = $row['option_name']; $bad[] = $row['ixes_pk']; }
+					if ( $bad ) $ids = array_values( array_diff( $ids, $bad ) );
+				}
 				if ( $ids ) {
 					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $ids ) );
 					$wpdb->query( "DELETE FROM `{$table}` WHERE `{$pk}` IN ({$in})" );
 				}
 			}
-			return [ 'stale' => $stale ];
+			return [ 'stale' => $stale, 'refused' => $refused ];
 		}
 
 		if ( $kind === 'file' ) {
@@ -155,6 +179,10 @@ class IXES_Applier {
 		foreach ( (array) ( $meta['inserted'] ?? [] ) as $table => $i ) {
 			if ( ! IXES_Transfer::valid_table( $table ) || empty( $i['ids'] ) ) continue;
 			$wpdb->query( "DELETE FROM `{$table}` WHERE `{$i['pk']}` IN (" . implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $i['ids'] ) ) . ')' );
+		}
+		foreach ( (array) ( $meta['set_inserted'] ?? [] ) as $table => $rows ) {
+			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
+			foreach ( (array) $rows as $row ) { $wpdb->delete( $table, $row ); $n++; }
 		}
 
 		$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/files', FilesystemIterator::SKIP_DOTS ) );
@@ -234,13 +262,14 @@ class IXES_Applier {
 			$t = $plan['tables'][ $name ]; $pk = $t['pk'];
 			$ids = array_merge( (array) $t['push'], (array) $t['insert'] );
 			if ( $ids ) {
-				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['push'] ) );
 				foreach ( array_chunk( $ids, 500 ) as $chunk ) {
+					$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $chunk ) );
 					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $chunk ) );
 					$rows = $wpdb->get_results( "SELECT * FROM `{$name}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
 					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
+					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
 				$log( "{$name} rows " . count( $ids ) );
 			}
@@ -251,6 +280,7 @@ class IXES_Applier {
 				foreach ( array_chunk( $rows, 500 ) as $chunk ) {
 					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
 					if ( is_wp_error( $r ) ) return $fail( $r );
+					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
 				$log( "{$name} set_insert " . count( $rows ) );
 			}
@@ -259,6 +289,7 @@ class IXES_Applier {
 				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ] );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
+				foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 			}
 		}
 

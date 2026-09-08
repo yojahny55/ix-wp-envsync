@@ -41,7 +41,9 @@ class IXES_Planner {
 			}
 			if ( $name === $wpdb->options ) {
 				$base_ap = $two_way ? [] : self::option_from_baseline_or_local( 'active_plugins', $bl );
-				$plan['active_plugins'] = IXES_Differ::merge_active_plugins( $base_ap, (array) get_option( 'active_plugins', [] ), (array) ( $info['active_plugins'] ?? [] ) );
+				$remote_ap = (array) ( $info['active_plugins'] ?? [] );
+				$merged = IXES_Differ::merge_active_plugins( $base_ap, (array) get_option( 'active_plugins', [] ), $remote_ap );
+				if ( array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] ) $plan['tables'][ $name ] = $d;
 		}
