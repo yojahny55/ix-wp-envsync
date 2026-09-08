@@ -16,14 +16,27 @@ class IXES_CLI {
 	/**
 	 * Manage environments.
 	 * ## OPTIONS
+	 *
 	 * <action>
 	 * : add|list|remove|ping
+	 *
 	 * [<name>]
+	 * : Environment name.
+	 *
 	 * [<url>]
+	 * : Remote site URL (for add).
+	 *
 	 * [--token=<token>]
+	 * : Remote token (for add).
+	 *
 	 * [--label=<label>]
+	 * : prod or staging.
+	 *
 	 * [--replace=<pairs>]
+	 * : Comma-separated extra search:replace pairs.
+	 *
 	 * [--exclude=<paths>]
+	 * : Comma-separated wp-content paths to skip.
 	 */
 	public function env( $args, $assoc ) {
 		$action = $args[0] ?? 'list';
@@ -53,9 +66,15 @@ class IXES_CLI {
 	/**
 	 * Pull a full snapshot from <env> into this site (overwrite). Records baseline.
 	 * ## OPTIONS
+	 *
 	 * <env>
+	 * : Environment name.
+	 *
 	 * [--yes]
+	 * : Skip confirmation.
+	 *
 	 * [--dry-run]
+	 * : Show the plan and stop.
 	 */
 	public function pull( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
@@ -73,11 +92,21 @@ class IXES_CLI {
 	/**
 	 * Show what a push to <env> would change.
 	 * ## OPTIONS
+	 *
 	 * <env>
+	 * : Environment name.
+	 *
 	 * [--json]
+	 * : Output the plan as JSON.
+	 *
 	 * [--verbose]
+	 * : List every affected id and file.
+	 *
 	 * [--table=<table>]
+	 * : Show a field-level diff for one table.
+	 *
 	 * [--id=<pk>]
+	 * : Primary key of the row to field-diff.
 	 */
 	public function diff( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
@@ -113,11 +142,21 @@ class IXES_CLI {
 	/**
 	 * Push local changes to <env>. Prod-changed rows always win.
 	 * ## OPTIONS
+	 *
 	 * <env>
+	 * : Environment name.
+	 *
 	 * [--yes]
+	 * : Skip confirmation.
+	 *
 	 * [--dry-run]
+	 * : Show the plan and stop.
+	 *
 	 * [--force]
+	 * : Overwrite prod-changed rows when there is no baseline.
+	 *
 	 * [--plan=<file>]
+	 * : Apply a previously saved plan file.
 	 */
 	public function push( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
@@ -146,9 +185,15 @@ class IXES_CLI {
 	/**
 	 * Restore the snapshot taken before a push job on <env>.
 	 * ## OPTIONS
+	 *
 	 * <env>
+	 * : Environment name.
+	 *
 	 * [--job=<id>]
+	 * : Job id to restore (default: the last one).
+	 *
 	 * [--yes]
+	 * : Skip confirmation.
 	 */
 	public function rollback( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
@@ -160,7 +205,9 @@ class IXES_CLI {
 	/**
 	 * Show or rotate this site's remote token.
 	 * ## OPTIONS
+	 *
 	 * [--rotate]
+	 * : Issue a new token.
 	 */
 	public function token( $args, $assoc ) {
 		if ( ! empty( $assoc['rotate'] ) || ! get_option( 'ixes_token_hash' ) ) { WP_CLI::line( IXES_Auth::install_token() ); return; }
