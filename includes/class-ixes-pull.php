@@ -10,7 +10,13 @@ class IXES_Pull {
 			[ untrailingslashit( $info['abspath'] ), IXES_Env::local_abspath() ],
 		];
 		foreach ( (array) $env['extra_replace'] as $p ) $pairs[] = [ $p[0], $p[1] ];
+		// last: scheme-full urls are already rewritten by now, so this only catches //host references
+		$pairs[] = [ '//' . self::bare( $info['url'] ), '//' . self::bare( IXES_Env::local_url() ) ];
 		return $pairs;
+	}
+
+	private static function bare( $url ) {
+		return preg_replace( '#^https?://#', '', untrailingslashit( $url ) );
 	}
 
 	public static function excludes( array $env ) {

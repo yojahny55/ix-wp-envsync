@@ -246,6 +246,9 @@ class IXES_Applier {
 			[ IXES_Env::local_abspath(), untrailingslashit( $info['abspath'] ) ],
 		];
 		foreach ( (array) $env['extra_replace'] as $x ) $pairs[] = [ $x[1], $x[0] ];
+		// last: scheme-full urls are already rewritten by now, so this only catches //host references
+		$bare = function ( $u ) { return preg_replace( '#^https?://#', '', untrailingslashit( $u ) ); };
+		$pairs[] = [ '//' . $bare( IXES_Env::local_url() ), '//' . $bare( $info['url'] ) ];
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
 		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 
