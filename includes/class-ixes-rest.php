@@ -14,6 +14,7 @@ class IXES_Rest {
 		$r( '/hash/files', 'POST', [ __CLASS__, 'hash_files' ] );
 		$r( '/dump',       'POST', [ __CLASS__, 'dump' ] );
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
+		$r( '/dirs',       'POST', function () { return IXES_Transfer::dir_sizes(); } );
 		foreach ( [ 'start', 'step', 'finish', 'abort' ] as $op ) {
 			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, $req->get_json_params() ); } );
 		}

@@ -9,6 +9,7 @@ class IXES_Admin {
 	public static function page() {
 		if ( ! current_user_can( 'manage_options' ) ) return;
 		if ( isset( $_POST['ixes_rotate'] ) && check_admin_referer( 'ixes_rotate' ) ) IXES_Auth::install_token();
+		$saved_excludes = self::save_excludes();
 		$token = get_transient( 'ixes_token_show' );
 		echo '<div class="wrap"><h1>EnvSync</h1>';
 
@@ -27,6 +28,8 @@ class IXES_Admin {
 			}
 			echo '</tbody></table>';
 		}
+
+		self::excludes_section( $envs, $saved_excludes );
 
 		$jobs = (array) get_option( 'ixes_last_jobs', [] );
 		if ( $jobs ) {
@@ -47,5 +50,116 @@ class IXES_Admin {
 			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ) ), count( $m['plan']['tables'] ) );
 		}
 		echo '</div>';
+	}
+
+	const BIG = 104857600; // 100 MB: a folder this big on either side is worth a look
+	const JUNK = [ 'ai1wm-backups', 'updraft', 'backup', 'backups', 'cache', 'wpvivid', 'duplicator' ];
+
+	private static function recommended( $folder, $bytes ) {
+		$n = rtrim( $folder, '/' );
+		return in_array( $n, self::JUNK, true ) || strpos( $n, 'backup' ) !== false || $bytes > self::BIG;
+	}
+
+	/** Handles the exclude form; returns the env name that was saved, or ''. */
+	private static function save_excludes() {
+		if ( ! isset( $_POST['ixes_excludes_env'] ) ) return '';
+		check_admin_referer( 'ixes_excludes' );
+		if ( ! current_user_can( 'manage_options' ) ) return '';
+		$name = sanitize_key( wp_unslash( $_POST['ixes_excludes_env'] ) );
+		$env  = IXES_Env::get( $name );
+		if ( ! $env ) return '';
+
+		$defaults = IXES_Env::default_excludes();
+		$picked   = [];
+		foreach ( (array) wp_unslash( $_POST['ixes_exclude'] ?? [] ) as $f ) {
+			$f = trim( sanitize_text_field( $f ) );
+			// only top-level "name/" forms come from this screen
+			if ( preg_match( '#^[^/]+/$#', $f ) && ! in_array( $f, $defaults, true ) ) $picked[] = $f;
+		}
+		// keep whatever the CLI put there that this screen cannot express (single files, nested paths)
+		$keep = [];
+		foreach ( (array) ( $env['excludes'] ?? [] ) as $f ) {
+			if ( ! preg_match( '#^[^/]+/$#', (string) $f ) ) $keep[] = $f;
+		}
+		$env['excludes'] = array_values( array_unique( array_merge( $keep, $picked ) ) );
+		try {
+			IXES_Env::add( $env );
+		} catch ( InvalidArgumentException $e ) {
+			echo '<div class="notice notice-error"><p>' . esc_html( $e->getMessage() ) . '</p></div>';
+			return '';
+		}
+		return $name;
+	}
+
+	private static function excludes_section( array $envs, $saved ) {
+		if ( ! $envs ) return;
+		$local    = IXES_Transfer::dir_sizes();
+		$defaults = IXES_Env::default_excludes();
+
+		echo '<h2>Sync excludes</h2><p>Every top-level folder in <code>wp-content</code>, with what it costs on each side. Ticked folders are skipped by pull, diff and push.</p>';
+		if ( $saved ) echo '<div class="notice notice-success inline"><p>' . esc_html( sprintf( 'Excludes saved for %s.', $saved ) ) . '</p></div>';
+
+		foreach ( $envs as $e ) {
+			$rows   = [];
+			$err    = '';
+			$remote = [];
+			// one call per env, once per page render; a slow or dead remote must not break the page
+			$res = ( new IXES_Client( $e ) )->post( '/dirs', [] );
+			if ( is_wp_error( $res ) ) {
+				$err = $res->get_error_message();
+			} else {
+				foreach ( (array) ( $res['dirs'] ?? [] ) as $d ) $remote[ (string) $d['path'] ] = $d;
+			}
+
+			$cur = (array) ( $e['excludes'] ?? [] );
+			foreach ( array_unique( array_merge( array_column( $local['dirs'], 'path' ), array_keys( $remote ) ) ) as $path ) {
+				$l = null;
+				foreach ( $local['dirs'] as $d ) if ( $d['path'] === $path ) { $l = $d; break; }
+				$r     = isset( $remote[ $path ] ) ? $remote[ $path ] : null;
+				$bytes = max( (int) ( $l['bytes'] ?? 0 ), (int) ( $r['bytes'] ?? 0 ) );
+				$rows[] = [
+					'path'    => $path,
+					'local'   => $l,
+					'remote'  => $r,
+					'bytes'   => $bytes,
+					'default' => in_array( $path, $defaults, true ),
+					'on'      => in_array( $path, $cur, true ),
+					'rec'     => self::recommended( $path, $bytes ),
+				];
+			}
+			usort( $rows, function ( $a, $b ) { return $b['bytes'] === $a['bytes'] ? 0 : ( $b['bytes'] < $a['bytes'] ? -1 : 1 ); } );
+
+			printf( '<h3>%s <span style="font-weight:400">(%s)</span></h3>', esc_html( $e['name'] ), esc_html( $e['url'] ) );
+			if ( $err ) echo '<div class="notice notice-warning inline"><p>' . esc_html( 'Remote sizes unavailable: ' . $err ) . '</p></div>';
+			echo '<form method="post"><table class="widefat striped" style="max-width:900px"><thead><tr><th>Folder</th><th>Local</th><th>Prod</th><th>Files</th><th>Excluded</th></tr></thead><tbody>';
+			foreach ( $rows as $row ) {
+				$badge = $row['rec'] && ! $row['default'] ? ' <span class="dashicons dashicons-warning" style="color:#b32d2e"></span> <em>Recommended</em>' : '';
+				if ( $row['default'] ) {
+					$box = '<em>always</em>';
+				} elseif ( ! preg_match( '#^[^/]+/$#', $row['path'] ) ) {
+					$box = '&mdash;'; // the loose-files aggregate is not a folder, so it cannot be excluded
+				} else {
+					$box = sprintf(
+						'<input type="checkbox" name="ixes_exclude[]" value="%s"%s>',
+						esc_attr( $row['path'] ),
+						( $row['on'] || $row['rec'] ) ? ' checked' : ''
+					);
+				}
+				printf(
+					'<tr><td><code>%s</code>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+					esc_html( $row['path'] ),
+					$badge,
+					$row['local'] ? esc_html( size_format( $row['local']['bytes'] ) ) : '&mdash;',
+					$row['remote'] ? esc_html( size_format( $row['remote']['bytes'] ) ) : ( $err ? '<em>?</em>' : '&mdash;' ),
+					esc_html( (string) max( (int) ( $row['local']['files'] ?? 0 ), (int) ( $row['remote']['files'] ?? 0 ) ) ),
+					$box
+				);
+			}
+			echo '</tbody></table>';
+			wp_nonce_field( 'ixes_excludes' );
+			printf( '<input type="hidden" name="ixes_excludes_env" value="%s">', esc_attr( $e['name'] ) );
+			submit_button( 'Save excludes', 'primary', 'ixes_save_excludes_' . $e['name'], false );
+			echo '</form>';
+		}
 	}
 }
