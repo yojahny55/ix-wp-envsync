@@ -50,12 +50,26 @@ class IXES_CLI {
 			return;
 		}
 		if ( $action === 'add' ) {
-			$replace = [];
-			foreach ( array_filter( explode( ',', $assoc['replace'] ?? '' ) ) as $p ) { $x = explode( ':', $p, 2 ); if ( count( $x ) === 2 ) $replace[] = $x; }
+			if ( empty( $args[1] ) ) WP_CLI::error( 'usage: wp envsync env add <name> [<url>] [--token=...]' );
+			// Updating an existing environment keeps everything you did not pass, so
+			// rotating a token cannot silently wipe that environment's excludes.
+			$existing = IXES_Env::get( $args[1] );
+			$env      = is_array( $existing ) ? $existing : [ 'excludes' => [], 'extra_replace' => [], 'label' => 'prod' ];
+			$env['name'] = $args[1];
+			if ( ! empty( $args[2] ) )           $env['url']   = $args[2];
+			if ( ! empty( $assoc['token'] ) )    $env['token'] = $assoc['token'];
+			if ( ! empty( $assoc['label'] ) )    $env['label'] = $assoc['label'];
+			if ( isset( $assoc['exclude'] ) )    $env['excludes'] = array_values( array_filter( explode( ',', $assoc['exclude'] ) ) );
+			if ( isset( $assoc['replace'] ) ) {
+				$replace = [];
+				foreach ( array_filter( explode( ',', $assoc['replace'] ) ) as $p ) { $x = explode( ':', $p, 2 ); if ( count( $x ) === 2 ) $replace[] = $x; }
+				$env['extra_replace'] = $replace;
+			}
+			if ( empty( $env['url'] ) ) WP_CLI::error( 'a url is required the first time you add an environment' );
 			try {
-				IXES_Env::add( [ 'name' => $args[1], 'url' => $args[2], 'token' => $assoc['token'] ?? '', 'label' => $assoc['label'] ?? 'prod', 'extra_replace' => $replace, 'excludes' => array_filter( explode( ',', $assoc['exclude'] ?? '' ) ) ] );
+				IXES_Env::add( $env );
 			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
-			WP_CLI::success( "env {$args[1]} saved" );
+			WP_CLI::success( $existing ? "env {$args[1]} updated" : "env {$args[1]} saved" );
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); WP_CLI::success( 'removed' ); return; }

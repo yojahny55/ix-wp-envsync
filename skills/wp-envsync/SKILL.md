@@ -146,7 +146,7 @@ wp envsync env add prod https://client.com --token=<t> --exclude=ai1wm-backups/,
 
 Excluding **protects** a folder: it is not hashed, transferred or deleted on either side. Never exclude `uploads/`, `themes/` or `plugins/` without the user explicitly asking, since media or code silently stops syncing.
 
-Re-running `env add` for an existing name replaces its configuration, so pass every option you want to keep.
+Re-running `env add` on an existing name updates only the options you pass; everything else is kept. To rotate a token: rotate it on the remote, then `wp envsync env add <name> --token=<new>` on the hub. No URL needed.
 
 ## Guardrails
 

@@ -50,6 +50,17 @@ wp envsync env ping prod
 
 `ping` confirms the URL, the token and the signature all work.
 
+### Rotating a token
+
+On the remote, press **Rotate token** on its Tools → EnvSync page (or run `wp envsync token --rotate` there). The old token stops working immediately. Then on the hub:
+
+```bash
+wp envsync env add prod --token=NEW_TOKEN
+wp envsync env ping prod
+```
+
+Re-running `env add` on a name that already exists updates only the options you pass, so your excludes, label and replace pairs are kept. The URL is only required the first time.
+
 ---
 
 ## Daily workflow
@@ -89,7 +100,7 @@ Read it as: 12 rows go up, 3 are new, 41 rows production changed are left alone,
 
 | Action | Use |
 |---|---|
-| `add <name> <url>` | Register a remote. Needs `--token=`. |
+| `add <name> <url>` | Register a remote. Needs `--token=`. Re-run it on an existing name to update only what you pass. |
 | `list` | Show every environment and when it was last pulled. |
 | `remove <name>` | Forget an environment. |
 | `ping <name>` | Check connectivity and credentials. |
