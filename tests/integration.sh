@@ -16,6 +16,8 @@ TOKEN=$(A envsync token --rotate)
 B envsync env remove prod >/dev/null 2>&1 || true
 B envsync env add prod "$IXES_A_URL" --token="$TOKEN" --label=prod
 B envsync env ping prod
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer 0000' "$IXES_A_URL/?rest_route=/envsync/v1/info")
+[ "$CODE" = "401" ] || die "bad token was not rejected (got $CODE)"
 
 # seed prod
 A post delete $(A post list --post_type=post --format=ids) --force >/dev/null 2>&1 || true
@@ -33,6 +35,8 @@ B post update "$PX" --post_content="x2" >/dev/null
 echo "/* v2 */" > "$IXES_B/wp-content/themes/ixtest/style.css"
 NEW=$(B post create --post_title="New local" --post_content="n" --post_status=publish --porcelain)
 [ "$NEW" -gt 1000000 ] || die "auto_increment offset not applied (got $NEW)"
+B term create category ixcat --porcelain >/dev/null
+B post term add "$NEW" category ixcat >/dev/null
 A post update "$PY" --post_content="y2" >/dev/null
 
 # 3. diff shows push for X, kept for Y, no conflicts
@@ -44,6 +48,7 @@ B envsync push prod --yes
 [ "$(A post get "$PX" --field=post_content)" = "x2" ] || die "X not pushed"
 [ "$(A post get "$PY" --field=post_content)" = "y2" ] || die "Y was overwritten (prod must win)"
 [ "$(A post get "$NEW" --field=post_title)" = "New local" ] || die "new local post not inserted"
+A post term list "$NEW" category --field=name | grep -qx ixcat || die "term relationship (no-PK set_insert) not pushed"
 grep -q v2 "$IXES_A/wp-content/themes/ixtest/style.css" || die "theme file not pushed"
 [ -f "$IXES_A/.maintenance" ] && die "maintenance file left behind"
 
