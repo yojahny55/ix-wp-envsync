@@ -74,9 +74,22 @@ class IXES_Transfer {
 		return [ 'rows' => $out, 'next' => $d['next'] ];
 	}
 
+	/** This plugin's own directory, relative to wp-content, with a trailing slash. */
+	public static function own_dir() {
+		if ( ! defined( 'IXES_FILE' ) ) return '';
+		$root = untrailingslashit( str_replace( '\\', '/', WP_CONTENT_DIR ) );
+		$dir  = untrailingslashit( str_replace( '\\', '/', dirname( IXES_FILE ) ) );
+		if ( strpos( $dir, $root . '/' ) !== 0 ) return '';
+		return substr( $dir, strlen( $root ) + 1 ) . '/';
+	}
+
 	public static function excluded_path( $rel, array $excludes ) {
 		// our own storage dir, both the legacy name and the randomised one, on either side
 		if ( strpos( $rel, 'envsync/' ) === 0 || strpos( $rel, 'envsync-' ) === 0 ) return true;
+		// and our own code: a sync must never overwrite the plugin running it, in either
+		// direction. Deploy plugin updates as a zip. See self::own_dir().
+		$own = self::own_dir();
+		if ( $own !== '' && strpos( $rel, $own ) === 0 ) return true;
 		foreach ( $excludes as $ex ) {
 			$ex = ltrim( $ex, '/' );
 			if ( substr( $ex, -1 ) === '/' ) { if ( strpos( $rel, $ex ) === 0 || strpos( $rel, '/' . $ex ) !== false ) return true; }
