@@ -34,7 +34,8 @@ class IXES_Applier {
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
 			$ids = array_merge( (array) ( $t['touch'] ?? [] ), (array) ( $t['delete'] ?? [] ) );
 			if ( ! $ids || empty( $t['pk'] ) ) continue;
-			$pk = sanitize_key( $t['pk'] );
+			$pk = IXES_Transfer::safe_pk( $table, $t['pk'] );
+			if ( ! $pk ) continue;
 			$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $ids ) );
 			$rows = $wpdb->get_results( "SELECT * FROM `{$table}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
 			$found = array_map( function ( $r ) use ( $pk ) { return $r[ $pk ]; }, $rows );
@@ -88,7 +89,8 @@ class IXES_Applier {
 		if ( $kind === 'rows' || $kind === 'delete_rows' ) {
 			$table = sanitize_text_field( $p['table'] );
 			if ( ! IXES_Transfer::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
-			$pk = sanitize_key( $p['pk'] ?? '' );
+			$pk = ( $p['pk'] ?? null ) === null || $p['pk'] === '' ? null : IXES_Transfer::safe_pk( $table, $p['pk'] );
+			if ( ( $p['pk'] ?? null ) !== null && $p['pk'] !== '' && ! $pk ) return new WP_Error( 'bad_pk', 'unknown primary key column', [ 'status' => 400 ] );
 			$algo = $p['algo'] ?? 'sha1';
 			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo ) : [];
 			$skip = array_flip( $stale );

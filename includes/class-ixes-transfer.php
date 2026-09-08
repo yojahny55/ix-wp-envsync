@@ -161,6 +161,11 @@ class IXES_Transfer {
 		return self::$local_columns[ $table ];
 	}
 
+	// validate a primary key name against the real columns; sanitize_key() would lowercase `ID`
+	public static function safe_pk( $table, $pk ) {
+		return in_array( (string) $pk, self::local_columns( $table ), true ) ? (string) $pk : null;
+	}
+
 	public static function import_begin( $table ) {
 		global $wpdb;
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
