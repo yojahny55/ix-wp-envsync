@@ -51,3 +51,7 @@ add_action( 'init', function () {
 	if ( defined( 'WP_CLI' ) && WP_CLI ) WP_CLI::add_command( 'envsync', 'IXES_CLI' );
 } );
 if ( is_admin() ) add_action( 'admin_menu', [ 'IXES_Admin', 'register' ] );
+add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), function ( $links ) {
+	array_unshift( $links, '<a href="' . esc_url( admin_url( 'tools.php?page=ix-envsync' ) ) . '">' . esc_html__( 'Settings', 'ix-wp-envsync' ) . '</a>' );
+	return $links;
+} );
