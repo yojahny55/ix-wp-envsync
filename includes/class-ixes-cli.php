@@ -78,6 +78,9 @@ class IXES_CLI {
 	 *
 	 * [--flush-cache]
 	 * : Discard the file hash cache and rehash everything.
+	 *
+	 * [--details]
+	 * : Break the file counts down by directory.
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
@@ -87,6 +90,17 @@ class IXES_CLI {
 		WP_CLI::log( sprintf( "PULL %s → local\n  tables: %d (%d rows)\n  files: %d to transfer, %d to delete\n  rewrite:", $env['name'], count( $plan['tables'] ), $rows, count( $plan['files']['transfer'] ), count( $plan['files']['delete'] ) ) );
 		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "    {$p[0]}  →  {$p[1]}" );
 		WP_CLI::log( '  excludes: ' . implode( ', ', $plan['excludes'] ) );
+		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
+			foreach ( [ 'transfer', 'delete' ] as $k ) {
+				$by = [];
+				foreach ( $plan['files'][ $k ] as $rel ) {
+					$dir = implode( '/', array_slice( explode( '/', $rel ), 0, 2 ) );
+					$by[ $dir ] = ( isset( $by[ $dir ] ) ? $by[ $dir ] : 0 ) + 1;
+				}
+				arsort( $by );
+				foreach ( $by as $dir => $count ) WP_CLI::log( sprintf( '  %-8s %6d  %s', $k, $count, $dir ) );
+			}
+		}
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
 		$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger() ) );
@@ -103,7 +117,7 @@ class IXES_CLI {
 	 * [--json]
 	 * : Output the plan as JSON.
 	 *
-	 * [--verbose]
+	 * [--details]
 	 * : List every affected id and file.
 	 *
 	 * [--table=<table>]
@@ -123,7 +137,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
 		if ( ! empty( $assoc['json'] ) ) { WP_CLI::line( IXES_Planner::render_json( $plan ) ); return; }
 		WP_CLI::line( IXES_Planner::render_text( $plan ) );
-		if ( ! empty( $assoc['verbose'] ) ) {
+		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
 			foreach ( $plan['tables'] as $name => $t ) foreach ( [ 'push', 'insert', 'delete', 'conflict' ] as $k ) if ( $t[ $k ] ) WP_CLI::log( "  {$name} {$k}: " . implode( ', ', $t[ $k ] ) );
 			foreach ( [ 'push', 'delete', 'conflict' ] as $k ) foreach ( $plan['files'][ $k ] as $rel ) WP_CLI::log( "  file {$k}: {$rel}" );
 		}
