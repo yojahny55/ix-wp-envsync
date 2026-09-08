@@ -117,4 +117,94 @@ class IXES_Transfer {
 		$fh = fopen( $p, 'rb' ); fseek( $fh, $offset ); $data = fread( $fh, $size ); fclose( $fh );
 		return [ 'data' => base64_encode( $data === false ? '' : $data ), 'size' => strlen( (string) $data ), 'total' => filesize( $p ), 'sha256' => hash_file( 'sha256', $p ) ];
 	}
+
+	// ---------- hub side ----------
+
+	public static function tmp_name( $table ) {
+		global $wpdb;
+		return $wpdb->prefix . 'ixes_tmp_' . substr( $table, strlen( $wpdb->prefix ) );
+	}
+
+	public static function import_begin( $table ) {
+		global $wpdb;
+		$tmp = self::tmp_name( $table );
+		$wpdb->query( "DROP TABLE IF EXISTS `{$tmp}`" );
+		if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) ) return new WP_Error( 'no_table', "local table {$table} missing; schema must match (v0.1)" );
+		$wpdb->query( "CREATE TABLE `{$tmp}` LIKE `{$table}`" );
+		return true;
+	}
+
+	public static function import_rows( $table, array $rows, array $pairs ) {
+		global $wpdb;
+		if ( ! $rows ) return 0;
+		$tmp  = self::tmp_name( $table );
+		$cols = array_keys( $rows[0] );
+		$vals = [];
+		foreach ( $rows as $r ) {
+			$cells = [];
+			foreach ( $cols as $c ) {
+				$v = isset( $r[ $c ] ) ? $r[ $c ] : null;
+				if ( $v === null ) { $cells[] = 'NULL'; continue; }
+				$v = IXES_Hasher::normalize( $v, $pairs );
+				$cells[] = "'" . esc_sql( (string) $v ) . "'";
+			}
+			$vals[] = '(' . implode( ',', $cells ) . ')';
+		}
+		$sql = "INSERT INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
+		$wpdb->query( $sql );
+		return count( $rows );
+	}
+
+	public static function import_commit( array $tables ) {
+		global $wpdb;
+		$parts = [];
+		foreach ( $tables as $t ) {
+			$tmp = self::tmp_name( $t );
+			$parts[] = "`{$t}` TO `{$t}_ixes_old`, `{$tmp}` TO `{$t}`";
+		}
+		$wpdb->query( 'RENAME TABLE ' . implode( ', ', $parts ) );
+		foreach ( $tables as $t ) $wpdb->query( "DROP TABLE IF EXISTS `{$t}_ixes_old`" );
+	}
+
+	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256 ) {
+		$rel = self::safe_rel( $rel );
+		if ( ! $rel ) return new WP_Error( 'bad_path', 'path refused' );
+		$dest = WP_CONTENT_DIR . '/' . $rel;
+		$tmp  = $dest . '.ixes-tmp';
+		wp_mkdir_p( dirname( $dest ) );
+		$fh = fopen( $tmp, $offset === 0 ? 'wb' : 'ab' );
+		if ( ! $fh ) return new WP_Error( 'io', "cannot open {$tmp}" );
+		fwrite( $fh, $data ); fclose( $fh );
+		if ( $final ) {
+			if ( hash_file( 'sha256', $tmp ) !== $sha256 ) { unlink( $tmp ); return new WP_Error( 'checksum', "checksum mismatch {$rel}" ); }
+			rename( $tmp, $dest );
+		}
+		return true;
+	}
+
+	public static function delete_file( $rel ) {
+		$rel = self::safe_rel( $rel );
+		if ( $rel && is_file( WP_CONTENT_DIR . '/' . $rel ) ) unlink( WP_CONTENT_DIR . '/' . $rel );
+	}
+
+	public static function local_manifest( array $excludes, $algo ) {
+		$out = [];
+		foreach ( self::all_files( $excludes ) as $rel ) $out[ $rel ] = IXES_Hasher::hash_file( WP_CONTENT_DIR . '/' . $rel, $algo );
+		return $out;
+	}
+
+	public static function offset_auto_increment() {
+		global $wpdb;
+		$map = [ $wpdb->posts => 'ID', $wpdb->postmeta => 'meta_id', $wpdb->terms => 'term_id', $wpdb->term_taxonomy => 'term_taxonomy_id', $wpdb->comments => 'comment_ID', $wpdb->users => 'ID' ];
+		foreach ( $map as $t => $pk ) {
+			$max = (int) $wpdb->get_var( "SELECT MAX(`{$pk}`) FROM `{$t}`" );
+			$wpdb->query( "ALTER TABLE `{$t}` AUTO_INCREMENT = " . ( $max + 1000000 ) );
+		}
+	}
+
+	public static function after_import( $url, $abspath ) {
+		update_option( 'siteurl', $url ); update_option( 'home', $url );
+		wp_cache_flush();
+		flush_rewrite_rules();
+	}
 }
