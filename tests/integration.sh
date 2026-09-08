@@ -35,7 +35,7 @@ B post update "$PX" --post_content="x2" >/dev/null
 echo "/* v2 */" > "$IXES_B/wp-content/themes/ixtest/style.css"
 NEW=$(B post create --post_title="New local" --post_content="n" --post_status=publish --porcelain)
 [ "$NEW" -gt 1000000 ] || die "auto_increment offset not applied (got $NEW)"
-B term create category ixcat --porcelain >/dev/null
+B term create category ixcat --porcelain >/dev/null 2>&1 || true  # may already exist from an earlier run's pull
 B post term add "$NEW" category ixcat >/dev/null
 A post update "$PY" --post_content="y2" >/dev/null
 
