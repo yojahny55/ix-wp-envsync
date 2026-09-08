@@ -23,6 +23,20 @@ class IXES_Pull {
 		return array_merge( IXES_Env::default_excludes(), (array) $env['excludes'] );
 	}
 
+	/**
+	 * Drop paths this side refuses to touch from a manifest the other side sent.
+	 * The two sides can run different plugin versions with different exclude rules,
+	 * and a path we would refuse to write must never reach the transfer list.
+	 *
+	 * @param array $manifest path => hash
+	 */
+	public static function drop_excluded( array $manifest, array $excludes ) {
+		foreach ( array_keys( $manifest ) as $rel ) {
+			if ( IXES_Transfer::excluded_path( $rel, $excludes ) ) unset( $manifest[ $rel ] );
+		}
+		return $manifest;
+	}
+
 	public static function plan( array $env, IXES_Client $c ) {
 		global $wpdb;
 		$info = $c->info();
@@ -33,6 +47,7 @@ class IXES_Pull {
 		$remote = [];
 		$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000 ], function ( $res ) use ( &$remote ) { $remote += $res['files']; }, 'cursor' );
 		if ( is_wp_error( $r ) ) return $r;
+		$remote = self::drop_excluded( $remote, $ex );
 		$local = IXES_Transfer::local_manifest( $ex, $algo );
 		$transfer = array_keys( array_diff_assoc( $remote, $local ) );
 		$delete   = array_keys( array_diff_key( $local, $remote ) );
@@ -85,6 +100,7 @@ class IXES_Pull {
 		$bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
 
 		$n = count( $plan['files']['transfer'] );
+		$skipped = [];
 		foreach ( $plan['files']['transfer'] as $i => $rel ) {
 			$log( "file " . ( $i + 1 ) . "/{$n} {$rel}" );
 			$offset = 0;
@@ -95,9 +111,13 @@ class IXES_Pull {
 				$offset += strlen( $data );
 				$final = $offset >= (int) $res['total'];
 				$w = IXES_Transfer::write_file_chunk( $rel, $offset - strlen( $data ), $data, $final, $res['sha256'] );
+				// A path this side refuses is a policy difference between the two plugin
+				// versions, not a transfer failure: skip it rather than abort the pull.
+				if ( is_wp_error( $w ) && $w->get_error_code() === 'bad_path' ) { $skipped[] = $rel; break; }
 				if ( is_wp_error( $w ) ) return $w;
 			} while ( ! $final );
 		}
+		if ( $skipped ) $log( 'skipped ' . count( $skipped ) . ' excluded path(s) offered by the remote, e.g. ' . $skipped[0] );
 		$undeleted = 0;
 		foreach ( $plan['files']['delete'] as $rel ) if ( ! IXES_Transfer::delete_file( $rel ) ) $undeleted++;
 		if ( $undeleted ) $log( "warning: {$undeleted} stale file(s) could not be deleted (check ownership under wp-content)" );

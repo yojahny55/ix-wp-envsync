@@ -54,6 +54,7 @@ class IXES_Planner {
 		$remote_files = [];
 		$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000 ], function ( $res ) use ( &$remote_files ) { $remote_files += $res['files']; }, 'cursor' );
 		if ( is_wp_error( $r ) ) return $r;
+		$remote_files = IXES_Pull::drop_excluded( $remote_files, $ex );
 		$local_files = IXES_Transfer::local_manifest( $ex, $algo );
 		$fd = IXES_Differ::diff( $two_way ? [] : $bl->files(), $local_files, $remote_files );
 		$plan['files'] = [ 'push' => array_merge( $fd['push'], $fd['insert'] ), 'delete' => $fd['delete'], 'conflict' => $fd['conflict'], 'kept' => $fd['kept'] ];
