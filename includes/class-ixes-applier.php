@@ -13,7 +13,8 @@ class IXES_Applier {
 		// core requires .maintenance before plugins load, so the exemption for our own REST calls
 		// has to live inside the file itself (an $upgrading in the past means "not in maintenance")
 		$body = "<?php\n\$upgrading = " . time() . ";\n"
-			. "if ( isset( \$_SERVER['REQUEST_URI'] ) && strpos( \$_SERVER['REQUEST_URI'], '" . IXES_Rest::NS . "' ) !== false ) \$upgrading = 1;\n";
+			. "\$ixes_uri = isset( \$_SERVER['REQUEST_URI'] ) ? \$_SERVER['REQUEST_URI'] : '';\n"
+			. "if ( strpos( \$ixes_uri, '?rest_route=/" . IXES_Rest::NS . "' ) !== false || strpos( \$ixes_uri, '/wp-json/" . IXES_Rest::NS . "' ) !== false ) \$upgrading = 1;\n";
 		if ( $on ) file_put_contents( $f, $body );
 		elseif ( file_exists( $f ) ) unlink( $f );
 	}
@@ -174,6 +175,7 @@ class IXES_Applier {
 		$dir = $job ? self::job_dir( $job ) : null;
 		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return new WP_Error( 'nojob', 'no such job', [ 'status' => 404 ] );
 		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		if ( ! is_array( $meta ) ) return new WP_Error( 'bad_meta', 'job meta unreadable', [ 'status' => 500 ] );
 		$n = 0;
 
 		foreach ( glob( $dir . '/rows-*.json' ) as $f ) {
@@ -185,7 +187,9 @@ class IXES_Applier {
 		}
 		foreach ( (array) ( $meta['inserted'] ?? [] ) as $table => $i ) {
 			if ( ! IXES_Transfer::valid_table( $table ) || empty( $i['ids'] ) ) continue;
-			$wpdb->query( "DELETE FROM `{$table}` WHERE `{$i['pk']}` IN (" . implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $i['ids'] ) ) . ')' );
+			$pk = IXES_Transfer::safe_pk( $table, $i['pk'] ?? '' );
+			if ( ! $pk ) continue;
+			$wpdb->query( "DELETE FROM `{$table}` WHERE `{$pk}` IN (" . implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $i['ids'] ) ) . ')' );
 		}
 		foreach ( (array) ( $meta['set_inserted'] ?? [] ) as $table => $rows ) {
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
@@ -201,7 +205,7 @@ class IXES_Applier {
 				$n++;
 			}
 		}
-		foreach ( (array) $meta['created_files'] as $rel ) IXES_Transfer::delete_file( $rel );
+		foreach ( (array) ( $meta['created_files'] ?? [] ) as $rel ) IXES_Transfer::delete_file( $rel );
 		wp_cache_flush();
 		return [ 'restored' => $n, 'job' => $job ];
 	}

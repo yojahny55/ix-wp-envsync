@@ -74,6 +74,7 @@ class IXES_Pull {
 		IXES_Transfer::preserve_local_options( $done );
 		$commit = IXES_Transfer::import_commit( $done );
 		if ( is_wp_error( $commit ) ) { IXES_Transfer::drop_tmp_tables( $done ); return $commit; }
+		wp_cache_flush(); // the imported options table is live now; the bootstrapped alloptions cache is not
 		$bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
 
 		$n = count( $plan['files']['transfer'] );
