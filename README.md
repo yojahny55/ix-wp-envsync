@@ -104,12 +104,15 @@ Read it as: 12 rows go up, 3 are new, 41 rows production changed are left alone,
 | `list` | Show every environment and when it was last pulled. |
 | `remove <name>` | Forget an environment. |
 | `ping <name>` | Check connectivity and credentials. |
+| `excludes <name>` | List every path excluded for this environment, and how many files remain in scope. |
 
 Options for `add`:
 
-- `--token=<token>` — required, from the remote's Tools → EnvSync page.
+- `--token=<token>` — required the first time, from the remote's Tools → EnvSync page.
 - `--label=prod|staging|local` — what kind of environment this is.
-- `--exclude=<paths>` — comma-separated wp-content folders to leave out of sync entirely, e.g. `--exclude=ai1wm-backups/,cache/`.
+- `--exclude=<paths>` — comma-separated wp-content paths to leave out of sync entirely, e.g. `--exclude=ai1wm-backups/,cache/`. Replaces the whole list.
+- `--add-exclude=<paths>` — add to the existing list without retyping it.
+- `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync pull <env>`
@@ -162,7 +165,16 @@ Excluding a folder **protects** it. It stops being hashed, transferred, or delet
 
 Never exclude `uploads`, `themes` or `plugins` unless you are deliberately deploying that part another way, for example shipping the theme by git. Media stops syncing and there is no visible symptom.
 
-`--exclude=` on `env add` does the same thing from the terminal.
+From the terminal, `--add-exclude=` appends and `--remove-exclude=` drops, so you never retype what is already there:
+
+```bash
+wp envsync env add prod --add-exclude=uploads/rank-math/,cache/
+wp envsync env excludes prod
+```
+
+`env excludes` shows the whole effective list and marks each entry as `always`, `default`, or `this env`. Only `this env` rows can be removed.
+
+Paths are relative to wp-content. A trailing slash means the folder and everything under it, and nested paths work, such as `uploads/rank-math/`.
 
 Some things are always excluded and cannot be synced: `wp-config.php`, `.htaccess`, `.env`, `debug.log`, drop-ins, `.git`, `node_modules`, this plugin's own folder, and its storage folder.
 

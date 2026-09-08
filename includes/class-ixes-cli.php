@@ -18,7 +18,7 @@ class IXES_CLI {
 	 * ## OPTIONS
 	 *
 	 * <action>
-	 * : add|list|remove|ping
+	 * : add|list|remove|ping|excludes
 	 *
 	 * [<name>]
 	 * : Environment name.
@@ -36,7 +36,13 @@ class IXES_CLI {
 	 * : Comma-separated extra search:replace pairs.
 	 *
 	 * [--exclude=<paths>]
-	 * : Comma-separated wp-content paths to skip.
+	 * : Comma-separated wp-content paths to skip. Replaces the whole list.
+	 *
+	 * [--add-exclude=<paths>]
+	 * : Comma-separated paths to add to the existing exclude list.
+	 *
+	 * [--remove-exclude=<paths>]
+	 * : Comma-separated paths to drop from the existing exclude list.
 	 */
 	public function env( $args, $assoc ) {
 		$action = $args[0] ?? 'list';
@@ -60,6 +66,14 @@ class IXES_CLI {
 			if ( ! empty( $assoc['token'] ) )    $env['token'] = $assoc['token'];
 			if ( ! empty( $assoc['label'] ) )    $env['label'] = $assoc['label'];
 			if ( isset( $assoc['exclude'] ) )    $env['excludes'] = array_values( array_filter( explode( ',', $assoc['exclude'] ) ) );
+			if ( isset( $assoc['add-exclude'] ) ) {
+				$add = array_filter( explode( ',', $assoc['add-exclude'] ) );
+				$env['excludes'] = array_values( array_unique( array_merge( (array) $env['excludes'], $add ) ) );
+			}
+			if ( isset( $assoc['remove-exclude'] ) ) {
+				$drop = array_filter( explode( ',', $assoc['remove-exclude'] ) );
+				$env['excludes'] = array_values( array_diff( (array) $env['excludes'], $drop ) );
+			}
 			if ( isset( $assoc['replace'] ) ) {
 				$replace = [];
 				foreach ( array_filter( explode( ',', $assoc['replace'] ) ) as $p ) { $x = explode( ':', $p, 2 ); if ( count( $x ) === 2 ) $replace[] = $x; }
@@ -70,6 +84,17 @@ class IXES_CLI {
 				IXES_Env::add( $env );
 			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 			WP_CLI::success( $existing ? "env {$args[1]} updated" : "env {$args[1]} saved" );
+			return;
+		}
+		if ( $action === 'excludes' ) {
+			$env  = $this->get_env( $args[1] ?? '' );
+			$rows = [];
+			$own  = IXES_Transfer::own_dir();
+			foreach ( array_filter( [ 'envsync-*/ (storage)', $own ? $own . ' (this plugin)' : '' ] ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'always' ];
+			foreach ( IXES_Env::default_excludes() as $p ) $rows[] = [ 'path' => $p, 'source' => 'default' ];
+			foreach ( (array) $env['excludes'] as $p ) $rows[] = [ 'path' => $p, 'source' => 'this env' ];
+			WP_CLI\Utils\format_items( 'table', $rows, [ 'path', 'source' ] );
+			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop one of the "this env" rows with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); WP_CLI::success( 'removed' ); return; }

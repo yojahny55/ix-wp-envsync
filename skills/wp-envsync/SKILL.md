@@ -97,8 +97,9 @@ prod  ←  local          baseline: 2026-09-08 02:06
 
 | Command | Purpose |
 |---|---|
-| `envsync env add <name> <url> --token=<t> [--label=] [--exclude=] [--replace=]` | Register a remote |
+| `envsync env add <name> [<url>] [--token=] [--label=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | Manage and test environments |
+| `envsync env excludes <name>` | List every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--flush-cache]` | Overwrite this site from the remote, record baseline |
 | `envsync diff <env> [--details] [--json] [--table= --id=] [--flush-cache]` | Preview a push, changes nothing |
 | `envsync push <env> [--dry-run] [--yes] [--plan=<file>] [--force]` | Apply changes to the remote |
@@ -141,8 +142,12 @@ Warn them that a `chmod 664` sweep strips execute bits from any scripts under wp
 Large junk folders (backups, caches) slow every operation. Check them in the admin at Tools → EnvSync, or set them when registering:
 
 ```bash
-wp envsync env add prod https://client.com --token=<t> --exclude=ai1wm-backups/,cache/,litespeed/
+wp envsync env excludes prod                                        # what is excluded now
+wp envsync env add prod --add-exclude=ai1wm-backups/,cache/         # append, never retype
+wp envsync env add prod --remove-exclude=cache/                     # drop one
 ```
+
+Check `env excludes` before changing anything: `--exclude=` replaces the whole list, while `--add-exclude=`/`--remove-exclude=` edit it in place. Prefer the latter two.
 
 Excluding **protects** a folder: it is not hashed, transferred or deleted on either side. Never exclude `uploads/`, `themes/` or `plugins/` without the user explicitly asking, since media or code silently stops syncing.
 
