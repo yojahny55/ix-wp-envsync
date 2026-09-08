@@ -98,7 +98,9 @@ class IXES_Pull {
 				if ( is_wp_error( $w ) ) return $w;
 			} while ( ! $final );
 		}
-		foreach ( $plan['files']['delete'] as $rel ) IXES_Transfer::delete_file( $rel );
+		$undeleted = 0;
+		foreach ( $plan['files']['delete'] as $rel ) if ( ! IXES_Transfer::delete_file( $rel ) ) $undeleted++;
+		if ( $undeleted ) $log( "warning: {$undeleted} stale file(s) could not be deleted (check ownership under wp-content)" );
 		$bl->write_files( $plan['files']['remote'] );
 
 		IXES_Transfer::after_import( IXES_Env::local_url(), IXES_Env::local_abspath() );

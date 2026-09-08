@@ -261,26 +261,53 @@ class IXES_Transfer {
 		foreach ( $tables as $t ) $wpdb->query( "DROP TABLE IF EXISTS `" . self::tmp_name( $t ) . "`" );
 	}
 
+	/**
+	 * Turn a bare I/O failure into something the operator can act on. Mixed ownership
+	 * (files installed through the browser as the web-server user, synced from a shell
+	 * as another user) is by far the most common cause.
+	 */
+	private static function io_hint( $msg, $dir ) {
+		$probe = $dir;
+		while ( $probe && ! is_dir( $probe ) && strlen( $probe ) > strlen( WP_CONTENT_DIR ) ) $probe = dirname( $probe );
+		if ( ! is_dir( $probe ) || is_writable( $probe ) ) return $msg;
+		$owner = function_exists( 'posix_getpwuid' ) ? posix_getpwuid( fileowner( $probe ) ) : null;
+		$me    = function_exists( 'posix_geteuid' ) && function_exists( 'posix_getpwuid' ) ? posix_getpwuid( posix_geteuid() ) : null;
+		return sprintf(
+			'%s — %s is not writable by %s (owned by %s, mode %s). Fix ownership on wp-content and retry; nothing was changed.',
+			$msg,
+			$probe,
+			$me ? $me['name'] : 'this user',
+			$owner ? $owner['name'] : 'another user',
+			substr( sprintf( '%o', fileperms( $probe ) ), -4 )
+		);
+	}
+
 	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256 ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused' );
 		$dest = WP_CONTENT_DIR . '/' . $rel;
 		$tmp  = $dest . '.ixes-tmp';
-		wp_mkdir_p( dirname( $dest ) );
-		$fh = fopen( $tmp, $offset === 0 ? 'wb' : 'ab' );
-		if ( ! $fh ) return new WP_Error( 'io', "cannot open {$tmp}" );
-		fwrite( $fh, $data ); fclose( $fh );
+		$dir  = dirname( $dest );
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return new WP_Error( 'io', self::io_hint( "cannot create directory {$dir}", $dir ) );
+		$fh = @fopen( $tmp, $offset === 0 ? 'wb' : 'ab' );
+		if ( ! $fh ) return new WP_Error( 'io', self::io_hint( "cannot write {$rel}", $dir ) );
+		$w = fwrite( $fh, $data );
+		fclose( $fh );
+		if ( $w === false || $w < strlen( $data ) ) { @unlink( $tmp ); return new WP_Error( 'io', self::io_hint( "short write on {$rel} (disk full?)", $dir ) ); }
 		if ( $final ) {
-			if ( hash_file( 'sha256', $tmp ) !== $sha256 ) { unlink( $tmp ); return new WP_Error( 'checksum', "checksum mismatch {$rel}" ); }
-			rename( $tmp, $dest );
+			if ( hash_file( 'sha256', $tmp ) !== $sha256 ) { @unlink( $tmp ); return new WP_Error( 'checksum', "checksum mismatch {$rel}" ); }
+			if ( ! @rename( $tmp, $dest ) ) { @unlink( $tmp ); return new WP_Error( 'io', self::io_hint( "cannot replace {$rel}", $dir ) ); }
 		}
 		return true;
 	}
 
+	/** @return bool true when the file is gone (or was never there) */
 	public static function delete_file( $rel ) {
 		$rel = self::safe_rel( $rel );
-		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return;
-		if ( is_file( WP_CONTENT_DIR . '/' . $rel ) ) unlink( WP_CONTENT_DIR . '/' . $rel );
+		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return true;
+		$p = WP_CONTENT_DIR . '/' . $rel;
+		if ( ! is_file( $p ) ) return true;
+		return @unlink( $p );
 	}
 
 	public static function local_manifest( array $excludes, $algo ) {
