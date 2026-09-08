@@ -82,6 +82,17 @@ class IXES_Applier {
 		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
 	}
 
+	// same read-modify-write as record_set_inserted: keep the value the option had before this job touched it
+	private static function record_option_before( $job, $name ) {
+		$dir = self::job_dir( $job );
+		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return;
+		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		if ( ! is_array( $meta ) ) return;
+		if ( isset( $meta['options_before'] ) && array_key_exists( $name, (array) $meta['options_before'] ) ) return;
+		$meta['options_before'][ $name ] = get_option( $name, null );
+		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
+	}
+
 	public static function job_step( array $p ) {
 		global $wpdb;
 		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
@@ -141,6 +152,7 @@ class IXES_Applier {
 
 		if ( $kind === 'option' ) {
 			if ( IXES_Env::option_excluded( $p['name'] ) ) return new WP_Error( 'refused', 'option excluded' );
+			self::record_option_before( $p['job'] ?? '', $p['name'] );
 			update_option( $p['name'], $p['value'] );
 			return [ 'ok' => true ];
 		}
@@ -191,6 +203,7 @@ class IXES_Applier {
 			if ( ! $pk ) continue;
 			$wpdb->query( "DELETE FROM `{$table}` WHERE `{$pk}` IN (" . implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $i['ids'] ) ) . ')' );
 		}
+		foreach ( (array) ( $meta['options_before'] ?? [] ) as $name => $val ) { update_option( $name, $val ); $n++; }
 		foreach ( (array) ( $meta['set_inserted'] ?? [] ) as $table => $rows ) {
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
 			foreach ( (array) $rows as $row ) { $wpdb->delete( $table, $row ); $n++; }
