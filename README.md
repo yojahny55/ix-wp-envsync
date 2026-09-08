@@ -18,6 +18,9 @@ Pull a full snapshot from prod or staging. Push back only what you changed. Prod
    wp envsync rollback prod            # if needed, restores the pre-push snapshot
 
 ## Requirements
+- **The remote token is a full site takeover.** It grants write access to that site's database and to its whole `wp-content`, plugin PHP included. Treat it like an admin password: never commit it, never share it, rotate it when in doubt.
+- Both sites must use the same table prefix (`wp envsync pull` errors out on a mismatch).
 - Same table schema on both sides (v0.1 does not create tables).
+- Pull is not resumable: if it fails part-way, fix the cause and run it again from the start.
 - HTTPS on remotes (or `define('ENVSYNC_ALLOW_HTTP', true)` for local dev).
 - Not a backup tool. Keep your backups.
