@@ -32,7 +32,9 @@ class IXES_Planner {
 			if ( $pk ) {
 				$d = IXES_Differ::diff( $two_way ? [] : $bl->rows( $name ), $local, $remote );
 				$d['pk'] = $pk; $d['set_insert'] = [];
-				$plan['remote_hashes'][ $name ] = array_intersect_key( $remote, array_flip( array_merge( $d['push'], $d['delete'], $d['insert'] ) ) );
+				$plan['remote_hashes'][ $name ] = array_intersect_key( $remote, array_flip( array_merge( $d['push'], $d['delete'] ) ) );
+				// inserts must exist nowhere on prod: a null expectation means "no row", and stale() flags one that appeared
+				foreach ( $d['insert'] as $id ) $plan['remote_hashes'][ $name ][ $id ] = null;
 				if ( $name === $wpdb->posts && $d['conflict'] ) {
 					foreach ( $d['conflict'] as $id ) $plan['conflict_detail'][ $name ][ $id ] = (string) $wpdb->get_var( $wpdb->prepare( "SELECT post_title FROM {$wpdb->posts} WHERE ID = %d", $id ) );
 				}
