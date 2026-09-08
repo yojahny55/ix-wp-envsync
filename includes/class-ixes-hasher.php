@@ -9,7 +9,8 @@ class IXES_Hasher {
 		return ( $local && $remote ) ? 'xxh128' : 'sha1';
 	}
 
-	public static function placeholders( $url, $abspath ) {
+	// $extra: this side's values of the env's extra_replace pairs, index-aligned with the other side's list
+	public static function placeholders( $url, $abspath, array $extra = [] ) {
 		$url = rtrim( $url, '/' );
 		$abspath = rtrim( $abspath, '/' );
 		$bare = preg_replace( '#^https?://#', '', $url );
@@ -20,6 +21,14 @@ class IXES_Hasher {
 			[ $abspath, '{{ABSPATH}}' ],
 			[ str_replace( '/', '\/', $abspath ), '{{ABSPATH}}' ],
 		];
+		foreach ( array_values( $extra ) as $i => $e ) {
+			$e = (string) $e;
+			if ( $e === '' ) continue;
+			$ph = '{{X' . $i . '}}';
+			$pairs[] = [ $e, $ph ];
+			$esc = str_replace( '/', '\/', $e );
+			if ( $esc !== $e ) $pairs[] = [ $esc, $ph ];
+		}
 		// longest first so scheme-full matches before bare host
 		usort( $pairs, function ( $a, $b ) { return strlen( $b[0] ) - strlen( $a[0] ); } );
 		return $pairs;

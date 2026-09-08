@@ -36,6 +36,16 @@ class IXES_Env {
 		return [ 'cache/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'envsync-', 'upgrade/', 'uploads/wc-logs/' ];
 	}
 
+	// extra_replace is a list of [prod_value, local_value]; returns the two index-aligned lists
+	public static function extras( array $env ) {
+		$prod = []; $local = [];
+		foreach ( (array) ( $env['extra_replace'] ?? [] ) as $p ) {
+			if ( ! isset( $p[0], $p[1] ) ) continue;
+			$prod[] = (string) $p[0]; $local[] = (string) $p[1];
+		}
+		return [ $prod, $local ];
+	}
+
 	public static function excluded_options() {
 		return [ 'siteurl', 'home', 'cron', 'recently_activated' ];
 	}

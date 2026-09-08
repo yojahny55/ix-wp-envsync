@@ -28,6 +28,13 @@ class HasherTest extends TestCase {
 		$lp = IXES_Hasher::placeholders( 'http://client.local', '/b' );
 		$this->assertSame( IXES_Hasher::hash_row( $prod, $pp, 'sha1' ), IXES_Hasher::hash_row( $local, $lp, 'sha1' ) );
 	}
+	public function test_extra_replace_pair_hashes_equal_on_both_sides() {
+		$prod  = [ 'ID' => 1, 'v' => 'key=pk_live_abc and https:\/\/client.com\/x' ];
+		$local = [ 'ID' => 1, 'v' => 'key=pk_test_xyz and https:\/\/client.local\/x' ];
+		$pp = IXES_Hasher::placeholders( 'https://client.com', '/a', [ 'pk_live_abc' ] );
+		$lp = IXES_Hasher::placeholders( 'https://client.local', '/b', [ 'pk_test_xyz' ] );
+		$this->assertSame( IXES_Hasher::hash_row( $prod, $pp, 'sha1' ), IXES_Hasher::hash_row( $local, $lp, 'sha1' ) );
+	}
 	public function test_different_content_hashes_differ() {
 		$pp = IXES_Hasher::placeholders( 'https://c.com', '/a' );
 		$this->assertNotSame(

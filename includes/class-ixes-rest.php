@@ -34,7 +34,8 @@ class IXES_Rest {
 	}
 
 	private static function pairs( array $p ) {
-		return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() );
+		// 'extra' carries this env's prod-side extra_replace values, index-aligned with the hub's local ones
+		return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) ) );
 	}
 
 	public static function hash_rows( WP_REST_Request $req ) {

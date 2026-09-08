@@ -12,7 +12,8 @@ class IXES_Planner {
 		$two_way = ! $bl->exists();
 		if ( ! $two_way && $bl->meta( 'algo' ) !== $algo ) return new WP_Error( 'algo', 'baseline hash algo differs; pull again' );
 
-		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() );
+		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
+		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 		$ex = IXES_Pull::excludes( $env );
 		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [] ];
 
@@ -20,7 +21,7 @@ class IXES_Planner {
 			$name = $t['name']; $pk = $t['pk'];
 			if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $name ) ) ) continue;
 			$remote = [];
-			$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
+			$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
 			if ( is_wp_error( $r ) ) return $r;
 			$local = []; $next = null;
 			do {

@@ -45,7 +45,8 @@ class IXES_Pull {
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		$bl->reset();
 		$bl->meta( 'algo', $plan['algo'] ); $bl->meta( 'source_url', $plan['info']['url'] );
-		$hash_pairs = IXES_Hasher::placeholders( $plan['info']['url'], $plan['info']['abspath'] );
+		list( $extra_prod ) = IXES_Env::extras( $env );
+		$hash_pairs = IXES_Hasher::placeholders( $plan['info']['url'], $plan['info']['abspath'], $extra_prod );
 		$done = [];
 
 		foreach ( $plan['tables'] as $t ) {

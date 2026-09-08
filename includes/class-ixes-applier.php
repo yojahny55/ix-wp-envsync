@@ -18,7 +18,7 @@ class IXES_Applier {
 		if ( $on ) file_put_contents( $f, $body );
 		elseif ( file_exists( $f ) ) unlink( $f );
 	}
-	private static function remote_pairs() { return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() ); }
+	private static function remote_pairs( array $extra = [] ) { return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra ); }
 
 	// ---------- remote side ----------
 
@@ -61,12 +61,14 @@ class IXES_Applier {
 		return [ 'job' => $job ];
 	}
 
-	private static function stale( $table, $pk, array $expect, $algo ) {
+	// $expect maps id => hash the hub saw on prod, or null for "no row here yet" (an insert)
+	private static function stale( $table, $pk, array $expect, $algo, array $extra = [] ) {
 		global $wpdb;
 		$stale = [];
+		$pairs = self::remote_pairs( $extra );
 		foreach ( $expect as $id => $h ) {
 			$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` = %s", $id ), ARRAY_A );
-			$cur = $row ? IXES_Hasher::hash_row( $row, self::remote_pairs(), $algo ) : null;
+			$cur = $row ? IXES_Hasher::hash_row( $row, $pairs, $algo ) : null;
 			if ( $cur !== $h ) $stale[] = $id;
 		}
 		return $stale;
@@ -104,7 +106,8 @@ class IXES_Applier {
 			$pk = ( $p['pk'] ?? null ) === null || $p['pk'] === '' ? null : IXES_Transfer::safe_pk( $table, $p['pk'] );
 			if ( ( $p['pk'] ?? null ) !== null && $p['pk'] !== '' && ! $pk ) return new WP_Error( 'bad_pk', 'unknown primary key column', [ 'status' => 400 ] );
 			$algo = $p['algo'] ?? 'sha1';
-			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo ) : [];
+			$extra = array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) );
+			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo, $extra ) : [];
 			$skip = array_flip( $stale );
 			$refused = [];
 			$is_options = ( $table === $wpdb->options );
@@ -243,7 +246,8 @@ class IXES_Applier {
 			[ IXES_Env::local_abspath(), untrailingslashit( $info['abspath'] ) ],
 		];
 		foreach ( (array) $env['extra_replace'] as $x ) $pairs[] = [ $x[1], $x[0] ];
-		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() );
+		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
+		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 
 		$touch = [];
 		foreach ( $plan['tables'] as $name => $t ) {
@@ -290,7 +294,7 @@ class IXES_Applier {
 					$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $chunk ) );
 					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $chunk ) );
 					$rows = $wpdb->get_results( "SELECT * FROM `{$name}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
-					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
+					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
@@ -302,7 +306,7 @@ class IXES_Applier {
 				$rows = []; $next = null;
 				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'] ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
 				foreach ( array_chunk( $rows, 500 ) as $chunk ) {
-					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
+					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
@@ -310,7 +314,7 @@ class IXES_Applier {
 			}
 			if ( $t['delete'] ) {
 				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['delete'] ) );
-				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ] );
+				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'extra' => $extra_prod, 'algo' => $plan['algo'] ] );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
 				foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
