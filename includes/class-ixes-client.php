@@ -21,7 +21,8 @@ class IXES_Client {
 			],
 		];
 		if ( $body !== null ) $args['body'] = $raw;
-		$res = wp_remote_request( $this->env['url'] . '/wp-json' . $path, $args );
+		// ponytail: ?rest_route= works with any permalink structure; /wp-json/ 301s on plain permalinks and drops the Authorization header
+		$res = wp_remote_request( $this->env['url'] . '/?rest_route=' . $path, $args );
 		if ( is_wp_error( $res ) ) return $res;
 		$code = wp_remote_retrieve_response_code( $res );
 		$json = json_decode( wp_remote_retrieve_body( $res ), true );
