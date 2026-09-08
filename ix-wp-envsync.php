@@ -24,7 +24,13 @@ spl_autoload_register( function ( $class ) {
 } );
 
 function ixes_storage_dir() {
-	$dir = WP_CONTENT_DIR . '/envsync';
+	// unguessable name: job snapshots hold wp_users rows and nginx ignores .htaccess
+	$suffix = get_option( 'ixes_storage_suffix' );
+	if ( ! is_string( $suffix ) || ! preg_match( '/^[0-9a-f]{16}$/', $suffix ) ) {
+		$suffix = bin2hex( random_bytes( 8 ) );
+		update_option( 'ixes_storage_suffix', $suffix, false );
+	}
+	$dir = WP_CONTENT_DIR . '/envsync-' . $suffix;
 	if ( ! is_dir( $dir ) ) {
 		wp_mkdir_p( $dir );
 		file_put_contents( $dir . '/index.php', "<?php // silence" );

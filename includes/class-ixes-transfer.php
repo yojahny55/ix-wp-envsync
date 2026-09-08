@@ -75,7 +75,8 @@ class IXES_Transfer {
 	}
 
 	public static function excluded_path( $rel, array $excludes ) {
-		if ( strpos( $rel, 'envsync/' ) === 0 ) return true;
+		// our own storage dir, both the legacy name and the randomised one, on either side
+		if ( strpos( $rel, 'envsync/' ) === 0 || strpos( $rel, 'envsync-' ) === 0 ) return true;
 		foreach ( $excludes as $ex ) {
 			$ex = ltrim( $ex, '/' );
 			if ( substr( $ex, -1 ) === '/' ) { if ( strpos( $rel, $ex ) === 0 || strpos( $rel, '/' . $ex ) !== false ) return true; }

@@ -33,7 +33,7 @@ class IXES_Env {
 	}
 
 	public static function default_excludes() {
-		return [ 'cache/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'upgrade/', 'uploads/wc-logs/' ];
+		return [ 'cache/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'envsync-', 'upgrade/', 'uploads/wc-logs/' ];
 	}
 
 	public static function excluded_options() {
