@@ -1,0 +1,276 @@
+<?php
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+class IXES_Applier {
+
+	const LOCK = 'ixes_lock';
+	const ORDER = [ 'users', 'usermeta', 'terms', 'term_taxonomy', 'posts', 'postmeta', 'term_relationships', 'termmeta', 'comments', 'commentmeta' ];
+
+	private static function jobs_dir() { $d = ixes_storage_dir() . '/jobs'; wp_mkdir_p( $d ); return $d; }
+	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
+	private static function maintenance( $on ) {
+		$f = ABSPATH . '.maintenance';
+		if ( $on ) file_put_contents( $f, '<?php $upgrading = ' . time() . ';' );
+		elseif ( file_exists( $f ) ) unlink( $f );
+	}
+	private static function remote_pairs() { return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() ); }
+
+	// ---------- remote side ----------
+
+	public static function job_start( array $p ) {
+		global $wpdb;
+		if ( get_transient( self::LOCK ) ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
+		$job = date( 'Ymd-His' ) . '-' . substr( md5( uniqid() ), 0, 6 );
+		set_transient( self::LOCK, $job, HOUR_IN_SECONDS );
+		$dir = self::job_dir( $job );
+		wp_mkdir_p( $dir . '/files' );
+		$meta = [ 'job' => $job, 'started' => time(), 'plan' => $p['plan_meta'], 'inserted' => [], 'created_files' => [] ];
+
+		foreach ( (array) ( $p['plan_meta']['tables'] ?? [] ) as $table => $t ) {
+			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
+			$ids = array_merge( (array) ( $t['touch'] ?? [] ), (array) ( $t['delete'] ?? [] ) );
+			if ( ! $ids || empty( $t['pk'] ) ) continue;
+			$pk = sanitize_key( $t['pk'] );
+			$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $ids ) );
+			$rows = $wpdb->get_results( "SELECT * FROM `{$table}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
+			$found = array_map( function ( $r ) use ( $pk ) { return $r[ $pk ]; }, $rows );
+			// touch ids that don't exist yet were inserted by this push and must be deleted, not restored, on rollback
+			$meta['inserted'][ $table ] = [ 'pk' => $pk, 'ids' => array_values( array_diff( (array) ( $t['touch'] ?? [] ), $found ) ) ];
+			file_put_contents( $dir . '/rows-' . $table . '.json', json_encode( [ 'pk' => $pk, 'rows' => $rows ] ) );
+		}
+
+		$files = array_unique( array_merge( (array) ( $p['plan_meta']['files']['push'] ?? [] ), (array) ( $p['plan_meta']['files']['delete'] ?? [] ) ) );
+		foreach ( $files as $rel ) {
+			$rel = IXES_Transfer::safe_rel( $rel );
+			if ( ! $rel ) continue;
+			$src = WP_CONTENT_DIR . '/' . $rel;
+			if ( ! is_file( $src ) ) { $meta['created_files'][] = $rel; continue; }
+			$dest = $dir . '/files/' . $rel;
+			wp_mkdir_p( dirname( $dest ) );
+			copy( $src, $dest );
+		}
+
+		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
+		self::maintenance( true );
+		return [ 'job' => $job ];
+	}
+
+	private static function stale( $table, $pk, array $expect, $algo ) {
+		global $wpdb;
+		$stale = [];
+		foreach ( $expect as $id => $h ) {
+			$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` = %s", $id ), ARRAY_A );
+			$cur = $row ? IXES_Hasher::hash_row( $row, self::remote_pairs(), $algo ) : null;
+			if ( $cur !== $h ) $stale[] = $id;
+		}
+		return $stale;
+	}
+
+	public static function job_step( array $p ) {
+		global $wpdb;
+		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		$kind = $p['kind'] ?? '';
+
+		if ( $kind === 'rows' || $kind === 'delete_rows' ) {
+			$table = sanitize_text_field( $p['table'] );
+			if ( ! IXES_Transfer::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
+			$pk = sanitize_key( $p['pk'] ?? '' );
+			$algo = $p['algo'] ?? 'sha1';
+			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo ) : [];
+			$skip = array_flip( $stale );
+
+			if ( $kind === 'rows' ) {
+				foreach ( (array) $p['rows'] as $row ) {
+					if ( $pk && isset( $skip[ $row[ $pk ] ] ) ) continue;
+					foreach ( $row as $k => $v ) if ( $v !== null ) $row[ $k ] = IXES_Hasher::normalize( $v, (array) $p['pairs'] );
+					if ( ! $pk ) { $wpdb->insert( $table, $row ); continue; }
+					$wpdb->replace( $table, $row );
+				}
+			} else {
+				$ids = array_values( array_diff( (array) $p['ids'], $stale ) );
+				if ( $ids ) {
+					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $ids ) );
+					$wpdb->query( "DELETE FROM `{$table}` WHERE `{$pk}` IN ({$in})" );
+				}
+			}
+			return [ 'stale' => $stale ];
+		}
+
+		if ( $kind === 'file' ) {
+			$r = IXES_Transfer::write_file_chunk( (string) ( $p['path'] ?? '' ), (int) ( $p['offset'] ?? 0 ), base64_decode( (string) ( $p['data'] ?? '' ) ), ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
+			if ( is_wp_error( $r ) ) return $r;
+			return [ 'ok' => true ];
+		}
+
+		if ( $kind === 'delete_files' ) {
+			foreach ( (array) $p['paths'] as $rel ) IXES_Transfer::delete_file( $rel );
+			return [ 'ok' => true ];
+		}
+
+		if ( $kind === 'option' ) {
+			if ( IXES_Env::option_excluded( $p['name'] ) ) return new WP_Error( 'refused', 'option excluded' );
+			update_option( $p['name'], $p['value'] );
+			return [ 'ok' => true ];
+		}
+
+		return new WP_Error( 'bad_kind', 'unknown step' );
+	}
+
+	public static function job_finish( array $p ) {
+		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		wp_cache_flush(); flush_rewrite_rules();
+		self::maintenance( false );
+		delete_transient( self::LOCK );
+		$jobs = glob( self::jobs_dir() . '/*', GLOB_ONLYDIR ); sort( $jobs );
+		foreach ( array_slice( $jobs, 0, max( 0, count( $jobs ) - 3 ) ) as $old ) self::rrmdir( $old );
+		return [ 'ok' => true ];
+	}
+
+	public static function job_abort( array $p ) {
+		$r = self::rollback( $p );
+		self::maintenance( false );
+		delete_transient( self::LOCK );
+		return $r;
+	}
+
+	public static function rollback( array $p ) {
+		global $wpdb;
+		$job = $p['job'] ?? null;
+		if ( ! $job ) {
+			$jobs = glob( self::jobs_dir() . '/*', GLOB_ONLYDIR ); sort( $jobs );
+			$job = $jobs ? basename( end( $jobs ) ) : null;
+		}
+		$dir = $job ? self::job_dir( $job ) : null;
+		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return new WP_Error( 'nojob', 'no such job', [ 'status' => 404 ] );
+		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		$n = 0;
+
+		foreach ( glob( $dir . '/rows-*.json' ) as $f ) {
+			$table = substr( basename( $f ), strlen( 'rows-' ), -5 ); // strip 'rows-' prefix and '.json' suffix
+			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
+			$snap = json_decode( file_get_contents( $f ), true );
+			$pk = $snap['pk'];
+			foreach ( (array) $snap['rows'] as $row ) { $wpdb->replace( $table, $row ); $n++; }
+		}
+		foreach ( (array) ( $meta['inserted'] ?? [] ) as $table => $i ) {
+			if ( ! IXES_Transfer::valid_table( $table ) || empty( $i['ids'] ) ) continue;
+			$wpdb->query( "DELETE FROM `{$table}` WHERE `{$i['pk']}` IN (" . implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $i['ids'] ) ) . ')' );
+		}
+
+		$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/files', FilesystemIterator::SKIP_DOTS ) );
+		foreach ( $it as $f ) {
+			if ( $f->isFile() ) {
+				$rel = substr( $f->getPathname(), strlen( $dir . '/files/' ) );
+				wp_mkdir_p( dirname( WP_CONTENT_DIR . '/' . $rel ) );
+				copy( $f->getPathname(), WP_CONTENT_DIR . '/' . $rel );
+				$n++;
+			}
+		}
+		foreach ( (array) $meta['created_files'] as $rel ) IXES_Transfer::delete_file( $rel );
+		wp_cache_flush();
+		return [ 'restored' => $n, 'job' => $job ];
+	}
+
+	private static function rrmdir( $d ) {
+		foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $d, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::CHILD_FIRST ) as $f ) {
+			$f->isDir() ? rmdir( $f->getPathname() ) : unlink( $f->getPathname() );
+		}
+		rmdir( $d );
+	}
+
+	// ---------- hub side ----------
+
+	public static function apply( array $env, IXES_Client $c, array $plan, callable $log ) {
+		global $wpdb;
+		$info = $c->info();
+		if ( is_wp_error( $info ) ) return $info;
+
+		$pairs = [
+			[ IXES_Env::local_url(), untrailingslashit( $info['url'] ) ],
+			[ str_replace( '/', '\/', IXES_Env::local_url() ), str_replace( '/', '\/', untrailingslashit( $info['url'] ) ) ],
+			[ IXES_Env::local_abspath(), untrailingslashit( $info['abspath'] ) ],
+		];
+		foreach ( (array) $env['extra_replace'] as $x ) $pairs[] = [ $x[1], $x[0] ];
+		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() );
+
+		$touch = [];
+		foreach ( $plan['tables'] as $name => $t ) {
+			$touch[ $name ] = [ 'pk' => $t['pk'], 'touch' => array_merge( (array) $t['push'], (array) $t['insert'] ), 'delete' => (array) $t['delete'] ];
+		}
+		$plan_meta = [ 'env' => $env['name'], 'created' => $plan['created'], 'tables' => $touch, 'files' => [ 'push' => $plan['files']['push'], 'delete' => $plan['files']['delete'] ] ];
+
+		$start = $c->post( '/job/start', [ 'plan_meta' => $plan_meta ] );
+		if ( is_wp_error( $start ) ) return $start;
+		$job = $start['job'];
+
+		$stale = [];
+		$fail = function ( $err ) use ( $c, $job ) { $c->post( '/job/abort', [ 'job' => $job ] ); return $err; };
+
+		// files first
+		foreach ( $plan['files']['push'] as $rel ) {
+			$abs = WP_CONTENT_DIR . '/' . $rel;
+			if ( ! is_file( $abs ) ) continue;
+			$sha = hash_file( 'sha256', $abs ); $total = filesize( $abs ); $offset = 0;
+			$fh = fopen( $abs, 'rb' );
+			do {
+				$data = fread( $fh, 2097152 ); $offset += strlen( $data ); $final = $offset >= $total || $data === '';
+				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'file', 'path' => $rel, 'offset' => $offset - strlen( $data ), 'data' => base64_encode( $data ), 'final' => $final, 'sha256' => $sha ] );
+				if ( is_wp_error( $r ) ) { fclose( $fh ); return $fail( $r ); }
+			} while ( ! $final );
+			fclose( $fh ); $log( "file {$rel}" );
+		}
+		if ( $plan['files']['delete'] ) {
+			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'] ] );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+		}
+
+		// tables in FK-safe order, unknown tables after, options last
+		$ordered = [];
+		foreach ( self::ORDER as $k ) if ( isset( $plan['tables'][ $wpdb->prefix . $k ] ) ) $ordered[] = $wpdb->prefix . $k;
+		foreach ( array_keys( $plan['tables'] ) as $n ) if ( ! in_array( $n, $ordered, true ) && $n !== $wpdb->options ) $ordered[] = $n;
+		if ( isset( $plan['tables'][ $wpdb->options ] ) ) $ordered[] = $wpdb->options;
+
+		foreach ( $ordered as $name ) {
+			$t = $plan['tables'][ $name ]; $pk = $t['pk'];
+			$ids = array_merge( (array) $t['push'], (array) $t['insert'] );
+			if ( $ids ) {
+				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['push'] ) );
+				foreach ( array_chunk( $ids, 500 ) as $chunk ) {
+					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $chunk ) );
+					$rows = $wpdb->get_results( "SELECT * FROM `{$name}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
+					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
+					if ( is_wp_error( $r ) ) return $fail( $r );
+					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
+				}
+				$log( "{$name} rows " . count( $ids ) );
+			}
+			if ( $t['set_insert'] ) {
+				// no-pk table: send full rows whose hash is in set_insert
+				$rows = []; $next = null;
+				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'] ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
+				foreach ( array_chunk( $rows, 500 ) as $chunk ) {
+					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
+					if ( is_wp_error( $r ) ) return $fail( $r );
+				}
+				$log( "{$name} set_insert " . count( $rows ) );
+			}
+			if ( $t['delete'] ) {
+				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['delete'] ) );
+				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ] );
+				if ( is_wp_error( $r ) ) return $fail( $r );
+				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
+			}
+		}
+
+		if ( $plan['active_plugins'] !== null ) {
+			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ] );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+			$log( 'active_plugins' );
+		}
+
+		$r = $c->post( '/job/finish', [ 'job' => $job ] );
+		if ( is_wp_error( $r ) ) return $fail( $r );
+
+		return [ 'job' => $job, 'stale' => $stale ];
+	}
+}
