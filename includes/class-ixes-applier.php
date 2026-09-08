@@ -71,6 +71,7 @@ class IXES_Applier {
 		$dir = self::job_dir( $job );
 		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return;
 		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		if ( ! is_array( $meta ) ) $meta = [ 'set_inserted' => [] ];
 		$meta['set_inserted'][ $table ] = array_merge( (array) ( $meta['set_inserted'][ $table ] ?? [] ), $rows );
 		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
 	}
