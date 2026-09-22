@@ -105,9 +105,10 @@ class IXES_Planner {
 		return wp_json_encode( $p, JSON_PRETTY_PRINT );
 	}
 
-	public static function save( array $plan ) {
+	public static function save( array $plan, $kind = 'diff' ) {
 		$dir = ixes_storage_dir() . '/plans'; wp_mkdir_p( $dir );
-		$path = $dir . '/plan-' . $plan['env'] . '-' . date( 'Ymd-His', $plan['created'] ) . '.json';
+		$stamp = date( 'Ymd-His', $plan['created'] ?? time() );
+		$path  = $dir . '/plan-' . ( $kind === 'pull' ? 'pull-' : '' ) . $plan['env'] . '-' . $stamp . '.json';
 		file_put_contents( $path, json_encode( $plan ) );
 		return $path;
 	}

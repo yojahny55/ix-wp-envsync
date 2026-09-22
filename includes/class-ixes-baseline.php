@@ -28,8 +28,19 @@ class IXES_Baseline {
 			$this->pdo->exec( 'DELETE FROM rows; DELETE FROM files; DELETE FROM meta;' );
 		} else {
 			$this->json = [ 'rows' => [], 'files' => [], 'meta' => [] ];
+			$this->save_json();
 		}
-		$this->meta( 'created_at', time() );
+	}
+
+	/** Marks the baseline as complete. Called once the pull has committed tables and finished files. */
+	public function commit() { $this->meta( 'created_at', time() ); }
+
+	public function delete_table( $table ) {
+		if ( $this->pdo ) {
+			$st = $this->pdo->prepare( 'DELETE FROM rows WHERE tbl = ?' ); $st->execute( [ $table ] );
+		} else {
+			unset( $this->json['rows'][ $table ] ); $this->save_json();
+		}
 	}
 
 	public function write_rows( $table, array $map ) {

@@ -52,6 +52,7 @@ class IXES_Pull {
 		$transfer = array_keys( array_diff_assoc( $remote, $local ) );
 		$delete   = array_keys( array_diff_key( $local, $remote ) );
 		return [
+			'created' => time(),
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
 			'tables' => $info['tables'],
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
@@ -119,6 +120,7 @@ class IXES_Pull {
 
 		IXES_Transfer::after_import( IXES_Env::local_url(), IXES_Env::local_abspath() );
 		IXES_Transfer::offset_auto_increment();
+		$bl->commit();
 		$log( 'done' );
 		return true;
 	}

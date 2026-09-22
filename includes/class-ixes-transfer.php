@@ -174,6 +174,11 @@ class IXES_Transfer {
 		return $wpdb->prefix . 'ixes_tmp_' . substr( $table, strlen( $wpdb->prefix ) );
 	}
 
+	public static function tmp_exists( $table ) {
+		global $wpdb;
+		return (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', self::tmp_name( $table ) ) );
+	}
+
 	private static $local_columns = [];
 
 	public static function local_columns( $table ) {
@@ -201,7 +206,7 @@ class IXES_Transfer {
 		return true;
 	}
 
-	public static function import_rows( $table, array $rows, array $pairs ) {
+	public static function import_rows( $table, array $rows, array $pairs, $replace = false ) {
 		global $wpdb;
 		if ( ! $rows ) return 0;
 		$tmp   = self::tmp_name( $table );
@@ -223,7 +228,7 @@ class IXES_Transfer {
 				}
 				$vals[] = '(' . implode( ',', $cells ) . ')';
 			}
-			$sql = "INSERT INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
+			$sql = ( $replace ? 'REPLACE' : 'INSERT' ) . " INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
 			$ok  = $wpdb->query( $sql );
 			if ( $ok === false ) return new WP_Error( 'import_failed', "table {$table}: " . $wpdb->last_error );
 			$inserted += count( $batch );

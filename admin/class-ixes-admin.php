@@ -40,7 +40,7 @@ class IXES_Admin {
 			echo '</ul>';
 		}
 
-		$plans = glob( ixes_storage_dir() . '/plans/plan-*.json' );
+		$plans = array_filter( (array) glob( ixes_storage_dir() . '/plans/plan-*.json' ), function ( $f ) { return strpos( basename( $f ), 'plan-pull-' ) !== 0; } );
 		if ( $plans ) {
 			sort( $plans ); $plan = json_decode( file_get_contents( end( $plans ) ), true );
 			if ( is_array( $plan ) ) echo '<h2>Last plan (' . esc_html( basename( end( $plans ) ) ) . ')</h2><pre style="background:#fff;padding:12px;overflow:auto">' . esc_html( IXES_Planner::render_text( $plan ) ) . '</pre>';
