@@ -386,7 +386,7 @@ Options that are specific to one environment stay put on both sides: `siteurl`, 
 
 **The token is an admin-level credential.** It grants write access to the database and to wp-content, including plugin PHP. Treat it like a password. Rotate it if it leaks.
 
-**A pull is not resumable.** If it fails partway, the database is already replaced while files are only partly copied, which can leave a plugin half-updated and the site erroring. Fix the cause and run the pull again; it will finish the remaining files. A push does not have this problem, because it snapshots first and can be rolled back.
+**A pull that stops partway leaves the local site half-updated until you finish it.** Files may be only partly copied, which can leave a plugin half-updated and the site erroring. Fix the cause and run the same pull again; it resumes where it stopped (see [If a pull is interrupted](#if-a-pull-is-interrupted)). A push does not have this problem, because it snapshots first and can be rolled back.
 
 **File permissions matter.** If plugins were installed through the browser, their folders are owned by the web-server user, and a pull run from your shell cannot write into them. The error names the folder, its owner and its mode. The usual fix, adjusted for your user and web-server group:
 
