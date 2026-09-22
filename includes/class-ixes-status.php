@@ -8,6 +8,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class IXES_Status {
 	const LOCK_STALE_MIN = 10;   // minutes before a remote lock is presumed dead
 	const BASELINE_OLD_DAYS = 7;
+	// ponytail: a fresh install has 3-4 wp_posts rows (Hello world, Sample page, Privacy policy, an auto-draft); any real site has far more. Check users too if this ever misfires.
+	const FRESH_MAX_POSTS = 5;
 	// rule order (the contract above): unconfigured, remote_only, unreachable, old_remote, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
 	// admin page renders this synchronously on a cache miss, so a dead remote must fail fast and stay under wp-admin's max_execution_time
 	const INFO_TIMEOUT = 10;
@@ -65,7 +67,7 @@ class IXES_Status {
 	private static function env_facts( array $env, callable $info_for, array $ctx ) {
 		$now = $ctx['now'];
 		$e = [ 'url' => $env['url'], 'label' => $env['label'] ?? '', 'reachable' => false, 'error' => null, 'remote_version' => null, 'version_ok' => null, 'auth_via' => null,
-			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
+			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
 		$info = $info_for( $env );
 		if ( is_wp_error( $info ) ) { $e['error'] = $info->get_error_message(); }
 		else {
@@ -73,6 +75,7 @@ class IXES_Status {
 			$e['remote_version'] = (string) ( $info['plugin'] ?? '' );
 			$e['version_ok'] = $e['remote_version'] === '' ? null : version_compare( $e['remote_version'], $ctx['hub_version'], '>=' );
 			$e['auth_via'] = $info['auth_via'] ?? null;
+			foreach ( (array) ( $info['tables'] ?? [] ) as $t ) if ( $t['name'] === ( $info['prefix'] ?? '' ) . 'posts' ) $e['remote_posts'] = (int) $t['rows'];
 			if ( ! empty( $info['lock']['job'] ) ) {
 				$st = $info['lock']['started'] ?? null;
 				$e['remote_lock'] = [ 'job' => $info['lock']['job'], 'started' => $st, 'age_minutes' => $st ? (int) floor( ( $now - $st ) / 60 ) : null ];
@@ -91,6 +94,7 @@ class IXES_Status {
 		$lock = $e['remote_lock'];
 		if ( $lock && ( $lock['age_minutes'] === null || $lock['age_minutes'] >= self::LOCK_STALE_MIN ) ) return $cmd( "wp envsync unlock {$name}", 'a push started ' . ( $lock['age_minutes'] === null ? 'some time' : $lock['age_minutes'] . ' minutes' ) . ' ago never finished' );
 		if ( $e['interrupted_pull'] ) return $cmd( "wp envsync pull {$name}", 'an interrupted pull can be resumed (or start over with --fresh)' );
+		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" );
 		if ( empty( $e['baseline']['created_at'] ) ) return $cmd( "wp envsync pull {$name}", 'no baseline: pull before any push' );
 		if ( $e['baseline']['age_days'] >= self::BASELINE_OLD_DAYS ) return $cmd( "wp envsync diff {$name}", "baseline is {$e['baseline']['age_days']} days old; consider pulling first" );
 		return $cmd( "wp envsync diff {$name}", 'ready' );

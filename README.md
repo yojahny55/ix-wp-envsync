@@ -140,6 +140,60 @@ Run `status` whenever you're unsure what state a site is in. It names the one co
 
 ---
 
+## First deploy: local to a new site
+
+You built the site locally and production (or staging) is a fresh WordPress install. There is no baseline yet, and pulling first would overwrite your work with the empty site. Push with `--force` instead, then pull once to record the baseline.
+
+> `status` spots this case. When there is no baseline and the remote has 5 posts or fewer (a fresh install), it recommends `wp envsync push <env> --force --dry-run` instead of `pull`.
+
+1. **On the new site:** install WordPress with the **same table prefix** as your local site (the plugin stops on a mismatch). Upload the plugin zip, activate it, and copy the token from **Tools → EnvSync**.
+2. **On your local site (the hub):** register it and check the connection:
+
+   ```bash
+   wp envsync env add prod https://client.com --token=PASTE_TOKEN --label=prod
+   wp envsync status prod
+   ```
+
+3. **Preview.** Nothing moves:
+
+   ```bash
+   wp envsync push prod --force --dry-run
+   ```
+
+4. **Push:**
+
+   ```bash
+   wp envsync push prod --force
+   ```
+
+   The remote takes a snapshot first, so `wp envsync rollback prod` undoes it.
+
+5. **Record the baseline:**
+
+   ```bash
+   wp envsync pull prod
+   ```
+
+   Both sides are identical now, so this changes nothing locally. From here on, use the normal [day-to-day](#day-to-day) loop, without `--force`.
+
+What `--force` does when there is no baseline:
+
+| Row or file | Result |
+|---|---|
+| Only on local | Inserted on the remote |
+| On both sides, different | **Local overwrites the remote** |
+| Only on the remote | Kept. Nothing is deleted |
+
+Check these before you push:
+
+- **Users come from local.** Local user #1 replaces the remote's admin, so afterwards you log in with your **local** username and password.
+- **Dev plugins go too.** Query Monitor, debug tools and the like are copied and activated. Deactivate them locally first, or narrow the push, for example `--only=db,themes,uploads`.
+- **The remote should be empty.** Nothing is deleted, so pushing onto an old live site leaves its old posts and pages next to yours. To replace an existing site, reinstall WordPress on it first.
+- **What stays on the remote:** its own `siteurl`/`home`, cron, transients and EnvSync token. Local URLs in content are rewritten to the remote's URL. `wp-config.php`, `.htaccess`, caches, `.git/` and `node_modules/` are never sent.
+- **Big uploads are fine.** Files go up in resumable chunks. If the push dies, run `wp envsync status prod`; it tells you what to do next (usually `unlock`, then push again).
+
+---
+
 ## Sync only part of a site
 
 You don't always need the whole thing. `--only=`, `--tables=` and `--paths=` narrow a `pull`, `diff` or `push` down to just the part you're working on.
@@ -262,7 +316,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 
 - `--dry-run`, `--yes` — as above.
 - `--plan=<file>` — apply a plan saved earlier. Refuses if anything it covers has changed on the remote since.
-- `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Avoid it; pull first instead.
+- `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
