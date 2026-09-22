@@ -1,6 +1,8 @@
 <?php
 use PHPUnit\Framework\TestCase;
 
+class IXES_TestGadget { public static $woke = false; public function __wakeup() { self::$woke = true; } }
+
 class HasherTest extends TestCase {
 	private $pairs;
 	protected function setUp(): void {
@@ -45,6 +47,18 @@ class HasherTest extends TestCase {
 	public function test_algo_negotiation_falls_back_to_sha1() {
 		$this->assertSame( 'sha1', IXES_Hasher::algo( [ 'sha1', 'md5' ] ) );
 		$this->assertContains( IXES_Hasher::algo( null ), [ 'xxh128', 'sha1' ] );
+	}
+	public function test_serialized_object_is_never_instantiated() {
+		$in = 'O:15:"IXES_TestGadget":1:{s:1:"u";s:20:"https://client.com/x";}';
+		IXES_TestGadget::$woke = false;
+		$out = IXES_Hasher::normalize( $in, $this->pairs );
+		$this->assertFalse( IXES_TestGadget::$woke, '__wakeup must not run on DB strings' );
+		$this->assertSame( $in, $out, 'unknown classes are opaque and round-trip unchanged' );
+	}
+	public function test_stdclass_still_rewritten() {
+		$o = new stdClass; $o->u = 'https://client.com/x';
+		$out = unserialize( IXES_Hasher::normalize( serialize( $o ), $this->pairs ) );
+		$this->assertSame( '{{URL}}/x', $out->u );
 	}
 	public function test_null_and_int_columns_survive() {
 		$pp = IXES_Hasher::placeholders( 'https://c.com', '/a' );

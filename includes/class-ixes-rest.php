@@ -22,7 +22,7 @@ class IXES_Rest {
 	}
 
 	public static function auth( WP_REST_Request $req ) {
-		if ( ! IXES_Auth::https_ok( home_url() ) && ! is_ssl() ) return new WP_Error( 'https', 'https required', [ 'status' => 403 ] );
+		if ( ! is_ssl() && ! ( defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP ) ) return new WP_Error( 'https', 'https required', [ 'status' => 403 ] );
 		$hdr = $req->get_header( 'authorization' );
 		if ( ! $hdr || stripos( $hdr, 'Bearer ' ) !== 0 ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
 		$token = trim( substr( $hdr, 7 ) );

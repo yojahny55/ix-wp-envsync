@@ -11,6 +11,9 @@ if ( ! function_exists( 'maybe_unserialize' ) ) {
 		return $r === false ? $v : $r;
 	}
 }
+if ( ! function_exists( 'is_serialized' ) ) {
+	function is_serialized( $v ) { return is_string( $v ) && ( $v === 'b:0;' || preg_match( '/^[aOsibdN]:/', $v ) ); }
+}
 if ( ! function_exists( 'maybe_serialize' ) ) {
 	function maybe_serialize( $v ) { return ( is_array( $v ) || is_object( $v ) ) ? serialize( $v ) : $v; }
 }
