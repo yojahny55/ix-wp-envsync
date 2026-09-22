@@ -357,6 +357,22 @@ class IXES_CLI {
 	}
 
 	/**
+	 * Show this site's role, each environment's state, and the one recommended next command.
+	 * ## OPTIONS
+	 *
+	 * [<env>]
+	 * : Only this environment.
+	 *
+	 * [--json]
+	 * : Machine-readable report (what agents should read).
+	 */
+	public function status( $args, $assoc ) {
+		$r = IXES_Status::build( $args[0] ?? null );
+		if ( ! empty( $assoc['json'] ) ) { WP_CLI::line( wp_json_encode( $r, JSON_PRETTY_PRINT ) ); return; }
+		WP_CLI::line( IXES_Status::render_text( $r ) );
+	}
+
+	/**
 	 * Show or rotate this site's remote token.
 	 * ## OPTIONS
 	 *
