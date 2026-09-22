@@ -20,6 +20,15 @@ class IXES_Applier {
 		$l = self::parse_lock( get_transient( self::LOCK ) );
 		return $l['job'] === '' ? null : $l;
 	}
+	/** Whatever the hub sent, meta.json gets arrays where the admin page and rollback expect arrays. */
+	public static function plan_meta_shape( $raw ) {
+		$raw = is_array( $raw ) ? $raw : [];
+		$files = is_array( $raw['files'] ?? null ) ? $raw['files'] : [];
+		return [
+			'tables' => is_array( $raw['tables'] ?? null ) ? $raw['tables'] : [],
+			'files'  => [ 'push' => (array) ( $files['push'] ?? [] ), 'delete' => (array) ( $files['delete'] ?? [] ) ],
+		] + $raw;
+	}
 
 	private static function jobs_dir() { $d = ixes_storage_dir() . '/jobs'; wp_mkdir_p( $d ); return $d; }
 	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
@@ -39,6 +48,7 @@ class IXES_Applier {
 
 	public static function job_start( array $p ) {
 		global $wpdb;
+		$p['plan_meta'] = self::plan_meta_shape( $p['plan_meta'] ?? null );
 		if ( self::current_job() !== '' ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
 		$job = date( 'Ymd-His' ) . '-' . substr( md5( uniqid() ), 0, 6 );
 		set_transient( self::LOCK, self::lock_value( $job, time() ), HOUR_IN_SECONDS );

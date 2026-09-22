@@ -49,7 +49,7 @@ class IXES_Admin {
 		$rjobs = glob( ixes_storage_dir() . '/jobs/*/meta.json' );
 		if ( $rjobs ) {
 			sort( $rjobs ); $m = json_decode( file_get_contents( end( $rjobs ) ), true );
-			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ) ), count( $m['plan']['tables'] ) );
+			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ?? '' ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ?? 0 ) ), count( (array) ( $m['plan']['tables'] ?? [] ) ) );
 		}
 		echo '</div>';
 	}

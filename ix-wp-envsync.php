@@ -40,6 +40,7 @@ function ixes_storage_dir() {
 }
 
 register_activation_hook( __FILE__, function () {
+	if ( is_multisite() ) wp_die( 'EnvSync does not support multisite yet.', 'EnvSync', [ 'back_link' => true ] );
 	ixes_storage_dir();
 	if ( ! get_option( 'ixes_token_hash' ) ) {
 		IXES_Auth::install_token();

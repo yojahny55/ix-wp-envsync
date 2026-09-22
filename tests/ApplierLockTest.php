@@ -13,4 +13,11 @@ class ApplierLockTest extends TestCase {
 	public function test_parse_lock_of_nothing() {
 		$this->assertSame( [ 'job' => '', 'started' => null ], IXES_Applier::parse_lock( false ) );
 	}
+	public function test_plan_meta_shape_survives_garbage() {
+		$this->assertSame( [ 'tables' => [], 'files' => [ 'push' => [], 'delete' => [] ] ], IXES_Applier::plan_meta_shape( 'not an array' ) );
+		$s = IXES_Applier::plan_meta_shape( [ 'tables' => [ 'wp_posts' => [ 'pk' => 'ID' ] ], 'files' => [ 'push' => 'x' ] ] );
+		$this->assertSame( [ 'wp_posts' => [ 'pk' => 'ID' ] ], $s['tables'] );
+		$this->assertSame( [ 'x' ], $s['files']['push'] );
+		$this->assertSame( [], $s['files']['delete'] );
+	}
 }
