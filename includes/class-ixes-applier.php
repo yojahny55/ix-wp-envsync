@@ -292,19 +292,11 @@ class IXES_Applier {
 		foreach ( $plan['files']['push'] as $rel ) {
 			$abs = WP_CONTENT_DIR . '/' . $rel;
 			if ( ! is_file( $abs ) ) continue;
-			$sha = hash_file( 'sha256', $abs ); $total = filesize( $abs ); $offset = 0;
-			$fh = fopen( $abs, 'rb' );
-			$refused = false;
-			do {
-				$data = fread( $fh, 2097152 ); $offset += strlen( $data ); $final = $offset >= $total || $data === '';
-				$step = [ 'job' => $job, 'kind' => 'file', 'path' => $rel, 'offset' => $offset - strlen( $data ), 'data' => base64_encode( $data ), 'final' => $final, 'sha256' => $sha ];
-				if ( $step['offset'] === 0 && array_key_exists( $rel, $file_hashes ) ) { $step['expect'] = $file_hashes[ $rel ]; $step['algo'] = $plan['algo']; }
-				$r = $c->post( '/job/step', $step );
-				if ( is_wp_error( $r ) ) { fclose( $fh ); return $fail( $r ); }
-				if ( ! empty( $r['refused'] ) ) { $stale[] = "file: {$rel}"; $refused = true; break; }
-			} while ( ! $final );
-			fclose( $fh );
-			if ( ! $refused ) $log( "file {$rel}" );
+			$meta = array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : [];
+			$r = $c->send_file( $job, $rel, $abs, $meta );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+			if ( $r['refused'] ) { $stale[] = "file: {$rel}"; continue; }
+			$log( "file {$rel}" );
 		}
 		if ( $plan['files']['delete'] ) {
 			$expect = array_intersect_key( $file_hashes, array_flip( $plan['files']['delete'] ) );

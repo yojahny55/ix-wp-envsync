@@ -103,19 +103,13 @@ class IXES_Pull {
 		$skipped = [];
 		foreach ( $plan['files']['transfer'] as $i => $rel ) {
 			$log( "file " . ( $i + 1 ) . "/{$n} {$rel}" );
-			$offset = 0;
-			do {
-				$res = $c->post( '/file/get', [ 'path' => $rel, 'offset' => $offset, 'size' => 2097152 ] );
-				if ( is_wp_error( $res ) ) return $res;
-				$data  = base64_decode( $res['data'] );
-				$offset += strlen( $data );
-				$final = $offset >= (int) $res['total'];
-				$w = IXES_Transfer::write_file_chunk( $rel, $offset - strlen( $data ), $data, $final, $res['sha256'] );
-				// A path this side refuses is a policy difference between the two plugin
-				// versions, not a transfer failure: skip it rather than abort the pull.
-				if ( is_wp_error( $w ) && $w->get_error_code() === 'bad_path' ) { $skipped[] = $rel; break; }
-				if ( is_wp_error( $w ) ) return $w;
-			} while ( ! $final );
+			$r = $c->fetch_file( $rel, function ( $offset, $data, $final, $sha ) use ( $rel ) {
+				return IXES_Transfer::write_file_chunk( $rel, $offset, $data, $final, $sha );
+			} );
+			// A path this side refuses is a policy difference between the two plugin
+			// versions, not a transfer failure: skip it rather than abort the pull.
+			if ( is_wp_error( $r ) && $r->get_error_code() === 'bad_path' ) { $skipped[] = $rel; continue; }
+			if ( is_wp_error( $r ) ) return $r;
 		}
 		if ( $skipped ) $log( 'skipped ' . count( $skipped ) . ' excluded path(s) offered by the remote, e.g. ' . $skipped[0] );
 		$undeleted = 0;
