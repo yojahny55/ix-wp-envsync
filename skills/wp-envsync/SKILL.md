@@ -52,12 +52,15 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `interrupted_pull`: `{started, table, files_done, files_total}` means a pull stopped partway.
 - `remote_posts`: the number of rows in the remote's posts table. 5 or fewer means a fresh install.
 
+In a push plan, `new_tables` lists tables the push will create on the remote (shown as `(new)` in the table). Mention them to the user.
+
 ## What to do for each `next.command`
 
 | `next.command` | `next.why` | What you do |
 |---|---|---|
 | `wp envsync env add <name> <url> --token=…` | not set up, or cannot reach | Ask the user for the token from that site's **Tools → EnvSync** page. Never invent one. |
 | `upload the release zip to <url>` | remote runs X, hub runs Y | Tell the user to upload the release zip through **Plugins → Add New → Upload** on that site. You cannot do it. |
+| `wp envsync rescue <env>` | … crashes on every request | Run it, report what it shows, then offer `--rollback` or `--plugins-off` (see Diagnosing failures). |
 | `wp envsync unlock <env>` | a push … never finished | Tell the user a push died. Nothing is rolled back. Then run `unlock <env> --yes` after approval. |
 | `wp envsync pull <env>` | an interrupted pull can be resumed | Run `pull <env> --dry-run` (it shows where it stopped), then `pull <env> --yes` to resume. Use `--fresh` only if resume is refused. |
 | `wp envsync push <env> --force --dry-run` | looks like a fresh install | This is a first deploy. See [First deploy](#first-deploy-onto-a-fresh-install). |
@@ -133,8 +136,8 @@ Shows the row field by field, on both sides.
 ## Reading a diff
 
 ```
-prod  ←  local          baseline: 2026-09-08 02:06
-  wp_posts   push 12   insert 3   delete 1   prod-wins 2   kept-prod 41
+| table    | push | insert | delete | prod-wins | kept-prod |
+| wp_posts |   12 |      3 |      1 |         2 |        41 |
 ```
 
 - `push`: the user's changes going up.
@@ -143,9 +146,23 @@ prod  ←  local          baseline: 2026-09-08 02:06
 - `prod-wins`: both sides changed it, and the remote's version stays. Report these.
 - `kept-prod`: the remote changed it and the user did not. This is normal.
 
-`baseline: NONE (2-way)` means no pull has been done. Pull first, unless this is a first deploy.
+`baseline: none` (in JSON, `baseline_at: null`) means no pull has been done. Pull first, unless this is a first deploy (`first_deploy: true` in the manifest).
 
-Use `diff <env> --json` when you need to reason about a plan in code rather than show it.
+Show the user the table output. For your own reasoning, read the manifest instead (next section).
+
+## Files agents read
+
+Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>` as its last line and writes two files under `wp-content/envsync-*/`:
+
+- `plans/<kind>-<env>-latest.json`: the plan (`schema: 1`). `summary` has `{files, delete, bytes, rows, conflicts}`, followed by `tables[]`, `plugins[]`, `themes[]`, `other[]`, `conflicts[]` and `warnings[]`.
+  - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
+  - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
+  - `--format=json` prints the same object.
+- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
+
+What to report to the user from the manifest: plugins with `change` `turns on` or `turns off`, version changes on plugins and themes, `summary.delete` when it is not zero, and every entry in `conflicts`.
+
+When you run commands, output is piped, so there is no progress bar, only one summary line per stage. Do not add `--verbose` unless the user wants per-file lines.
 
 ## Commands
 
@@ -157,11 +174,12 @@ All commands take `--path=<site>`.
 | `envsync env add <name> [<url>] [--token=] [--label=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
-| `envsync diff <env> [--json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
 `--only` takes `db,files,uploads,themes,plugins,mu-plugins`. `--tables` takes table names or globs and implies `--only=db`. `--paths` takes wp-content paths or globs and implies `--only=files`.
@@ -185,6 +203,19 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 **A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
 **`503 … no available server`**: the host's proxy (Traefik on Coolify) has no healthy container for the site. WordPress never saw the request. Retrying will not help. Tell the user to restart the container in Coolify and to check that the site files are on a persistent volume. If the remote runs a plugin older than 0.4.2, maintenance mode during a push fails the health check and causes exactly this, so the remote needs the new zip first.
+
+**`old_remote` / "creates N table(s) the remote lacks"**: the push has to create plugin tables, and the remote plugin is older than 0.5.1. Tell the user to upload the current zip to that site first. Nothing was changed.
+
+**`500 … critical error`, or `status` says `wp envsync rescue <env>`**: the remote crashes on every request, usually because of a plugin. Normal commands cannot reach it, so use the rescue endpoint, which loads no plugins:
+1. Run `wp envsync rescue <env>` and report the active plugins, the lock and the last job.
+2. Then offer the user two options:
+   - `rescue <env> --rollback --yes` undoes the push.
+   - `rescue <env> --plugins-off --yes` keeps the push and switches every plugin except EnvSync off; the user reactivates them in wp-admin.
+
+   Wait for their choice.
+3. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
+
+A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
 
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 

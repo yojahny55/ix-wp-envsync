@@ -26,6 +26,14 @@ class IXES_Env {
 		update_option( self::OPTION, $all, false );
 	}
 
+	/** Update one stored field without re-validating the whole env (used for values the remote reports). */
+	public static function set_field( $name, $key, $value ) {
+		$all = self::all();
+		if ( ! isset( $all[ $name ] ) ) return;
+		$all[ $name ][ $key ] = $value;
+		update_option( self::OPTION, $all, false );
+	}
+
 	public static function remove( $name ) {
 		$all = self::all();
 		unset( $all[ $name ] );

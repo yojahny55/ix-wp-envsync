@@ -35,4 +35,15 @@ class ApplierLockTest extends TestCase {
 		$this->assertSame( 1, $this->upgrading_for( [ 'REMOTE_ADDR' => '::1', 'REQUEST_URI' => '/' ] ) );
 		$this->assertSame( 1, $this->upgrading_for( [ 'REMOTE_ADDR' => '172.18.0.5', 'REQUEST_URI' => '/wp-json/envsync/v1/job/step', 'HTTP_X_ENVSYNC_SIG' => 'x' ] ) );
 	}
+	public function test_create_table_refusal() {
+		$ok = "CREATE TABLE `wp_aiowps_events` (\n  `id` bigint(20) NOT NULL AUTO_INCREMENT,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB";
+		$this->assertNull( IXES_Applier::create_table_refusal( 'wp_aiowps_events', $ok, 'wp_', false ) );
+		$this->assertSame( 'table already exists', IXES_Applier::create_table_refusal( 'wp_aiowps_events', $ok, 'wp_', true ) );
+		$this->assertSame( 'table name refused', IXES_Applier::create_table_refusal( 'other_events', $ok, 'wp_', false ) );
+		$this->assertSame( 'table name refused', IXES_Applier::create_table_refusal( 'wp_ixes_x', $ok, 'wp_', false ) );
+		$this->assertSame( 'table name refused', IXES_Applier::create_table_refusal( 'wp_x`y', $ok, 'wp_', false ) );
+		$this->assertSame( 'not a CREATE TABLE for that table', IXES_Applier::create_table_refusal( 'wp_users2', $ok, 'wp_', false ) );
+		$this->assertSame( 'one statement only', IXES_Applier::create_table_refusal( 'wp_aiowps_events', $ok . '; DROP TABLE wp_users', 'wp_', false ) );
+		$this->assertSame( 'unsupported table option', IXES_Applier::create_table_refusal( 'wp_aiowps_events', 'CREATE TABLE `wp_aiowps_events` ( `id` int ) SELECT * FROM wp_users', 'wp_', false ) );
+	}
 }

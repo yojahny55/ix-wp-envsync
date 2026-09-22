@@ -2,7 +2,7 @@
 /**
  * Plugin Name: IX WP EnvSync
  * Description: Pull full snapshots from prod/staging, push a 3-way diffed delta back. Prod always wins. Preview before every sync.
- * Version: 0.4.2
+ * Version: 0.5.1
  * Author: Yojahny Chavez
  * License: GPL-2.0-or-later
  * Text Domain: ix-wp-envsync
@@ -11,7 +11,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'IXES_VERSION', '0.4.2' );
+define( 'IXES_VERSION', '0.5.1' );
 define( 'IXES_FILE', __FILE__ );
 define( 'IXES_PATH', plugin_dir_path( __FILE__ ) );
 define( 'IXES_URL', plugin_dir_url( __FILE__ ) );

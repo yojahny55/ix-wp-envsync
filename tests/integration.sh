@@ -52,6 +52,10 @@ B envsync push prod --yes
 A post term list "$NEW" category --field=name | grep -qx ixcat || die "term relationship (no-PK set_insert) not pushed"
 grep -q v2 "$IXES_A/wp-content/themes/ixtest/style.css" || die "theme file not pushed"
 [ -f "$IXES_A/.maintenance" ] && die "maintenance file left behind"
+SD=$(ls -d "$IXES_B/wp-content/envsync-"*)
+php -r '$j=json_decode(file_get_contents($argv[1]),true); exit(($j["schema"]??0)===1 && isset($j["summary"]["files"],$j["plugins"],$j["themes"],$j["other"])?0:1);' "$SD/plans/push-prod-latest.json" || die "push manifest missing or malformed"
+php -r '$j=json_decode(file_get_contents($argv[1]),true); exit(($j["ok"]??false)===true && !empty($j["job"])?0:1);' "$SD/runs/push-prod-latest.json" || die "push result file missing or not ok"
+B envsync diff prod --format=json | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit(($j["kind"]??"")==="diff"?0:1);' || die "diff --format=json is not the manifest"
 
 # 5. conflict: both edit X after a fresh pull
 B envsync pull prod --yes
@@ -142,5 +146,48 @@ sleep 3   # A runs behind a long-lived php -S process with opcache.revalidate_fr
 B envsync env ping prod | grep -q "auth via X-Envsync-Token" || die "ping did not report the fallback carrier"
 B envsync pull prod --fresh --yes >/dev/null || die "pull failed with Authorization stripped"
 wp --path="$IXES_A" config delete ENVSYNC_TEST_DROP_AUTHORIZATION >/dev/null
+sleep 3
+
+# 13. a plugin's own table exists only on the hub: push creates it, fills it, and rollback drops it; many small files go in batches
+A db query "DROP TABLE IF EXISTS wp_ixdemo_log" >/dev/null; B db query "DROP TABLE IF EXISTS wp_ixdemo_log" >/dev/null
+B db query "CREATE TABLE wp_ixdemo_log ( id bigint(20) unsigned NOT NULL AUTO_INCREMENT, msg varchar(50) NOT NULL, PRIMARY KEY (id) ) ENGINE=InnoDB" >/dev/null
+B db query "INSERT INTO wp_ixdemo_log (msg) VALUES ('one'),('two'),('three')" >/dev/null
+mkdir -p "$IXES_B/wp-content/themes/ixtest/parts"
+for i in $(seq 1 150); do echo "/* part $i */" > "$IXES_B/wp-content/themes/ixtest/parts/p$i.css"; done
+B envsync diff prod | grep -q "wp_ixdemo_log (new)" || die "new table not shown in the plan"
+B envsync push prod --yes >/dev/null || die "push with a new table failed"
+[ "$(A db query "SELECT COUNT(*) FROM wp_ixdemo_log" --skip-column-names)" = "3" ] || die "new table not created and filled on the remote"
+[ "$(ls "$IXES_A/wp-content/themes/ixtest/parts" | wc -l)" = "150" ] || die "batched small files missing on the remote"
+cmp "$IXES_A/wp-content/themes/ixtest/parts/p77.css" "$IXES_B/wp-content/themes/ixtest/parts/p77.css" || die "batched file content differs"
+B envsync rollback prod --yes >/dev/null
+[ -z "$(A db query "SHOW TABLES LIKE 'wp_ixdemo_log'" --skip-column-names)" ] || die "rollback did not drop the created table"
+[ -e "$IXES_A/wp-content/themes/ixtest/parts/p1.css" ] && die "rollback left batched files behind"
+B db query "DROP TABLE wp_ixdemo_log" >/dev/null; rm -rf "$IXES_B/wp-content/themes/ixtest/parts"
+
+# 14. a plugin that fatals on every web request (not under WP-CLI)
+BOOM='<?php
+/*
+Plugin Name: IX Boom
+*/
+if ( ! defined( "WP_CLI" ) ) throw new Error( "ixboom" );'
+mkdir -p "$IXES_B/wp-content/plugins/ixboom"; echo "$BOOM" > "$IXES_B/wp-content/plugins/ixboom/ixboom.php"
+B plugin activate ixboom >/dev/null
+# 14a. a push that switches it on breaks the remote at the last step; normal abort fails, so it rolls back through rescue.php
+OUT=$(B envsync push prod --yes 2>&1) && die "a push that breaks the remote reported success"
+echo "$OUT" | grep -q "through the rescue endpoint" || die "push did not roll back through rescue:\n$OUT"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" != "500" ] || die "remote still broken after the rescue rollback"
+A --skip-plugins option get active_plugins --format=json | grep -q ixboom && die "rescue rollback left ixboom active"
+[ -e "$IXES_A/wp-content/plugins/ixboom/ixboom.php" ] && die "rescue rollback left the pushed plugin file"
+[ -f "$IXES_A/.maintenance" ] && die "rescue rollback left .maintenance behind"
+# 14b. a remote broken outside a push: status points at rescue, and --plugins-off revives it
+mkdir -p "$IXES_A/wp-content/plugins/ixboom"; echo "$BOOM" > "$IXES_A/wp-content/plugins/ixboom/ixboom.php"
+A --skip-plugins option update active_plugins '["ix-wp-envsync/ix-wp-envsync.php","ixboom/ixboom.php"]' --format=json >/dev/null
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" = "500" ] || die "test setup: remote is not broken"
+B envsync status prod | grep -q "Next: wp envsync rescue prod" || die "status did not recommend rescue for a crashing remote"
+B envsync rescue prod | grep -q "ixboom/ixboom.php" || die "rescue status did not list the active plugins"
+B envsync rescue prod --plugins-off --yes >/dev/null || die "rescue --plugins-off failed"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" != "500" ] || die "remote still broken after --plugins-off"
+B envsync env ping prod >/dev/null || die "REST not back after --plugins-off"
+rm -rf "$IXES_A/wp-content/plugins/ixboom"; B plugin deactivate ixboom >/dev/null; rm -rf "$IXES_B/wp-content/plugins/ixboom"
 
 echo "ALL OK"

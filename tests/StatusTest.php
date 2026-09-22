@@ -33,6 +33,11 @@ class StatusTest extends TestCase {
 		$this->assertStringContainsString( 'env add prod', $n['command'] );
 		$this->assertStringContainsString( 'cURL error 7', $n['why'] );
 	}
+	public function test_crashing_remote_suggests_rescue() {
+		$info = function () { return new WP_Error( 'remote_500', 'remote 500 on /info: <p>There has been a critical error on this website.</p>' ); };
+		$n = $this->next( $this->ctx(), $info );
+		$this->assertSame( 'wp envsync rescue prod', $n['command'] );
+	}
 	public function test_old_remote_version() {
 		$n = $this->next( $this->ctx(), $this->info( [ 'plugin' => '0.3.0' ] ) );
 		$this->assertStringContainsString( 'upload the release zip', $n['command'] );

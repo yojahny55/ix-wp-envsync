@@ -116,6 +116,30 @@ class IXES_Applier {
 		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
 	}
 
+	private static function record_meta( $job, $key, $value ) {
+		$dir = self::job_dir( $job );
+		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return;
+		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		if ( ! is_array( $meta ) ) return;
+		$meta[ $key ][] = $value;
+		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
+	}
+
+	/**
+	 * A push may create a table the remote lacks (a plugin's own tables on a first deploy).
+	 * Only one plain CREATE TABLE for exactly that name, under this site's prefix, for a table that does not exist yet.
+	 * @return string|null why it is refused
+	 */
+	public static function create_table_refusal( $table, $sql, $prefix, $exists ) {
+		if ( ! preg_match( '/^[A-Za-z0-9_]+$/', $table ) || strpos( $table, $prefix ) !== 0 ) return 'table name refused';
+		if ( strpos( $table, $prefix . 'ixes_' ) === 0 ) return 'table name refused';
+		if ( $exists ) return 'table already exists';
+		if ( ! preg_match( '/^CREATE TABLE `' . preg_quote( $table, '/' ) . '` \(/', $sql ) ) return 'not a CREATE TABLE for that table';
+		if ( strpos( $sql, ';' ) !== false ) return 'one statement only';
+		if ( preg_match( '/\b(SELECT|DATA\s+DIRECTORY|INDEX\s+DIRECTORY|UNION)\b/i', $sql ) ) return 'unsupported table option';
+		return null;
+	}
+
 	// same read-modify-write as record_set_inserted: keep the value the option had before this job touched it
 	private static function record_option_before( $job, $name ) {
 		$dir = self::job_dir( $job );
@@ -196,6 +220,31 @@ class IXES_Applier {
 			return [ 'ok' => true ];
 		}
 
+		if ( $kind === 'files' ) {
+			$items = IXES_Batch::decode( (string) ( $p['bin'] ?? '' ) );
+			if ( is_wp_error( $items ) ) return $items;
+			$refused = [];
+			foreach ( $items as $it ) {
+				list( $m, $bytes ) = $it;
+				$rel = (string) $m['path'];
+				// a retried batch finds files it already wrote: identical content is done, not a conflict
+				if ( self::file_matches( $rel, (string) ( $m['sha256'] ?? '' ), 'sha256' ) ) continue;
+				if ( array_key_exists( 'expect', $m ) && ! self::file_matches( $rel, $m['expect'], $m['algo'] ?? 'sha1' ) ) { $refused[] = $rel; continue; }
+				$r = IXES_Transfer::write_file_chunk( $rel, 0, $bytes, true, (string) ( $m['sha256'] ?? '' ) );
+				if ( is_wp_error( $r ) ) return $r;
+			}
+			return [ 'ok' => true, 'refused' => $refused ];
+		}
+
+		if ( $kind === 'create_table' ) {
+			$table = (string) ( $p['table'] ?? '' ); $sql = (string) ( $p['sql'] ?? '' );
+			$why = self::create_table_refusal( $table, $sql, $wpdb->prefix, IXES_Transfer::valid_table( $table ) );
+			if ( $why ) return new WP_Error( 'bad_create', $why, [ 'status' => 400 ] );
+			self::record_meta( $p['job'], 'created_tables', $table );
+			if ( $wpdb->query( $sql ) === false ) return new WP_Error( 'create_failed', "cannot create {$table}: {$wpdb->last_error}", [ 'status' => 500 ] );
+			return [ 'ok' => true ];
+		}
+
 		if ( $kind === 'delete_files' ) {
 			$expect  = (array) ( $p['expect'] ?? [] );
 			$algo    = $p['algo'] ?? 'sha1';
@@ -215,6 +264,60 @@ class IXES_Applier {
 		}
 
 		return new WP_Error( 'bad_kind', 'unknown step' );
+	}
+
+	private static function raw_lock() {
+		global $wpdb;
+		$v = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", '_transient_' . self::LOCK ) );
+		return self::parse_lock( $v === null ? false : $v );
+	}
+
+	private static function last_job() {
+		$jobs = glob( self::jobs_dir() . '/*', GLOB_ONLYDIR ); sort( $jobs );
+		return $jobs ? basename( end( $jobs ) ) : null;
+	}
+
+	public static function rescue_status() {
+		$l = self::raw_lock();
+		return [ 'ok' => true, 'plugin' => IXES_VERSION, 'active_plugins' => array_values( (array) get_option( 'active_plugins', [] ) ),
+			'lock' => $l['job'] === '' ? null : $l, 'maintenance' => file_exists( ABSPATH . '.maintenance' ), 'last_job' => self::last_job() ];
+	}
+
+	/** Keep only EnvSync active; the previous list is kept in ixes_rescue_plugins_before. */
+	public static function rescue_plugins_off() {
+		// folder/file, not plugin_basename(): plugins are not loaded here, so a symlinked plugin is not registered and would resolve wrongly
+		$keep = basename( dirname( IXES_FILE ) ) . '/' . basename( IXES_FILE );
+		$before = array_values( (array) get_option( 'active_plugins', [] ) );
+		if ( $before !== [ $keep ] ) update_option( 'ixes_rescue_plugins_before', $before, false );
+		update_option( 'active_plugins', [ $keep ] );
+		return [ 'ok' => true, 'deactivated' => array_values( array_diff( $before, [ $keep ] ) ) ];
+	}
+
+	/** Roll back $job (default: the locked job, else the last one), then drop the lock and the maintenance file. */
+	public static function rescue_rollback( $job = null ) {
+		global $wpdb;
+		$l = self::raw_lock();
+		$job = $job ?: ( $l['job'] !== '' ? $l['job'] : self::last_job() );
+		if ( ! $job ) return new WP_Error( 'nojob', 'no push job to roll back', [ 'status' => 404 ] );
+		$r = self::rollback( [ 'job' => $job ] );
+		self::maintenance( false );
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name IN (%s, %s)", '_transient_' . self::LOCK, '_transient_timeout_' . self::LOCK ) );
+		return $r;
+	}
+
+	/**
+	 * Run one remote call; on failure ask $on_error what to do: retry | plugins_off (then retry) | rollback | leave.
+	 * No $on_error (agents, --yes) means rollback. $choice receives the final answer.
+	 */
+	public static function attempt( callable $op, callable $on_error = null, callable $plugins_off = null, &$choice = null ) {
+		while ( true ) {
+			$r = $op();
+			if ( ! is_wp_error( $r ) ) return $r;
+			$choice = $on_error ? $on_error( $r ) : 'rollback';
+			if ( $choice === 'retry' ) continue;
+			if ( $choice === 'plugins_off' && $plugins_off ) { $plugins_off(); continue; }
+			return $r;
+		}
 	}
 
 	public static function job_finish( array $p ) {
@@ -286,6 +389,9 @@ class IXES_Applier {
 			}
 		}
 		foreach ( (array) ( $meta['created_files'] ?? [] ) as $rel ) IXES_Transfer::delete_file( $rel );
+		foreach ( (array) ( $meta['created_tables'] ?? [] ) as $table ) {
+			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
+		}
 		wp_cache_flush();
 		return [ 'restored' => $n, 'job' => $job ];
 	}
@@ -299,8 +405,9 @@ class IXES_Applier {
 
 	// ---------- hub side ----------
 
-	public static function apply( array $env, IXES_Client $c, array $plan, callable $log ) {
+	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, IXES_Progress $progress = null, callable $on_error = null ) {
 		global $wpdb;
+		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
 
@@ -322,27 +429,67 @@ class IXES_Applier {
 		}
 		$plan_meta = [ 'env' => $env['name'], 'created' => $plan['created'], 'tables' => $touch, 'files' => [ 'push' => $plan['files']['push'], 'delete' => $plan['files']['delete'] ] ];
 
+		$caps = $c->caps();
+		if ( ! empty( $plan['new_tables'] ) && ! in_array( 'create_table', $caps, true ) ) {
+			return new WP_Error( 'old_remote', 'this push creates ' . count( $plan['new_tables'] ) . ' table(s) the remote lacks (' . implode( ', ', array_keys( $plan['new_tables'] ) ) . "); upload plugin 0.5.1 or newer to {$env['url']} first" );
+		}
 		$start = $c->post( '/job/start', [ 'plan_meta' => $plan_meta ] );
 		if ( is_wp_error( $start ) ) return $start;
 		$job = $start['job'];
 
 		$stale = [];
-		$fail = function ( $err ) use ( $c, $job ) { $c->post( '/job/abort', [ 'job' => $job ] ); return $err; };
+		$choice = null;
+		$plugins_off = function () use ( $c, $progress ) {
+			$x = $c->rescue( 'plugins_off' );
+			$progress->note( is_wp_error( $x ) ? 'could not switch plugins off: ' . $x->get_error_message() : 'switched off on the remote: ' . implode( ', ', (array) $x['deactivated'] ) );
+		};
+		$call = function ( callable $op ) use ( $on_error, $plugins_off, &$choice ) { return self::attempt( $op, $on_error, $plugins_off, $choice ); };
+		$fail = function ( WP_Error $err ) use ( $c, $job, $env, $progress, &$choice ) {
+			$progress->end();
+			$msg = $err->get_error_message();
+			if ( $choice === 'leave' ) return new WP_Error( $err->get_error_code(), "{$msg}\nLeft as is: job {$job} still holds the lock on {$env['name']}. Next: wp envsync status {$env['name']}" );
+			$a = $c->post( '/job/abort', [ 'job' => $job ] );
+			if ( ! is_wp_error( $a ) ) return new WP_Error( $err->get_error_code(), "{$msg}\nRolled back job {$job}." );
+			$x = $c->rescue( 'rollback', [ 'job' => $job ] );
+			if ( ! is_wp_error( $x ) ) return new WP_Error( $err->get_error_code(), "{$msg}\nThe remote could not roll back normally (" . $a->get_error_message() . "); rolled back job {$job} through the rescue endpoint." );
+			return new WP_Error( $err->get_error_code(), "{$msg}\nRollback failed (" . $a->get_error_message() . ') and so did the rescue endpoint (' . $x->get_error_message() . "). Next: wp envsync rescue {$env['name']}" );
+		};
 
 		// files first
 		$file_hashes = (array) ( $plan['remote_file_hashes'] ?? [] );
-		foreach ( $plan['files']['push'] as $rel ) {
-			$abs = WP_CONTENT_DIR . '/' . $rel;
-			if ( ! is_file( $abs ) ) continue;
-			$meta = array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : [];
-			$r = $c->send_file( $job, $rel, $abs, $meta );
+		$present = array_values( array_filter( $plan['files']['push'], function ( $rel ) { return is_file( WP_CONTENT_DIR . '/' . $rel ); } ) );
+		$progress->stage( 'Files', array_sum( array_map( function ( $rel ) { return (int) filesize( WP_CONTENT_DIR . '/' . $rel ); }, $present ) ), count( $present ) );
+		$on_bytes = function ( $b ) use ( $progress ) { $progress->bytes( $b ); };
+		$meta_for = function ( $rel ) use ( $file_hashes, $plan ) { return array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : []; };
+		$sizes = [];
+		foreach ( $present as $rel ) $sizes[ $rel ] = (int) filesize( WP_CONTENT_DIR . '/' . $rel );
+		$packed = in_array( 'batch', $caps, true ) ? IXES_Batch::pack( $sizes ) : [ 'batches' => [], 'large' => $present ];
+		foreach ( $packed['batches'] as $batch ) {
+			$items = [];
+			foreach ( $batch as $rel ) {
+				$data = (string) file_get_contents( WP_CONTENT_DIR . '/' . $rel );
+				$items[] = [ [ 'path' => $rel, 'sha256' => hash( 'sha256', $data ) ] + $meta_for( $rel ), $data ];
+			}
+			$r = $call( function () use ( $c, $job, $items ) { return $c->send_batch( $job, $items ); } );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+			$refused = array_flip( (array) ( $r['refused'] ?? [] ) );
+			foreach ( $batch as $rel ) {
+				$progress->bytes( $sizes[ $rel ] );
+				if ( isset( $refused[ $rel ] ) ) { $stale[] = "file: {$rel}"; continue; }
+				$progress->item( $rel );
+			}
+		}
+		foreach ( $packed['large'] as $rel ) {
+			$r = $call( function () use ( $c, $job, $rel, $meta_for, $on_bytes ) { return $c->send_file( $job, $rel, WP_CONTENT_DIR . '/' . $rel, $meta_for( $rel ), $on_bytes ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			if ( $r['refused'] ) { $stale[] = "file: {$rel}"; continue; }
-			$log( "file {$rel}" );
+			$progress->item( $rel );
 		}
+		$progress->end();
 		if ( $plan['files']['delete'] ) {
 			$expect = array_intersect_key( $file_hashes, array_flip( $plan['files']['delete'] ) );
-			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ] );
+			$step = [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ];
+			$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "file: {$ref}";
 		}
@@ -353,48 +500,61 @@ class IXES_Applier {
 		foreach ( array_keys( $plan['tables'] ) as $n ) if ( ! in_array( $n, $ordered, true ) && $n !== $wpdb->options ) $ordered[] = $n;
 		if ( isset( $plan['tables'][ $wpdb->options ] ) ) $ordered[] = $wpdb->options;
 
+		$progress->stage( 'Database', null, count( $ordered ) + ( $plan['active_plugins'] !== null ? 1 : 0 ) );
+		foreach ( (array) ( $plan['new_tables'] ?? [] ) as $name => $sql ) {
+			$step = [ 'job' => $job, 'kind' => 'create_table', 'table' => $name, 'sql' => $sql ];
+			$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+		}
+		// plugins switch on last, after their tables and rows exist: never through the options rows
+		$ap_id = isset( $plan['tables'][ $wpdb->options ] ) ? (string) $wpdb->get_var( "SELECT option_id FROM {$wpdb->options} WHERE option_name = 'active_plugins'" ) : '';
 		foreach ( $ordered as $name ) {
 			$t = $plan['tables'][ $name ]; $pk = $t['pk'];
 			$ids = array_merge( (array) $t['push'], (array) $t['insert'] );
+			if ( $name === $wpdb->options && $ap_id !== '' ) $ids = array_values( array_filter( $ids, function ( $id ) use ( $ap_id ) { return (string) $id !== $ap_id; } ) );
 			if ( $ids ) {
 				foreach ( array_chunk( $ids, 500 ) as $chunk ) {
 					$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $chunk ) );
 					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $chunk ) );
 					$rows = $wpdb->get_results( "SELECT * FROM `{$name}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
-					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
+					$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
+					$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
-				$log( "{$name} rows " . count( $ids ) );
 			}
 			if ( $t['set_insert'] ) {
 				// no-pk table: send full rows whose hash is in set_insert
 				$rows = []; $next = null;
 				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'] ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
 				foreach ( array_chunk( $rows, 500 ) as $chunk ) {
-					$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ] );
+					$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
+					$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
-				$log( "{$name} set_insert " . count( $rows ) );
 			}
 			if ( $t['delete'] ) {
 				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['delete'] ) );
-				$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'extra' => $extra_prod, 'algo' => $plan['algo'] ] );
+				$step = [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
+				$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
 				foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 			}
+			$progress->item( $name );
 		}
 
 		if ( $plan['active_plugins'] !== null ) {
-			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ] );
+			$step = [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ];
+			$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
-			$log( 'active_plugins' );
+			$progress->item( 'active_plugins' );
 		}
+		$progress->end();
 
-		$r = $c->post( '/job/finish', [ 'job' => $job ] );
+		$r = $call( function () use ( $c, $job ) { return $c->post( '/job/finish', [ 'job' => $job ] ); } );
 		if ( is_wp_error( $r ) ) return $fail( $r );
 
 		return [ 'job' => $job, 'stale' => $stale ];

@@ -19,11 +19,23 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => [ 'binary', 'scope' ],
+			'caps'            => [ 'binary', 'scope', 'batch', 'create_table', 'rescue' ],
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
+			'inventory'       => self::inventory(),
+			'rescue_url'      => plugins_url( 'rescue.php', IXES_FILE ),
 		];
+	}
+
+	/** Installed plugin and theme versions keyed by slug (plugin folder, or file name for single-file plugins). */
+	public static function inventory() {
+		if ( ! function_exists( 'get_plugins' ) ) require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		$plugins = [];
+		foreach ( get_plugins() as $file => $data ) $plugins[ IXES_Report::plugin_slug( $file ) ] = (string) $data['Version'];
+		$themes = [];
+		foreach ( wp_get_themes() as $slug => $theme ) $themes[ $slug ] = (string) $theme->get( 'Version' );
+		return [ 'plugins' => $plugins, 'themes' => $themes, 'stylesheet' => get_stylesheet() ];
 	}
 
 	public static function pk_of( $table ) {
@@ -119,7 +131,7 @@ class IXES_Transfer {
 		return $out;
 	}
 
-	public static function file_manifest( $cursor, $limit, array $excludes, $algo ) {
+	public static function file_manifest( $cursor, $limit, array $excludes, $algo, $with_sizes = false ) {
 		$all = self::all_files( $excludes );
 		$start = 0;
 		if ( $cursor !== null && $cursor !== '' ) {
@@ -136,16 +148,16 @@ class IXES_Transfer {
 			}
 		}
 		$slice = array_slice( $all, $start, $limit );
-		$files = [];
+		$files = []; $sizes = [];
 		foreach ( $slice as $rel ) {
 			$p = WP_CONTENT_DIR . '/' . $rel;
 			if ( ! is_readable( $p ) ) continue;
 			$h = IXES_Hashcache::hash( $p, $rel, $algo );
-			if ( $h !== false ) $files[ $rel ] = $h;
+			if ( $h !== false ) { $files[ $rel ] = $h; if ( $with_sizes ) $sizes[ $rel ] = (int) filesize( $p ); }
 		}
 		IXES_Hashcache::save();
 		$next = ( $start + $limit < count( $all ) ) ? end( $slice ) : null;
-		return [ 'files' => $files, 'next' => $next ];
+		return $with_sizes ? [ 'files' => $files, 'sizes' => $sizes, 'next' => $next ] : [ 'files' => $files, 'next' => $next ];
 	}
 
 	public static function safe_rel( $rel ) {

@@ -53,13 +53,15 @@ Re-running `env add` updates only the options you pass. Your excludes, label and
 **Baseline.** A pull records a fingerprint of every row and file, taken right after it finishes. `diff` and `push` compare that fingerprint against production and against your local site.
 
 ```
-prod  ←  local          baseline: 2026-09-08 02:06
+prod  ←  local
+  baseline: 2026-09-08 02:06
 ```
 
 **Pull before push.** Without a baseline, diff can only compare two sides, not three. It says so instead of guessing.
 
 ```
-prod  ←  local          baseline: NONE (2-way)   !! everything different would OVERWRITE prod
+prod  ←  local
+  baseline: none — first deploy, local overwrites prod
 ```
 
 **Prod wins.** When you and production both changed the same row, production's version is kept. Your edit is not applied.
@@ -98,16 +100,45 @@ wp envsync diff prod
 prints a plan like this:
 
 ```
-prod  ←  local          baseline: 2026-09-08 02:06
-DB
-  wp_posts        push 12   insert 3   delete 1   prod-wins 2   kept-prod 41
-  wp_postmeta     push 87   insert 19  delete 4   prod-wins 0   kept-prod 310
-  wp_wc_orders    push 0    insert 0   delete 0   prod-wins 0   kept-prod 58
-FILES
-  themes/mk-adventure/            push 14   delete 2
-  plugins/advanced-custom-fields/ kept-prod
+prod  ←  local
+  baseline: 2026-09-08 02:06
+  512 files · 38.4 MB · 131 rows
+
+DATABASE
++-------------+------+--------+--------+-----------+-----------+
+| table       | push | insert | delete | prod-wins | kept-prod |
++-------------+------+--------+--------+-----------+-----------+
+| wp_posts    |   12 |      3 |      1 |         2 |        41 |
+| wp_postmeta |   87 |     19 |      4 |         0 |       310 |
++-------------+------+--------+--------+-----------+-----------+
+
+PLUGINS
++-----------------------+-------+--------+-----------------+----------+
+| plugin                | files | size   | version         | active   |
++-----------------------+-------+--------+-----------------+----------+
+| polylang              |   535 | 9.8 MB | 3.6.1 → 3.7.0   | stays on |
+| wp-mail-smtp          |   875 | 7.2 MB | — → 4.4.0       | turns on |
++-----------------------+-------+--------+-----------------+----------+
+
+THEMES
++--------------+-------+--------+---------+--------+
+| theme        | files | size   | version | active |
++--------------+-------+--------+---------+--------+
+| mk-adventure |    14 | 0.3 MB | 1.4     | active |
++--------------+-------+--------+---------+--------+
+
+OTHER FILES
++---------------+-------+---------+
+| folder        | files | size    |
++---------------+-------+---------+
+| uploads/2026/ |    88 | 21.1 MB |
++---------------+-------+---------+
+
 CONFLICTS (prod wins)
   wp_posts             #2231  Services
+
+plan saved: …/plans/plan-prod-20260908-020644.json
+manifest: …/plans/diff-prod-latest.json
 ```
 
 Every DB and FILES row uses the same counts:
@@ -121,6 +152,17 @@ Every DB and FILES row uses the same counts:
 | `kept-prod` | production changed it, you did not; left alone |
 
 `CONFLICTS (prod wins)` lists every `prod-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
+
+In **PLUGINS** and **THEMES**, `version` reads *before → after* for the site being changed. `—` means not installed, and `?` means the other site runs a plugin older than 0.5.1 that doesn't report versions. `active` says whether the plugin turns on, turns off or stays on, and which theme becomes active. A plugin appears even with no files moving if only its on/off state changes.
+
+While a push or pull runs you see one progress bar per stage, with the transfer rate for files:
+
+```
+Files     1.2 GB / 3.0 GB  4.1 MB/s  40% [=========>              ] 4:52 / 12:10
+Database  5/10             50% [============>             ] 0:03 / 0:06
+```
+
+Add `--verbose` for the old one-line-per-file output. When the output is piped, as it is for agents and CI, there is no bar, only one line per stage (`files: 6953 (212.4 MB) in 3m12s, 1.1 MB/s`).
 
 `push` shows the same plan, then waits for your confirmation. Add `--yes` to skip the prompt, `--dry-run` to stop after the plan.
 
@@ -219,6 +261,18 @@ The resume state lives at `wp-content/envsync-*/pull-<env>.json`. It's written a
 
 ## When something is stuck
 
+**A push broke the remote (every page shows "critical error").** Usually a plugin that crashes once it is switched on. Normal requests fail too, so EnvSync ships a separate rescue endpoint, `rescue.php`, that starts WordPress without any plugins or theme:
+
+```bash
+wp envsync rescue prod                 # what the remote looks like with plugins off
+wp envsync rescue prod --rollback      # undo the push that broke it (lock and maintenance cleared too)
+wp envsync rescue prod --plugins-off   # keep the push, switch every plugin except EnvSync off
+```
+
+`status` recommends `rescue` when a remote answers with a 500. A push that breaks the remote mid-way rolls back through rescue on its own. When you run `push` in a terminal without `--yes`, a failed step asks what to do instead of quitting: retry, roll back, switch the remote's plugins off and retry, or leave it as is.
+
+Rescue needs 0.5.1 or newer on the remote. It also won't work where the host or a security plugin blocks PHP files under `wp-content/plugins` (All-In-One Security has such an option). For a remote on an older version, use the host's file manager and rename the crashing plugin's folder under `wp-content/plugins`. WordPress then switches it off.
+
 **A push died and left a lock.** `status` shows the job id and how long it has been stuck:
 
 ```
@@ -289,6 +343,8 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 
 - `--dry-run` — print the plan and stop.
 - `--details` — break the file counts down by directory, so you can see what would be deleted.
+- `--verbose` — one line per file and table instead of progress bars.
+- `--format=json` — with `--dry-run`, print the manifest instead of the tables.
 - `--yes` — skip the confirmation.
 - `--flush-cache` — discard the file hash cache and rehash everything.
 - `--fresh` — Discard an interrupted pull and start over.
@@ -303,7 +359,7 @@ This **overwrites the local database and wp-content**. It is the destructive one
 Shows what a push would do. Reads nothing but hashes over the wire, changes nothing on either side, and saves the plan to the storage folder.
 
 - `--details` — list every affected row id and file path.
-- `--json` — machine-readable output.
+- `--format=json` (or `--json`) — print the manifest instead of the tables. See [For AI agents](#for-ai-agents).
 - `--table=<table> --id=<pk>` — field-by-field diff of a single row, useful for understanding one conflict.
 - `--flush-cache` — rehash all files.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
@@ -314,19 +370,32 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 
 Applies your changes to `<env>`. Production-changed rows are always kept.
 
-- `--dry-run`, `--yes` — as above.
+- `--dry-run`, `--yes`, `--verbose` — as above. `--format=json` with `--dry-run` prints the manifest.
 - `--plan=<file>` — apply a plan saved earlier. Refuses if anything it covers has changed on the remote since.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
-Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
+Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
+
+Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks.
+
+Tables that exist only on your site, typically ones a plugin creates for itself (Action Scheduler, security logs, SEO indexes), are created on the remote first and marked `(new)` in the plan. Plugins switch on as the last step, after their tables and data are in place. `rollback` drops any table the push created. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
 
 ### `wp envsync unlock <env>`
 
 Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back — `rollback` can still restore that push's snapshot.
 
+- `--yes` — skip the confirmation.
+
+### `wp envsync rescue <env>`
+
+Recovers a remote that crashes on every request, through `rescue.php` (no plugins, no theme loaded). With no flag it only reports the active plugins, the lock and the last job.
+
+- `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
+- `--job=<id>` — roll back this job instead.
+- `--plugins-off` — deactivate every plugin except EnvSync.
 - `--yes` — skip the confirmation.
 
 ### `wp envsync rollback <env>`
@@ -407,6 +476,15 @@ sudo find wp-content -type f -exec chmod 664 {} +
 ## For AI agents
 
 A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Copy that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff.
+
+Agents should read files rather than terminal text:
+
+| File (under `wp-content/envsync-*/`) | Written by | Holds |
+|---|---|---|
+| `plans/<kind>-<env>-latest.json` | `diff`, `push`, `pull` (including `--dry-run`) | The plan as JSON (`schema: 1`): `summary`, `tables`, `plugins`, `themes`, `other`, `conflicts`, `warnings`. Same data as the tables. |
+| `runs/<kind>-<env>-latest.json` | `push`, `pull` | The outcome: `ok`, `job`, `seconds`, `files`, `bytes`, `rows`, `stale`, `error`. Written on failure too. |
+
+`--format=json` prints the same plan to stdout. Every plan command prints the manifest path in its last line (`manifest: …`).
 
 ---
 

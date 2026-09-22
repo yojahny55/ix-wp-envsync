@@ -58,7 +58,7 @@ class IXES_Rest {
 	}
 	public static function hash_files( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		return IXES_Transfer::file_manifest( $p['cursor'] ?? null, (int) ( $p['limit'] ?? 2000 ), array_merge( IXES_Env::default_excludes(), (array) ( $p['excludes'] ?? [] ) ), sanitize_key( $p['algo'] ?? 'sha1' ) );
+		return IXES_Transfer::file_manifest( $p['cursor'] ?? null, (int) ( $p['limit'] ?? 2000 ), array_merge( IXES_Env::default_excludes(), (array) ( $p['excludes'] ?? [] ) ), sanitize_key( $p['algo'] ?? 'sha1' ), ! empty( $p['sizes'] ) );
 	}
 	public static function dump( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
