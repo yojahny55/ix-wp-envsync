@@ -31,4 +31,16 @@ class AuthTest extends TestCase {
 		define( 'ENVSYNC_ALLOW_HTTP', true );
 		$this->assertTrue( IXES_Auth::https_ok( 'http://a.local' ) );
 	}
+	public function test_step_header_is_signed() {
+		$step = '{"job":"j1","kind":"file","path":"a.txt","offset":0}';
+		$sig  = IXES_Auth::sign( $this->tok, 'POST', '/envsync/v1/job/step', 5, 'bytes', $step );
+		$this->assertTrue( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/envsync/v1/job/step', 5, 'bytes', $sig, 5, $step ) );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/envsync/v1/job/step', 5, 'bytes', $sig, 5, '{"job":"j2"}' ), 'tampered step header must fail' );
+	}
+	public function test_old_client_signature_without_step_still_verifies() {
+		// a 0.2.x hub signs METHOD\nPATH\nTS\nsha256(body) with no fifth line
+		$msg = "POST\n/x\n1\n" . hash( 'sha256', 'b' );
+		$old = hash_hmac( 'sha256', $msg, $this->tok );
+		$this->assertTrue( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $old, 1 ) );
+	}
 }
