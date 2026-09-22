@@ -26,7 +26,7 @@ PY=$(A post create --post_title="Y" --post_content="y1" --post_status=publish --
 mkdir -p "$IXES_A/wp-content/themes/ixtest"; echo "/* v1 */" > "$IXES_A/wp-content/themes/ixtest/style.css"
 
 # 1. pull
-B envsync pull prod --yes
+B envsync pull prod --fresh --yes   # --fresh: a leftover resume state from an earlier run must not be auto-resumed here
 [ "$(B post get "$PX" --field=post_content)" = "x1" ] || die "pull did not bring post X"
 [ -f "$IXES_B/wp-content/themes/ixtest/style.css" ] || die "pull did not bring theme file"
 
@@ -72,9 +72,16 @@ B envsync rollback prod --yes
 [ "$(A post get "$PY" --field=post_content)" = "y2" ] || die "rollback did not restore Y (got $(A post get "$PY" --field=post_content))"
 
 # 7. a pull killed mid-way resumes and completes
-dd if=/dev/urandom of="$IXES_A/wp-content/uploads/big.bin" bs=1M count=40 status=none
-# clean start with the big file in the plan; this is the run that gets killed mid-transfer
-timeout 8 env WP_CLI_STRICT_ARGS_MODE=1 wp --path="$IXES_B" --url="$IXES_B_URL" envsync pull prod --fresh --yes >/dev/null 2>&1 || true
+dd if=/dev/urandom of="$IXES_A/wp-content/uploads/big.bin" bs=1M count=200 status=none
+# clean start with the big file in the plan; this run is killed the moment the partial file appears,
+# so the kill lands inside the file phase whatever the machine's speed
+rm -f "$IXES_B/wp-content/uploads/big.bin" "$IXES_B/wp-content/uploads/big.bin.ixes-tmp"
+# run wp directly (not the B function): $! must be the php process, or kill -9 only takes the subshell and the pull keeps running
+wp --path="$IXES_B" --url="$IXES_B_URL" envsync pull prod --fresh --yes >/dev/null 2>&1 &
+PULL_PID=$!
+for _ in $(seq 1 600); do [ -f "$IXES_B/wp-content/uploads/big.bin.ixes-tmp" ] && break; sleep 0.1; done
+[ -f "$IXES_B/wp-content/uploads/big.bin.ixes-tmp" ] || die "pull never reached the big file (still running: $(kill -0 $PULL_PID 2>/dev/null && echo yes || echo no))"
+kill -9 $PULL_PID 2>/dev/null || true; wait $PULL_PID 2>/dev/null || true
 ls "$IXES_B/wp-content/envsync-"*/pull-prod.json >/dev/null 2>&1 || die "no resume state after an interrupted pull"
 OUT=$(B envsync pull prod --yes)
 echo "$OUT" | grep -q "interrupted pull" || die "resume prompt not shown"
