@@ -27,7 +27,7 @@ class ChunkerTest extends TestCase {
 	}
 	public function test_non_retryable_code_keeps_size_but_counts_attempt() {
 		$c = new IXES_Chunker();
-		$this->assertTrue( $c->fail( 500 ) );
+		$this->assertFalse( $c->fail( 500 ) );
 		$this->assertSame( 2097152, $c->size() );
 		$this->assertSame( 1, $c->attempts() );
 	}

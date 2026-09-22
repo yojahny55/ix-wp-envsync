@@ -44,7 +44,10 @@ class IXES_Client {
 			$msg  = is_array( $json ) && isset( $json['message'] ) ? $json['message'] : $body_s;
 			return new WP_Error( 'remote_' . $code, "remote {$code} on {$route}: {$msg}", [ 'status' => $code ] );
 		}
-		$is_bin = ( $opts['accept'] ?? 'json' ) === 'binary';
+		// Request intent decides what we asked for; the response content-type confirms what we actually got.
+		// A binary request answered with a non-octet-stream content-type (e.g. a JSON error body on a 2xx) falls through to the JSON parse below instead of being handed to the caller as file bytes.
+		$ctype_res = (string) wp_remote_retrieve_header( $res, 'content-type' );
+		$is_bin    = ( $opts['accept'] ?? 'json' ) === 'binary' && ( $ctype_res === '' || stripos( $ctype_res, 'application/octet-stream' ) === 0 );
 		if ( $is_bin ) {
 			$h = [];
 			foreach ( (array) wp_remote_retrieve_headers( $res ) as $k => $v ) $h[ strtolower( $k ) ] = is_array( $v ) ? end( $v ) : $v;
@@ -115,8 +118,10 @@ class IXES_Client {
 			}
 			if ( isset( $res['headers'] ) ) { // binary
 				$data = (string) $res['body']; $total = (int) $res['headers']['x-envsync-total']; $sha = (string) $res['headers']['x-envsync-sha256'];
+			} elseif ( isset( $res['data'] ) ) { // legacy base64 JSON
+				$data = base64_decode( (string) $res['data'] ); $total = (int) ( $res['total'] ?? 0 ); $sha = (string) ( $res['sha256'] ?? '' );
 			} else {
-				$data = base64_decode( (string) ( $res['data'] ?? '' ) ); $total = (int) ( $res['total'] ?? 0 ); $sha = (string) ( $res['sha256'] ?? '' );
+				return new WP_Error( 'transfer', "{$rel}: unexpected response at offset {$offset}: " . wp_json_encode( $res ) );
 			}
 			$ch->ok( microtime( true ) - $t0 ); $ch->reset_attempts();
 			$next  = $offset + strlen( $data );

@@ -75,6 +75,18 @@ class ClientLoopTest extends TestCase {
 		$this->assertSame( 'application/json', $c->calls[0]['headers']['Accept'] );
 	}
 
+	public function test_fetch_file_does_not_treat_a_json_error_body_as_binary_bytes() {
+		$c = $this->client();
+		$c->set_caps( [ 'binary' ] );
+		$c->script = [ function () {
+			return [ 'response' => [ 'code' => 200 ], 'headers' => [ 'content-type' => 'application/json' ], 'body' => json_encode( [ 'code' => 'bad_path', 'message' => 'path refused' ] ) ];
+		} ];
+		$called = false;
+		$r = $c->fetch_file( 'a.txt', function () use ( &$called ) { $called = true; return true; } );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertFalse( $called, 'writer must not be called for an unrecognized response' );
+	}
+
 	public function test_send_file_puts_metadata_in_step_header_and_bytes_in_body() {
 		$c = $this->client();
 		$c->set_caps( [ 'binary' ] );

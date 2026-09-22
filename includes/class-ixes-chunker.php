@@ -32,11 +32,12 @@ class IXES_Chunker {
 		}
 	}
 
-	/** @return bool true = retry the same offset, false = budget spent */
+	/** @return bool true = retry the same offset, false = non-retryable code or budget spent */
 	public function fail( $code ) {
 		$this->attempts++;
 		$this->fast_streak = 0;
-		if ( self::retryable( $code ) ) $this->size = max( $this->min, (int) ( $this->size / 2 ) );
+		if ( ! self::retryable( $code ) ) return false;
+		$this->size = max( $this->min, (int) ( $this->size / 2 ) );
 		return $this->attempts < $this->retries;
 	}
 
