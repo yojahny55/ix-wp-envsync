@@ -22,10 +22,14 @@ class ClientLoopTest extends TestCase {
 			private $data = [];
 			public function __construct( $d ) { foreach ( $d as $k => $v ) $this->data[ strtolower( $k ) ] = $v; }
 			public function getAll() { return $this->data; }
-			#[\ReturnTypeWillChange] public function offsetExists( $k ) { return isset( $this->data[ strtolower( $k ) ] ); }
-			#[\ReturnTypeWillChange] public function offsetGet( $k ) { return $this->data[ strtolower( $k ) ] ?? null; }
-			#[\ReturnTypeWillChange] public function offsetSet( $k, $v ) { $this->data[ strtolower( $k ) ] = $v; }
-			#[\ReturnTypeWillChange] public function offsetUnset( $k ) { unset( $this->data[ strtolower( $k ) ] ); }
+			#[\ReturnTypeWillChange]
+			public function offsetExists( $k ) { return isset( $this->data[ strtolower( $k ) ] ); }
+			#[\ReturnTypeWillChange]
+			public function offsetGet( $k ) { return $this->data[ strtolower( $k ) ] ?? null; }
+			#[\ReturnTypeWillChange]
+			public function offsetSet( $k, $v ) { $this->data[ strtolower( $k ) ] = $v; }
+			#[\ReturnTypeWillChange]
+			public function offsetUnset( $k ) { unset( $this->data[ strtolower( $k ) ] ); }
 		};
 	}
 	private static function bin( $body, $total, $sha ) {
