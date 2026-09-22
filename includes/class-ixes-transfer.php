@@ -19,6 +19,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
+			'caps'            => [ 'binary', 'scope' ],
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 		];
 	}
@@ -151,17 +152,19 @@ class IXES_Transfer {
 		return $rel;
 	}
 
-	public static function file_chunk( $rel, $offset, $size ) {
+	public static function file_chunk( $rel, $offset, $size, $as_binary = false ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused', [ 'status' => 400 ] );
 		$p = WP_CONTENT_DIR . '/' . $rel;
 		if ( ! is_file( $p ) ) return new WP_Error( 'not_found', 'no such file', [ 'status' => 404 ] );
 		$fh = fopen( $p, 'rb' ); fseek( $fh, $offset ); $data = fread( $fh, $size ); fclose( $fh );
+		if ( $data === false ) $data = '';
 		// cached: this used to rehash the whole file on every 2 MB chunk (O(n^2) on big media)
 		$sha = IXES_Hashcache::hash( $p, $rel, 'sha256' );
 		IXES_Hashcache::save();
 		if ( $sha === false ) return new WP_Error( 'io', 'cannot hash file', [ 'status' => 500 ] );
-		return [ 'data' => base64_encode( $data === false ? '' : $data ), 'size' => strlen( (string) $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
+		if ( $as_binary ) return [ 'bin' => $data, 'size' => strlen( $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
+		return [ 'data' => base64_encode( $data ), 'size' => strlen( $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
 	}
 
 	// ---------- hub side ----------

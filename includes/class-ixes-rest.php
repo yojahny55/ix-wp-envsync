@@ -16,7 +16,7 @@ class IXES_Rest {
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
 		$r( '/dirs',       'POST', function () { return IXES_Transfer::dir_sizes(); } );
 		foreach ( [ 'start', 'step', 'finish', 'abort' ] as $op ) {
-			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, $req->get_json_params() ); } );
+			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
 		}
 		$r( '/rollback', 'POST', function ( $req ) { return self::applier( 'rollback', $req->get_json_params() ); } );
 	}
@@ -29,9 +29,14 @@ class IXES_Rest {
 		$ok = IXES_Auth::verify(
 			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
 			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),
-			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' )
+			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ),
+			null, (string) $req->get_header( 'x-envsync-step' )
 		);
 		return $ok ? true : new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
+	}
+
+	private static function wants_binary( WP_REST_Request $req ) {
+		return stripos( (string) $req->get_header( 'accept' ), 'application/octet-stream' ) !== false;
 	}
 
 	private static function pairs( array $p ) {
@@ -52,9 +57,33 @@ class IXES_Rest {
 		return IXES_Transfer::dump( sanitize_text_field( $p['table'] ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ) );
 	}
 	public static function file_get( WP_REST_Request $req ) {
-		$p = $req->get_json_params();
-		return IXES_Transfer::file_chunk( $p['path'] ?? '', (int) ( $p['offset'] ?? 0 ), (int) ( $p['size'] ?? 2097152 ) );
+		$p   = $req->get_json_params();
+		$bin = self::wants_binary( $req );
+		$r   = IXES_Transfer::file_chunk( $p['path'] ?? '', (int) ( $p['offset'] ?? 0 ), (int) ( $p['size'] ?? 2097152 ), $bin );
+		if ( is_wp_error( $r ) || ! $bin ) return $r;
+		// Raw bytes: bypass the JSON encoder entirely so a 4 MB chunk costs 4 MB, not 3x that.
+		nocache_headers();
+		header( 'Content-Type: application/octet-stream' );
+		header( 'Content-Length: ' . $r['size'] );
+		header( 'X-Envsync-Total: ' . $r['total'] );
+		header( 'X-Envsync-Size: ' . $r['size'] );
+		header( 'X-Envsync-Sha256: ' . $r['sha256'] );
+		echo $r['bin']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary file body, not HTML
+		exit;
 	}
+
+	/** Step params: JSON body, or X-Envsync-Step header plus raw body when the hub sends octet-stream. */
+	private static function step_params( WP_REST_Request $req ) {
+		if ( stripos( (string) $req->get_header( 'content-type' ), 'application/octet-stream' ) === 0 ) {
+			$p = json_decode( (string) $req->get_header( 'x-envsync-step' ), true );
+			if ( ! is_array( $p ) ) return [];
+			$p['bin'] = (string) $req->get_body();
+			return $p;
+		}
+		$p = $req->get_json_params();
+		return is_array( $p ) ? $p : [];
+	}
+
 	private static function applier( $method, $params ) {
 		if ( ! class_exists( 'IXES_Applier' ) ) return new WP_Error( 'unavailable', 'applier missing', [ 'status' => 501 ] );
 		return call_user_func( [ 'IXES_Applier', $method ], is_array( $params ) ? $params : [] );

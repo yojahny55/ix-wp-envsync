@@ -158,7 +158,8 @@ class IXES_Applier {
 			if ( (int) ( $p['offset'] ?? 0 ) === 0 && array_key_exists( 'expect', $p ) && ! self::file_matches( $rel, $p['expect'], $p['algo'] ?? 'sha1' ) ) {
 				return [ 'ok' => false, 'refused' => [ $rel ] ];
 			}
-			$r = IXES_Transfer::write_file_chunk( $rel, (int) ( $p['offset'] ?? 0 ), base64_decode( (string) ( $p['data'] ?? '' ) ), ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
+			$bytes = array_key_exists( 'bin', $p ) ? (string) $p['bin'] : base64_decode( (string) ( $p['data'] ?? '' ) );
+			$r = IXES_Transfer::write_file_chunk( $rel, (int) ( $p['offset'] ?? 0 ), $bytes, ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
 			if ( is_wp_error( $r ) ) return $r;
 			return [ 'ok' => true ];
 		}
