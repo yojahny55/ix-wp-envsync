@@ -81,7 +81,7 @@ class IXES_Client {
 	public function paged( $route, array $body, callable $each, $cursor_key = 'from' ) {
 		$limit = isset( $body['limit'] ) ? (int) $body['limit'] : 5000;
 		$max   = $limit;
-		$next  = null;
+		$next  = $body[ $cursor_key ] ?? null;
 		do {
 			$body['limit'] = $limit;
 			$body[ $cursor_key ] = $next;

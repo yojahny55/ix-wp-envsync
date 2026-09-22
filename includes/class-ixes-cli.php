@@ -120,11 +120,33 @@ class IXES_CLI {
 	 *
 	 * [--details]
 	 * : Break the file counts down by directory.
+	 *
+	 * [--fresh]
+	 * : Discard an interrupted pull and start over.
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
+		$state = IXES_PullState::load( $env['name'] );
+		if ( $state ) {
+			$plan = is_file( (string) $state->get( 'plan' ) ) ? json_decode( file_get_contents( $state->get( 'plan' ) ), true ) : null;
+			$info = $this->fail_if_error( $c->info() );
+			$why  = ! is_array( $plan ) ? 'saved plan file is missing' : $state->refusal(
+				(string) ( $info['plugin'] ?? '' ), (array) $plan['excludes'], IXES_Pull::excludes( $env ),
+				(array) ( $plan['extra_replace'] ?? [] ), (array) $env['extra_replace'],
+				$state->get( 'table' ) ? IXES_Transfer::tmp_exists( $state->get( 'table' ) ) : true
+			);
+			if ( $why ) WP_CLI::error( "cannot resume: {$why}. Run again with --fresh to start over." );
+			WP_CLI::log( $state->describe( count( $plan['files']['transfer'] ) ) );
+			if ( ! empty( $assoc['dry-run'] ) ) return;
+			$this->confirm( $assoc, 'Resume?' );
+			$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger(), $state ) );
+			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
+			return;
+		}
 		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c ) );
+		// ... existing plan printing (rows, files, rewrite, excludes, --details) unchanged ...
 		$rows = array_sum( array_column( $plan['tables'], 'rows' ) );
 		WP_CLI::log( sprintf( "PULL %s → local\n  tables: %d (%d rows)\n  files: %d to transfer, %d to delete\n  rewrite:", $env['name'], count( $plan['tables'] ), $rows, count( $plan['files']['transfer'] ), count( $plan['files']['delete'] ) ) );
 		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "    {$p[0]}  →  {$p[1]}" );
