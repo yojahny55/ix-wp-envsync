@@ -35,14 +35,15 @@ class IXES_Client {
 		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? 120 ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
 		// ponytail: ?rest_route= works with any permalink structure; /wp-json/ 301s on plain permalinks and drops the Authorization header
-		$res = $this->transport( $this->env['url'] . '/?rest_route=' . $path, $args );
+		$res = $this->transport( $opts['url'] ?? $this->env['url'] . '/?rest_route=' . $path, $args );
 		if ( is_wp_error( $res ) ) return $res;
 		$code = wp_remote_retrieve_response_code( $res );
 		if ( $code >= 300 && $code < 400 ) return new WP_Error( 'remote_redirect', 'remote redirected to ' . wp_remote_retrieve_header( $res, 'location' ) . '; register the final URL with env add' );
 		$body_s = wp_remote_retrieve_body( $res );
 		if ( $code < 200 || $code >= 300 ) {
 			$json = json_decode( $body_s, true );
-			$msg  = is_array( $json ) && isset( $json['message'] ) ? $json['message'] : $body_s;
+			// an HTML error page (WordPress's critical-error screen, a proxy page) becomes one readable line
+			$msg  = is_array( $json ) && isset( $json['message'] ) ? $json['message'] : mb_strimwidth( trim( preg_replace( '/\s+/', ' ', strip_tags( $body_s ) ) ), 0, 200, '…' );
 			return new WP_Error( 'remote_' . $code, "remote {$code} on {$route}: {$msg}", [ 'status' => $code ] );
 		}
 		// Request intent decides what we asked for; the response content-type confirms what we actually got.
@@ -65,8 +66,26 @@ class IXES_Client {
 	public function post( $route, $body, $opts = [] ) { return $this->request( 'POST', $route, $body, $opts ); }
 
 	public function info( $timeout = null ) {
-		if ( $this->info === null ) $this->info = $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] );
+		if ( $this->info === null ) {
+			$this->info = $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] );
+			// remember where rescue.php lives while the remote still answers: it is needed exactly when it no longer does
+			$u = is_array( $this->info ) ? (string) ( $this->info['rescue_url'] ?? '' ) : '';
+			if ( $u !== '' && $u !== ( $this->env['rescue_url'] ?? '' ) && isset( $this->env['name'] ) && function_exists( 'update_option' ) ) {
+				$this->env['rescue_url'] = $u;
+				IXES_Env::set_field( $this->env['name'], 'rescue_url', $u );
+			}
+		}
 		return $this->info;
+	}
+
+	public function rescue_url() {
+		$u = (string) ( $this->env['rescue_url'] ?? '' );
+		return $u !== '' ? $u : $this->env['url'] . '/wp-content/plugins/ix-wp-envsync/rescue.php';
+	}
+
+	/** Talk to rescue.php, which answers even when a plugin fatals on every normal request. */
+	public function rescue( $action, array $extra = [] ) {
+		return $this->request( 'POST', '/rescue', [ 'action' => $action ] + $extra, [ 'url' => $this->rescue_url(), 'timeout' => 60 ] );
 	}
 
 	/** Remote capability list from /info; [] for a 0.2 remote. */

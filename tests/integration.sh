@@ -164,4 +164,30 @@ B envsync rollback prod --yes >/dev/null
 [ -e "$IXES_A/wp-content/themes/ixtest/parts/p1.css" ] && die "rollback left batched files behind"
 B db query "DROP TABLE wp_ixdemo_log" >/dev/null; rm -rf "$IXES_B/wp-content/themes/ixtest/parts"
 
+# 14. a plugin that fatals on every web request (not under WP-CLI)
+BOOM='<?php
+/*
+Plugin Name: IX Boom
+*/
+if ( ! defined( "WP_CLI" ) ) throw new Error( "ixboom" );'
+mkdir -p "$IXES_B/wp-content/plugins/ixboom"; echo "$BOOM" > "$IXES_B/wp-content/plugins/ixboom/ixboom.php"
+B plugin activate ixboom >/dev/null
+# 14a. a push that switches it on breaks the remote at the last step; normal abort fails, so it rolls back through rescue.php
+OUT=$(B envsync push prod --yes 2>&1) && die "a push that breaks the remote reported success"
+echo "$OUT" | grep -q "through the rescue endpoint" || die "push did not roll back through rescue:\n$OUT"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" != "500" ] || die "remote still broken after the rescue rollback"
+A --skip-plugins option get active_plugins --format=json | grep -q ixboom && die "rescue rollback left ixboom active"
+[ -e "$IXES_A/wp-content/plugins/ixboom/ixboom.php" ] && die "rescue rollback left the pushed plugin file"
+[ -f "$IXES_A/.maintenance" ] && die "rescue rollback left .maintenance behind"
+# 14b. a remote broken outside a push: status points at rescue, and --plugins-off revives it
+mkdir -p "$IXES_A/wp-content/plugins/ixboom"; echo "$BOOM" > "$IXES_A/wp-content/plugins/ixboom/ixboom.php"
+A --skip-plugins option update active_plugins '["ix-wp-envsync/ix-wp-envsync.php","ixboom/ixboom.php"]' --format=json >/dev/null
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" = "500" ] || die "test setup: remote is not broken"
+B envsync status prod | grep -q "Next: wp envsync rescue prod" || die "status did not recommend rescue for a crashing remote"
+B envsync rescue prod | grep -q "ixboom/ixboom.php" || die "rescue status did not list the active plugins"
+B envsync rescue prod --plugins-off --yes >/dev/null || die "rescue --plugins-off failed"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" != "500" ] || die "remote still broken after --plugins-off"
+B envsync env ping prod >/dev/null || die "REST not back after --plugins-off"
+rm -rf "$IXES_A/wp-content/plugins/ixboom"; B plugin deactivate ixboom >/dev/null; rm -rf "$IXES_B/wp-content/plugins/ixboom"
+
 echo "ALL OK"

@@ -12,6 +12,19 @@ class IXES_CLI {
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
 	private function logger() { return function ( $m ) { WP_CLI::log( $m ); }; }
+	/** In a terminal without --yes, a failed push step asks what to do; otherwise (agents, --yes) it rolls back. */
+	private function error_menu( $assoc ) {
+		if ( ! empty( $assoc['yes'] ) || IXES_Progress::piped() || ! ( function_exists( 'stream_isatty' ) && stream_isatty( STDIN ) ) ) return null;
+		return function ( WP_Error $e ) {
+			WP_CLI::warning( $e->get_error_message() );
+			WP_CLI::log( '  [r] retry this step' );
+			WP_CLI::log( '  [b] roll back the push (through the rescue endpoint if the remote is down)' );
+			WP_CLI::log( '  [p] switch the remote\'s plugins off, then retry' );
+			WP_CLI::log( '  [l] leave it as is and quit (the lock stays; see wp envsync status)' );
+			$k = \cli\choose( 'What now', 'rbpl', 'b' );
+			return [ 'r' => 'retry', 'b' => 'rollback', 'p' => 'plugins_off', 'l' => 'leave' ][ $k ] ?? 'rollback';
+		};
+	}
 	private function wants_json( $assoc ) { return ! empty( $assoc['json'] ) || ( $assoc['format'] ?? 'text' ) === 'json'; }
 	private function show_report( array $report, $assoc ) {
 		$path = IXES_Report::save( $report );
@@ -372,7 +385,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
 		$progress = IXES_Progress::for_cli( $assoc );
-		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress ); $progress->end(); return $r; } );
+		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ) ); $progress->end(); return $r; } );
 		if ( $r['stale'] ) WP_CLI::warning( 'skipped (changed on prod during push): ' . implode( ', ', $r['stale'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
 		$this->forget_status();
@@ -420,6 +433,54 @@ class IXES_CLI {
 		$r = $this->fail_if_error( $c->post( '/job/unlock', [] ) );
 		$this->forget_status();
 		WP_CLI::success( "unlocked {$env['name']} (job {$r['job']})" );
+	}
+
+	/**
+	 * Recover a remote a push left broken, without loading its plugins or theme.
+	 * ## OPTIONS
+	 *
+	 * <env>
+	 * : Environment name.
+	 *
+	 * [--plugins-off]
+	 * : Deactivate every plugin on the remote except EnvSync.
+	 *
+	 * [--rollback]
+	 * : Restore the snapshot of the locked push (or the last one), clear its lock and the maintenance file.
+	 *
+	 * [--job=<id>]
+	 * : Job to roll back instead.
+	 *
+	 * [--yes]
+	 * : Skip confirmation.
+	 */
+	public function rescue( $args, $assoc ) {
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$s = $c->rescue( 'status' );
+		if ( is_wp_error( $s ) ) {
+			WP_CLI::error( $s->get_error_message() . "\nThe rescue endpoint ({$c->rescue_url()}) did not answer. Either the remote runs a plugin older than 0.5.1, or the host blocks PHP files under wp-content/plugins. Use the host's file manager or terminal: rename the crashing plugin's folder under wp-content/plugins." );
+		}
+		WP_CLI::log( "{$env['name']}  {$env['url']}  (rescue mode: no plugins, no theme)" );
+		WP_CLI::log( '  plugin ' . $s['plugin'] . ( $s['maintenance'] ? '  · maintenance file present' : '' ) );
+		WP_CLI::log( '  lock   ' . ( $s['lock'] ? "job {$s['lock']['job']}" : 'none' ) . '   last job ' . ( $s['last_job'] ?: 'none' ) );
+		WP_CLI::log( '  active ' . ( $s['active_plugins'] ? implode( ', ', $s['active_plugins'] ) : 'none' ) );
+		if ( empty( $assoc['plugins-off'] ) && empty( $assoc['rollback'] ) ) {
+			WP_CLI::log( "\nNext: wp envsync rescue {$env['name']} --rollback   (undo the push)   or   --plugins-off   (keep its changes, disable plugins)" );
+			return;
+		}
+		if ( ! empty( $assoc['plugins-off'] ) ) {
+			$this->confirm( $assoc, "Deactivate every plugin on {$env['name']} except EnvSync?" );
+			$r = $this->fail_if_error( $c->rescue( 'plugins_off' ) );
+			WP_CLI::success( 'deactivated: ' . ( $r['deactivated'] ? implode( ', ', $r['deactivated'] ) : 'nothing' ) . '. Reactivate them from wp-admin once the cause is fixed.' );
+		}
+		if ( ! empty( $assoc['rollback'] ) ) {
+			$job = $assoc['job'] ?? ( $s['lock']['job'] ?? $s['last_job'] );
+			if ( ! $job ) WP_CLI::error( 'no push job to roll back' );
+			$this->confirm( $assoc, "Roll back job {$job} on {$env['name']}?" );
+			$r = $this->fail_if_error( $c->rescue( 'rollback', [ 'job' => $job ] ) );
+			WP_CLI::success( "restored {$r['restored']} rows/files from job {$r['job']}; lock and maintenance cleared" );
+		}
+		$this->forget_status();
 	}
 
 	/**

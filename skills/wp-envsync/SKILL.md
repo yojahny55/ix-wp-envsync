@@ -60,6 +60,7 @@ In a push plan, `new_tables` lists tables the push will create on the remote (sh
 |---|---|---|
 | `wp envsync env add <name> <url> --token=…` | not set up, or cannot reach | Ask the user for the token from that site's **Tools → EnvSync** page. Never invent one. |
 | `upload the release zip to <url>` | remote runs X, hub runs Y | Tell the user to upload the release zip through **Plugins → Add New → Upload** on that site. You cannot do it. |
+| `wp envsync rescue <env>` | … crashes on every request | Run it, report what it shows, then offer `--rollback` or `--plugins-off` (see Diagnosing failures). |
 | `wp envsync unlock <env>` | a push … never finished | Tell the user a push died. Nothing is rolled back. Then run `unlock <env> --yes` after approval. |
 | `wp envsync pull <env>` | an interrupted pull can be resumed | Run `pull <env> --dry-run` (it shows where it stopped), then `pull <env> --yes` to resume. Use `--fresh` only if resume is refused. |
 | `wp envsync push <env> --force --dry-run` | looks like a fresh install | This is a first deploy. See [First deploy](#first-deploy-onto-a-fresh-install). |
@@ -155,7 +156,7 @@ Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>
 
 - `plans/<kind>-<env>-latest.json`: the plan (`schema: 1`). `summary` has `{files, delete, bytes, rows, conflicts}`, followed by `tables[]`, `plugins[]`, `themes[]`, `other[]`, `conflicts[]` and `warnings[]`.
   - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
-  - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.0.
+  - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
   - `--format=json` prints the same object.
 - `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
 
@@ -178,6 +179,7 @@ All commands take `--path=<site>`.
 | `envsync push <env> [--dry-run] [--yes] [--force] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
 `--only` takes `db,files,uploads,themes,plugins,mu-plugins`. `--tables` takes table names or globs and implies `--only=db`. `--paths` takes wp-content paths or globs and implies `--only=files`.
@@ -202,9 +204,18 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 
 **`503 … no available server`**: the host's proxy (Traefik on Coolify) has no healthy container for the site. WordPress never saw the request. Retrying will not help. Tell the user to restart the container in Coolify and to check that the site files are on a persistent volume. If the remote runs a plugin older than 0.4.2, maintenance mode during a push fails the health check and causes exactly this, so the remote needs the new zip first.
 
-**`old_remote` / "creates N table(s) the remote lacks"**: the push has to create plugin tables, and the remote plugin is older than 0.5.0. Tell the user to upload the current zip to that site first. Nothing was changed.
+**`old_remote` / "creates N table(s) the remote lacks"**: the push has to create plugin tables, and the remote plugin is older than 0.5.1. Tell the user to upload the current zip to that site first. Nothing was changed.
 
-**`500 … critical error` on `/job/step`**: a plugin crashed on the remote during the push. On a remote older than 0.5.0, the usual cause is plugins switching on before their tables exist. Tell the user to switch plugins off from the host's terminal (`wp --skip-plugins --skip-themes option update active_plugins '["ix-wp-envsync/ix-wp-envsync.php"]' --format=json`). Then upload the current plugin to the remote and push again.
+**`500 … critical error`, or `status` says `wp envsync rescue <env>`**: the remote crashes on every request, usually because of a plugin. Normal commands cannot reach it, so use the rescue endpoint, which loads no plugins:
+1. Run `wp envsync rescue <env>` and report the active plugins, the lock and the last job.
+2. Then offer the user two options:
+   - `rescue <env> --rollback --yes` undoes the push.
+   - `rescue <env> --plugins-off --yes` keeps the push and switches every plugin except EnvSync off; the user reactivates them in wp-admin.
+
+   Wait for their choice.
+3. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
+
+A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
 
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 

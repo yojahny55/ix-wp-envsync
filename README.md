@@ -153,7 +153,7 @@ Every DB and FILES row uses the same counts:
 
 `CONFLICTS (prod wins)` lists every `prod-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
 
-In **PLUGINS** and **THEMES**, `version` reads *before → after* for the site being changed. `—` means not installed, and `?` means the other site runs a plugin older than 0.5.0 that doesn't report versions. `active` says whether the plugin turns on, turns off or stays on, and which theme becomes active. A plugin appears even with no files moving if only its on/off state changes.
+In **PLUGINS** and **THEMES**, `version` reads *before → after* for the site being changed. `—` means not installed, and `?` means the other site runs a plugin older than 0.5.1 that doesn't report versions. `active` says whether the plugin turns on, turns off or stays on, and which theme becomes active. A plugin appears even with no files moving if only its on/off state changes.
 
 While a push or pull runs you see one progress bar per stage, with the transfer rate for files:
 
@@ -260,6 +260,18 @@ The resume state lives at `wp-content/envsync-*/pull-<env>.json`. It's written a
 ---
 
 ## When something is stuck
+
+**A push broke the remote (every page shows "critical error").** Usually a plugin that crashes once it is switched on. Normal requests fail too, so EnvSync ships a separate rescue endpoint, `rescue.php`, that starts WordPress without any plugins or theme:
+
+```bash
+wp envsync rescue prod                 # what the remote looks like with plugins off
+wp envsync rescue prod --rollback      # undo the push that broke it (lock and maintenance cleared too)
+wp envsync rescue prod --plugins-off   # keep the push, switch every plugin except EnvSync off
+```
+
+`status` recommends `rescue` when a remote answers with a 500. A push that breaks the remote mid-way rolls back through rescue on its own. When you run `push` in a terminal without `--yes`, a failed step asks what to do instead of quitting: retry, roll back, switch the remote's plugins off and retry, or leave it as is.
+
+Rescue needs 0.5.1 or newer on the remote. It also won't work where the host or a security plugin blocks PHP files under `wp-content/plugins` (All-In-One Security has such an option). For a remote on an older version, use the host's file manager and rename the crashing plugin's folder under `wp-content/plugins`. WordPress then switches it off.
 
 **A push died and left a lock.** `status` shows the job id and how long it has been stuck:
 
@@ -375,6 +387,15 @@ Tables that exist only on your site, typically ones a plugin creates for itself 
 
 Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back — `rollback` can still restore that push's snapshot.
 
+- `--yes` — skip the confirmation.
+
+### `wp envsync rescue <env>`
+
+Recovers a remote that crashes on every request, through `rescue.php` (no plugins, no theme loaded). With no flag it only reports the active plugins, the lock and the last job.
+
+- `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
+- `--job=<id>` — roll back this job instead.
+- `--plugins-off` — deactivate every plugin except EnvSync.
 - `--yes` — skip the confirmation.
 
 ### `wp envsync rollback <env>`

@@ -10,7 +10,7 @@ class IXES_Status {
 	const BASELINE_OLD_DAYS = 7;
 	// ponytail: a fresh install has 3-4 wp_posts rows (Hello world, Sample page, Privacy policy, an auto-draft); any real site has far more. Check users too if this ever misfires.
 	const FRESH_MAX_POSTS = 5;
-	// rule order (the contract above): unconfigured, remote_only, unreachable, old_remote, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
+	// rule order (the contract above): unconfigured, remote_only, crashing (500), unreachable, old_remote, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
 	// admin page renders this synchronously on a cache miss, so a dead remote must fail fast and stay under wp-admin's max_execution_time
 	const INFO_TIMEOUT = 10;
 
@@ -89,6 +89,7 @@ class IXES_Status {
 
 	private static function next_for( $name, array $env, array $e, array $ctx ) {
 		$cmd = function ( $c, $why ) use ( $name ) { return [ 'command' => $c, 'why' => $why, 'env' => $name ]; };
+		if ( ! $e['reachable'] && strpos( (string) $e['error'], 'remote 500' ) === 0 ) return $cmd( "wp envsync rescue {$name}", "{$env['url']} crashes on every request (a plugin or a half-finished push); rescue works without loading plugins" );
 		if ( ! $e['reachable'] ) return $cmd( "wp envsync env add {$name} --token=<new token>", "cannot reach {$env['url']}: {$e['error']}" );
 		if ( $e['version_ok'] === false ) return $cmd( "upload the release zip to {$env['url']}", "remote runs {$e['remote_version']}, hub runs {$ctx['hub_version']}" );
 		$lock = $e['remote_lock'];

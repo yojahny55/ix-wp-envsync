@@ -62,7 +62,7 @@ class IXES_Pull {
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
 			'tables' => $tables_in_scope,
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
-			// null: a pre-0.5.0 remote that does not report sizes
+			// null: a pre-0.5.1 remote that does not report sizes
 			'sizes' => $sizes === null ? null : array_intersect_key( $sizes, array_flip( $transfer ) ),
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
 			'scope' => $scope->to_array(),

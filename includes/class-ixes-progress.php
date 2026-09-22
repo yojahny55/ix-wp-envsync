@@ -4,7 +4,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 /**
  * Stage progress for push/pull. Modes:
  *   bar      a TTY: WP-CLI progress bar, ticked in KB when the stage has a byte total
- *   verbose  --verbose: one line per file/table, as before 0.5.0
+ *   verbose  --verbose: one line per file/table, as before 0.5.1
  *   summary  piped (agents, CI): one line per stage when it ends
  */
 class IXES_Progress {

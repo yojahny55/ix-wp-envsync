@@ -19,11 +19,12 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => [ 'binary', 'scope', 'batch', 'create_table' ],
+			'caps'            => [ 'binary', 'scope', 'batch', 'create_table', 'rescue' ],
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
 			'inventory'       => self::inventory(),
+			'rescue_url'      => plugins_url( 'rescue.php', IXES_FILE ),
 		];
 	}
 
