@@ -45,6 +45,9 @@ jobs:
   plugin-check:
     name: WordPress Plugin Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the action posts its findings as a PR comment
     steps:
       - uses: actions/checkout@v4
       - name: Build the exact archive a release would ship
@@ -60,6 +63,11 @@ jobs:
             plugin_readme
             plugin_updater
           ignore-warnings: true
+          # Writing under wp-content and raw SQL over whitelisted identifiers are what this plugin does
+          # (see the audit fix in the history); those two rule families are excluded, everything else gates.
+          ignore-codes: |
+            PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite
+            PluginCheck.Security.DirectDB.UnescapedDBParameter
 
   version:
     name: Version header matches constant
