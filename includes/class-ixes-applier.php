@@ -34,13 +34,20 @@ class IXES_Applier {
 	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
 	private static function maintenance( $on ) {
 		$f = ABSPATH . '.maintenance';
-		// core requires .maintenance before plugins load, so the exemption for our own REST calls
-		// has to live inside the file itself (an $upgrading in the past means "not in maintenance")
-		$body = "<?php\n\$upgrading = " . time() . ";\n"
-			. "\$ixes_uri = isset( \$_SERVER['REQUEST_URI'] ) ? \$_SERVER['REQUEST_URI'] : '';\n"
-			. "if ( isset( \$_SERVER['HTTP_X_ENVSYNC_SIG'] ) && preg_match( '#^[^?]*(\\\\?rest_route=|/wp-json)/" . IXES_Rest::NS . "/#', \$ixes_uri ) ) \$upgrading = 1;\n";
-		if ( $on ) file_put_contents( $f, $body );
+		if ( $on ) file_put_contents( $f, self::maintenance_body( time() ) );
 		elseif ( file_exists( $f ) ) unlink( $f );
+	}
+	// core requires .maintenance before plugins load, so the exemptions have to live inside the file itself
+	// (an $upgrading in the past means "not in maintenance"). Exempt: our own signed REST calls, and requests
+	// from loopback -- a Docker/Coolify health check curls the site from inside the container, and a 503 there
+	// gets the container marked unhealthy and pulled from the proxy mid-push, which kills the push itself.
+	// ponytail: loopback also covers a same-host reverse proxy that forwards over 127.0.0.1; its visitors then
+	// see the site during a push instead of the maintenance page. Harmless, and wp-config can set REMOTE_ADDR.
+	public static function maintenance_body( $now ) {
+		return "<?php\n\$upgrading = " . (int) $now . ";\n"
+			. "\$ixes_uri = isset( \$_SERVER['REQUEST_URI'] ) ? \$_SERVER['REQUEST_URI'] : '';\n"
+			. "if ( isset( \$_SERVER['HTTP_X_ENVSYNC_SIG'] ) && preg_match( '#^[^?]*(\\\\?rest_route=|/wp-json)/" . IXES_Rest::NS . "/#', \$ixes_uri ) ) \$upgrading = 1;\n"
+			. "if ( isset( \$_SERVER['REMOTE_ADDR'] ) && in_array( \$_SERVER['REMOTE_ADDR'], array( '127.0.0.1', '::1' ), true ) ) \$upgrading = 1;\n";
 	}
 	private static function remote_pairs( array $extra = [] ) { return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra ); }
 

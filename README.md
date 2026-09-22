@@ -321,7 +321,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
-Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
+Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
 
 ### `wp envsync unlock <env>`
 
@@ -387,6 +387,8 @@ Options that are specific to one environment stay put on both sides: `siteurl`, 
 **The token is an admin-level credential.** It grants write access to the database and to wp-content, including plugin PHP. Treat it like a password. Rotate it if it leaks.
 
 **A pull that stops partway leaves the local site half-updated until you finish it.** Files may be only partly copied, which can leave a plugin half-updated and the site erroring. Fix the cause and run the same pull again; it resumes where it stopped (see [If a pull is interrupted](#if-a-pull-is-interrupted)). A push does not have this problem, because it snapshots first and can be rolled back.
+
+**`503 no available server` means the host's proxy, not WordPress.** Coolify's Traefik returns it when it has no healthy container for the site. Before 0.4.2, a push's maintenance mode failed the container's health check, so the proxy dropped the site mid-push and the push died with this error. Upload 0.4.2 or newer to the remote, restart the container in Coolify, then push again. Also check that the site's files are on a persistent volume in Coolify. Without one, a restarted container starts from a blank WordPress.
 
 **File permissions matter.** If plugins were installed through the browser, their folders are owned by the web-server user, and a pull run from your shell cannot write into them. The error names the folder, its owner and its mode. The usual fix, adjusted for your user and web-server group:
 

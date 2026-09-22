@@ -184,6 +184,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 
 **A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
+**`503 … no available server`**: the host's proxy (Traefik on Coolify) has no healthy container for the site. WordPress never saw the request. Retrying will not help. Tell the user to restart the container in Coolify and to check that the site files are on a persistent volume. If the remote runs a plugin older than 0.4.2, maintenance mode during a push fails the health check and causes exactly this, so the remote needs the new zip first.
+
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 
 **423 / "another job is running"**: a push is running or died on the remote. `status` shows the lock's age. `unlock <env> --yes` clears a lock older than two minutes. Nothing is rolled back; `rollback` still restores that job.
