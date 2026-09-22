@@ -50,4 +50,12 @@ class PullStateTest extends TestCase {
 		$s->clear();
 		$this->assertNull( IXES_PullState::load( 'prod' ) );
 	}
+	public function test_committed_persists() {
+		$s = IXES_PullState::start( 'prod', 'p', '0.3.0', [] );
+		$this->assertFalse( $s->get( 'committed' ) );
+		$s->committed();
+		$this->assertTrue( $s->get( 'committed' ) );
+		$r = IXES_PullState::load( 'prod' );
+		$this->assertTrue( $r->get( 'committed' ) );
+	}
 }

@@ -24,12 +24,21 @@ class IXES_PullState {
 		$s = new self( [
 			'env' => $env_name, 'plan' => $plan_path, 'started' => time(), 'remote_plugin' => (string) $remote_plugin,
 			'scope' => $scope, 'tables_done' => [], 'table' => null, 'cursor' => null, 'files_done' => 0,
+			'committed' => false,
 		] );
 		$s->save();
 		return $s;
 	}
 
-	private function save() { file_put_contents( self::path( $this->d['env'] ), json_encode( $this->d ) ); }
+	// Written to a sibling .tmp file then renamed into place: a kill mid-write must never leave
+	// an unparseable state file, since load() treating that as "no state" would silently orphan
+	// the tmp tables this state was tracking.
+	private function save() {
+		$f = self::path( $this->d['env'] );
+		$tmp = $f . '.tmp';
+		file_put_contents( $tmp, json_encode( $this->d ) );
+		rename( $tmp, $f );
+	}
 
 	public function get( $k ) { return $this->d[ $k ] ?? null; }
 
@@ -39,6 +48,8 @@ class IXES_PullState {
 		$this->d['table'] = null; $this->d['cursor'] = null; $this->save();
 	}
 	public function files_done( $n ) { $this->d['files_done'] = (int) $n; $this->save(); }
+	/** Marks the tmp-table commit (RENAME TABLE) as done, so a rerun does not attempt it again. */
+	public function committed() { $this->d['committed'] = true; $this->save(); }
 	public function clear() { $f = self::path( $this->d['env'] ); if ( is_file( $f ) ) unlink( $f ); }
 
 	public function describe( $files_total ) {
