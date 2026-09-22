@@ -224,6 +224,7 @@ A push that breaks the remote mid-way already rolls back through rescue by itsel
 **423 / "another job is running"**: a push is running or died on the remote. `status` shows the lock's age. `unlock <env> --yes` clears a lock older than two minutes. Nothing is rolled back; `rollback` still restores that job.
 
 **Push reports skipped or stale items**: the remote changed those rows or files between the diff and the push. This is correct: production wins. If those changes mattered, pull again and redo the work.
+- The one exception is `wp_options#…` rows skipped on a first deploy by a hub older than 0.5.3. That was a bug (option-id collision with the remote's transients), not a real change. Before anyone pulls, tell the user to upgrade both sides and push again. A pull after such a push copies the missing options back over the hub's own copy.
 
 **401 / "missing token"**: the token is wrong or was rotated. Ask the user for the current one from the remote's Tools → EnvSync page, then run `env add <name> --token=<new>`. You do not need the URL again.
 
