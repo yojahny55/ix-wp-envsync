@@ -43,4 +43,17 @@ class AuthTest extends TestCase {
 		$old = hash_hmac( 'sha256', $msg, $this->tok );
 		$this->assertTrue( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $old, 1 ) );
 	}
+	public function test_token_from_authorization_header() {
+		$this->assertSame( [ 'abc', 'authorization' ], IXES_Auth::token_from_headers( 'Bearer abc', '' ) );
+	}
+	public function test_token_falls_back_to_x_envsync_token() {
+		$this->assertSame( [ 'abc', 'x-envsync-token' ], IXES_Auth::token_from_headers( '', 'abc' ) );
+		$this->assertSame( [ 'abc', 'x-envsync-token' ], IXES_Auth::token_from_headers( 'Basic zzz', 'abc' ), 'a non-Bearer Authorization header is ignored' );
+	}
+	public function test_authorization_wins_when_both_present() {
+		$this->assertSame( [ 'one', 'authorization' ], IXES_Auth::token_from_headers( 'Bearer one', 'two' ) );
+	}
+	public function test_no_token_in_either_header() {
+		$this->assertSame( [ '', null ], IXES_Auth::token_from_headers( '', '' ) );
+	}
 }

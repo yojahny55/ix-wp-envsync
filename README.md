@@ -8,18 +8,73 @@ Built for freelance work across mixed hosting (Hostinger, IONOS, Plesk, Coolify)
 
 ---
 
-## How it works
+## Which site is which
 
-One plugin is installed on every site. The site you run commands from is the **hub**; every other site is a **remote**.
+One plugin runs on every site you sync. The site you run commands from is the **hub**. Every other site — usually production or staging — is a **remote**. The hub needs WP-CLI; a remote needs only the plugin and a token.
 
-- The **hub** needs WP-CLI. That is normally your local machine.
-- A **remote** needs nothing but the plugin and a token. It exposes a small REST API and does its work in short, resumable steps, so shared hosts with strict time limits are fine.
+```
+   your laptop (hub)                    client hosting (remote)
+   ┌──────────────────┐   pull  ◄──     ┌──────────────────┐
+   │ WordPress + WP-CLI│                 │ WordPress + token │
+   │ runs the commands │   push  ──►     │ answers over REST │
+   └──────────────────┘                 └──────────────────┘
+```
 
-Two operations do all the work:
+---
 
-**Pull** replaces the hub with a copy of the remote. Database, uploads, themes, plugins. URLs and file paths are rewritten as it imports. Afterwards the hub records a **baseline**: a fingerprint of every row and file as it was at that moment.
+## Install
 
-**Push** compares three things: the baseline, your site now, and production now. That three-way comparison is what makes the plugin safe:
+1. Upload the plugin zip to every site through **Plugins → Add New → Upload**, then activate it.
+2. On each remote, open **Tools → EnvSync** and copy the token shown there.
+3. On the hub, register the remote, then check it:
+
+```bash
+wp envsync env add prod https://client.com --token=PASTE_TOKEN --label=prod
+wp envsync status
+```
+
+`status` reports whether the connection works, and tells you what to run next.
+
+### Rotating a token
+
+Press **Rotate token** on the remote's Tools → EnvSync page. The old token stops working right away. Then update the hub:
+
+```bash
+wp envsync env add prod --token=NEW_TOKEN
+wp envsync status prod
+```
+
+Re-running `env add` updates only the options you pass. Your excludes, label and replace pairs stay as they were.
+
+---
+
+## How it thinks
+
+**Baseline.** A pull records a fingerprint of every row and file, taken right after it finishes. `diff` and `push` compare that fingerprint against production and against your local site.
+
+```
+prod  ←  local          baseline: 2026-09-08 02:06
+```
+
+**Pull before push.** Without a baseline, diff can only compare two sides, not three. It says so instead of guessing.
+
+```
+prod  ←  local          baseline: NONE (2-way)   !! everything different would OVERWRITE prod
+```
+
+**Prod wins.** When you and production both changed the same row, production's version is kept. Your edit is not applied.
+
+```
+CONFLICTS (prod wins)
+```
+
+**Conflicts.** Each conflicting row or file is listed by name. Check that list before every push.
+
+```
+  wp_posts             #2231  Services
+```
+
+The three-way compare works the same for every row and file:
 
 | What happened | Result |
 |---|---|
@@ -32,48 +87,15 @@ Two operations do all the work:
 
 Files follow the same rules. A theme file you edited goes up; a plugin that auto-updated on production stays as it is.
 
-The baseline is what makes this work, so **pull before each round of work**. Without a fresh baseline the plugin can only compare two sides, and it will refuse to push rather than guess.
-
 ---
 
-## Install
-
-1. Upload the plugin zip to every site through **Plugins → Add New → Upload**, and activate it.
-2. On each remote go to **Tools → EnvSync** and copy the token. It is shown once. (`wp envsync token` prints it too, and `--rotate` issues a new one.)
-3. On your local site, register each remote:
+## Reading a diff
 
 ```bash
-wp envsync env add prod https://client.com --token=PASTE_TOKEN --label=prod
-wp envsync env add staging https://staging.client.com --token=PASTE_TOKEN --label=staging
-wp envsync env ping prod
+wp envsync diff prod
 ```
 
-`ping` confirms the URL, the token and the signature all work.
-
-### Rotating a token
-
-On the remote, press **Rotate token** on its Tools → EnvSync page (or run `wp envsync token --rotate` there). The old token stops working immediately. Then on the hub:
-
-```bash
-wp envsync env add prod --token=NEW_TOKEN
-wp envsync env ping prod
-```
-
-Re-running `env add` on a name that already exists updates only the options you pass, so your excludes, label and replace pairs are kept. The URL is only required the first time.
-
----
-
-## Daily workflow
-
-```bash
-wp envsync pull prod            # fresh copy of production, records the baseline
-                                # ... do your work ...
-wp envsync diff prod            # preview: exactly what would change
-wp envsync push staging --force --yes   # overwrite staging (no baseline there) for client review
-wp envsync push prod            # apply to production after approval
-```
-
-A `diff` reads a plan like this:
+prints a plan like this:
 
 ```
 prod  ←  local          baseline: 2026-09-08 02:06
@@ -85,12 +107,36 @@ FILES
   themes/mk-adventure/            push 14   delete 2
   plugins/advanced-custom-fields/ kept-prod
 CONFLICTS (prod wins)
-  wp_posts #2231  "Services"
+  wp_posts             #2231  Services
 ```
 
-Read it as: 12 rows go up, 3 are new, 41 rows production changed are left alone, and one page you both edited stays as production has it. Nothing has happened yet.
+Every DB and FILES row uses the same counts:
 
-`push` shows the same plan and waits for confirmation. Add `--yes` to skip the prompt, `--dry-run` to stop after the plan.
+| Column | Meaning |
+|---|---|
+| `push` | your changes going up |
+| `insert` | rows or files you created |
+| `delete` | rows or files you deleted, that production hasn't touched |
+| `prod-wins` | both sides changed it; production's version stays |
+| `kept-prod` | production changed it, you did not; left alone |
+
+`CONFLICTS (prod wins)` lists every `prod-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
+
+`push` shows the same plan, then waits for your confirmation. Add `--yes` to skip the prompt, `--dry-run` to stop after the plan.
+
+---
+
+## Day to day
+
+```bash
+wp envsync status prod          # check where things stand
+wp envsync pull prod            # fresh copy of production, records the baseline
+                                 # ... do your work ...
+wp envsync diff prod            # preview what would change
+wp envsync push prod            # apply, after you review the plan
+```
+
+Run `status` whenever you're unsure what state a site is in. It names the one command to run next.
 
 ---
 
@@ -117,6 +163,43 @@ The resume state lives at `wp-content/envsync-*/pull-<env>.json`. It's written a
 
 ---
 
+## When something is stuck
+
+**A push died and left a lock.** `status` shows the job id and how long it has been stuck:
+
+```
+  lock: job 20260922-101500-ab12cd, 47 min old
+
+Next: wp envsync unlock prod   (a push started 47 minutes ago never finished)
+```
+
+Run `wp envsync unlock prod` to clear it. Nothing is rolled back — `rollback` can still restore that push's snapshot.
+
+**"missing token" on a host that strips the Authorization header.** The plugin also sends the token as `X-Envsync-Token`, so most hosts recover on their own. If a remote still rejects every request, `status` reports it as unreachable:
+
+Some hosts log request headers verbatim, so a request carrying `X-Envsync-Token` can put the token in full into that host's access logs — treat those logs as sensitive.
+
+```
+  unreachable: remote 401 on /info: missing token
+```
+
+Re-register the token from that remote's Tools → EnvSync page:
+
+```bash
+wp envsync env add prod --token=<new token>
+wp envsync status prod
+```
+
+**Hub and remote run different plugin versions.** `status` and `ping` compare versions and flag a remote that's behind:
+
+```
+  remote 0.3.0  hub 0.4.0  auth via Authorization  (remote is older)
+```
+
+Upload the new release zip to that site through **Plugins → Add New**.
+
+---
+
 ## Commands
 
 ### `wp envsync env <action>`
@@ -137,6 +220,14 @@ Options for `add`:
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
+
+### `wp envsync status [<env>]`
+
+Reports this site's role, each environment's state, and the one recommended next command.
+
+- `--json` — machine-readable report, for scripts and agents.
+
+Exit code is always 0; `next` is advice, not an error.
 
 ### `wp envsync pull <env>`
 
@@ -177,6 +268,12 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
+
+### `wp envsync unlock <env>`
+
+Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back — `rollback` can still restore that push's snapshot.
+
+- `--yes` — skip the confirmation.
 
 ### `wp envsync rollback <env>`
 

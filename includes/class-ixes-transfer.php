@@ -21,6 +21,8 @@ class IXES_Transfer {
 			'plugin'          => IXES_VERSION,
 			'caps'            => [ 'binary', 'scope' ],
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
+			'lock'            => IXES_Applier::lock_info(),
+			'auth_via'        => IXES_Rest::auth_via(),
 		];
 	}
 

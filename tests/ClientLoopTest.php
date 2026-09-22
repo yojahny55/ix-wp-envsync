@@ -152,6 +152,18 @@ class ClientLoopTest extends TestCase {
 		unlink( $tmp );
 	}
 
+	public function test_info_with_timeout_sends_it_but_plain_post_keeps_the_default() {
+		$c = $this->client();
+		$c->script = [
+			function () { return [ 'response' => [ 'code' => 200 ], 'headers' => [], 'body' => json_encode( [ 'plugin' => '0.4.0' ] ) ]; },
+			function () { return [ 'response' => [ 'code' => 200 ], 'headers' => [], 'body' => json_encode( [ 'ok' => true ] ) ]; },
+		];
+		$c->info( 7 );
+		$c->post( '/ping', [] );
+		$this->assertSame( 7, $c->calls[0]['timeout'] );
+		$this->assertSame( 120, $c->calls[1]['timeout'] );
+	}
+
 	public function test_send_file_json_fallback_for_old_remote() {
 		$c = $this->client();
 		$c->set_caps( [] );

@@ -12,6 +12,8 @@ class IXES_CLI {
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
 	private function logger() { return function ( $m ) { WP_CLI::log( $m ); }; }
+	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
+	private function forget_status() { delete_transient( 'ixes_status_report' ); }
 	private function scope( $assoc ) {
 		global $wpdb;
 		try { return IXES_Scope::from_assoc( $assoc, $wpdb->prefix ); }
@@ -88,6 +90,7 @@ class IXES_CLI {
 			try {
 				IXES_Env::add( $env );
 			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
+			$this->forget_status();
 			WP_CLI::success( $existing ? "env {$args[1]} updated" : "env {$args[1]} saved" );
 			return;
 		}
@@ -102,8 +105,17 @@ class IXES_CLI {
 			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop one of the "this env" rows with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
-		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); WP_CLI::success( 'removed' ); return; }
-		if ( $action === 'ping' ) { $r = $this->fail_if_error( $this->client( $args[1] )->get( '/ping' ) ); WP_CLI::success( 'ok, remote time ' . date( 'c', $r['time'] ) ); return; }
+		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); $this->forget_status(); WP_CLI::success( 'removed' ); return; }
+		if ( $action === 'ping' ) {
+			$c = $this->client( $args[1] );
+			$r = $this->fail_if_error( $c->get( '/ping' ) );
+			$info = $this->fail_if_error( $c->info() );
+			$via = ( $r['auth_via'] ?? 'authorization' ) === 'x-envsync-token' ? 'X-Envsync-Token (this host strips the Authorization header; that is fine)' : 'Authorization';
+			WP_CLI::success( 'ok, remote time ' . date( 'c', $r['time'] ) . ", remote {$info['plugin']}, auth via {$via}" );
+			if ( version_compare( (string) $info['plugin'], IXES_VERSION, '<' ) ) WP_CLI::warning( "remote runs {$info['plugin']}, hub runs " . IXES_VERSION . ": upload the release zip to {$this->get_env( $args[1] )['url']}" );
+			elseif ( version_compare( (string) $info['plugin'], IXES_VERSION, '>' ) ) WP_CLI::log( "note: remote runs {$info['plugin']}, newer than this hub (" . IXES_VERSION . ')' );
+			return;
+		}
 		WP_CLI::error( 'unknown action' );
 	}
 
@@ -159,6 +171,7 @@ class IXES_CLI {
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
 			$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger(), $state ) );
+			$this->forget_status();
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
 		}
@@ -185,6 +198,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
 		$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger() ) );
+		$this->forget_status();
 		WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 	}
 
@@ -303,6 +317,7 @@ class IXES_CLI {
 		$r = $this->fail_if_error( IXES_Applier::apply( $env, $c, $plan, $this->logger() ) );
 		if ( $r['stale'] ) WP_CLI::warning( 'skipped (changed on prod during push): ' . implode( ', ', $r['stale'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
+		$this->forget_status();
 		WP_CLI::success( "pushed to {$env['name']} (job {$r['job']}). Pull again before the next round of changes." );
 	}
 
@@ -327,6 +342,52 @@ class IXES_CLI {
 	}
 
 	/**
+	 * Clear a push lock left behind by a hub that died mid-push. Rolls nothing back.
+	 * ## OPTIONS
+	 *
+	 * <env>
+	 * : Environment name.
+	 *
+	 * [--yes]
+	 * : Skip confirmation.
+	 */
+	public function unlock( $args, $assoc ) {
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$info = $this->fail_if_error( $c->info() );
+		$lock = $info['lock'] ?? null;
+		if ( ! $lock ) WP_CLI::error( "no push is locked on {$env['name']}" );
+		$age = $lock['started'] ? (int) floor( ( time() - $lock['started'] ) / 60 ) . ' min' : 'unknown age';
+		WP_CLI::log( "Nothing is rolled back; 'wp envsync rollback {$env['name']}' still restores that job's snapshot." );
+		$this->confirm( $assoc, "Clear the lock from job {$lock['job']} ({$age}) on {$env['name']}?" );
+		$r = $this->fail_if_error( $c->post( '/job/unlock', [] ) );
+		$this->forget_status();
+		WP_CLI::success( "unlocked {$env['name']} (job {$r['job']})" );
+	}
+
+	/**
+	 * Show this site's role, each environment's state, and the one recommended next command.
+	 * ## OPTIONS
+	 *
+	 * [<env>]
+	 * : Only this environment.
+	 *
+	 * [--format=<format>]
+	 * : Machine-readable report (what agents should read). WP-CLI rewrites --json to --format=json itself.
+	 * ---
+	 * default: text
+	 * options:
+	 *   - text
+	 *   - json
+	 * ---
+	 */
+	public function status( $args, $assoc ) {
+		if ( isset( $args[0] ) ) $this->get_env( $args[0] );
+		$r = IXES_Status::build( $args[0] ?? null );
+		if ( ( $assoc['format'] ?? 'text' ) === 'json' ) { WP_CLI::line( wp_json_encode( $r, JSON_PRETTY_PRINT ) ); return; }
+		WP_CLI::line( IXES_Status::render_text( $r ) );
+	}
+
+	/**
 	 * Show or rotate this site's remote token.
 	 * ## OPTIONS
 	 *
@@ -334,7 +395,7 @@ class IXES_CLI {
 	 * : Issue a new token.
 	 */
 	public function token( $args, $assoc ) {
-		if ( ! empty( $assoc['rotate'] ) || ! get_option( 'ixes_token_hash' ) ) { WP_CLI::line( IXES_Auth::install_token() ); return; }
+		if ( ! empty( $assoc['rotate'] ) || ! get_option( 'ixes_token_hash' ) ) { $t = IXES_Auth::install_token(); $this->forget_status(); WP_CLI::line( $t ); return; }
 		$t = get_transient( 'ixes_token_show' );
 		if ( $t ) WP_CLI::line( $t ); else WP_CLI::error( 'token already shown; use --rotate to issue a new one' );
 	}

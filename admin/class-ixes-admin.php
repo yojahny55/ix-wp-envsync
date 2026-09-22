@@ -14,6 +14,7 @@ class IXES_Admin {
 		$token = get_transient( 'ixes_token_show' );
 		echo '<div class="wrap"><h1>EnvSync</h1>';
 		if ( $excludes_error ) echo '<div class="notice notice-error"><p>' . esc_html( $excludes_error ) . '</p></div>';
+		self::status_section();
 
 		echo '<h2>This site\'s token</h2>';
 		if ( $token ) echo '<p>Copy it now, it is shown once:</p><code style="font-size:14px;user-select:all">' . esc_html( $token ) . '</code>';
@@ -49,9 +50,34 @@ class IXES_Admin {
 		$rjobs = glob( ixes_storage_dir() . '/jobs/*/meta.json' );
 		if ( $rjobs ) {
 			sort( $rjobs ); $m = json_decode( file_get_contents( end( $rjobs ) ), true );
-			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ) ), count( $m['plan']['tables'] ) );
+			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ?? '' ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ?? 0 ) ), count( (array) ( $m['plan']['tables'] ?? [] ) ) );
 		}
 		echo '</div>';
+	}
+
+	/** Same report as `wp envsync status`, cached 60 s so a dead remote cannot slow the page. */
+	private static function status_section() {
+		$r = get_transient( 'ixes_status_report' );
+		if ( ! is_array( $r ) ) { $r = IXES_Status::build(); set_transient( 'ixes_status_report', $r, 60 ); }
+		echo '<h2>Status</h2>';
+		$roles = [ 'hub' => 'This site is the hub: you run pull, diff and push from here.', 'remote' => 'This site is a remote: commands run from your hub.', 'both' => 'This site is both a hub and a remote.', 'unconfigured' => 'This site is not set up yet.' ];
+		echo '<p>' . esc_html( $roles[ $r['role'] ] ) . '</p>';
+		if ( $r['envs'] ) {
+			echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Environment</th><th>Reachable</th><th>Version</th><th>Baseline</th><th>Interrupted pull</th><th>Lock</th></tr></thead><tbody>';
+			foreach ( $r['envs'] as $name => $e ) {
+				$b = $e['baseline'];
+				printf( '<tr><td>%s<br><small>%s</small></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+					esc_html( $name ), esc_html( $e['url'] ),
+					$e['reachable'] ? 'yes' : '<span style="color:#b32d2e">no: ' . esc_html( (string) $e['error'] ) . '</span>',
+					esc_html( $e['remote_version'] ?: '?' ) . ( $e['version_ok'] === false ? ' <em>(older than hub)</em>' : '' ),
+					esc_html( $b['created_at'] ? wp_date( 'Y-m-d H:i', $b['created_at'] ) . " ({$b['age_days']} d)" : 'none' ) . ( $b['partial_at'] ? '<br><small>partial ' . esc_html( wp_date( 'Y-m-d H:i', $b['partial_at'] ) . " ({$b['partial_scope']})" ) . '</small>' : '' ),
+					$e['interrupted_pull'] ? esc_html( "{$e['interrupted_pull']['files_done']}/" . ( $e['interrupted_pull']['files_total'] ?? '?' ) . ' files' ) : '—',
+					$e['remote_lock'] ? esc_html( "job {$e['remote_lock']['job']}, " . ( $e['remote_lock']['age_minutes'] === null ? '?' : $e['remote_lock']['age_minutes'] ) . ' min' ) : '—'
+				);
+			}
+			echo '</tbody></table>';
+		}
+		if ( ! empty( $r['next']['command'] ) ) echo '<div class="notice notice-info inline"><p><strong>Next:</strong> <code>' . esc_html( $r['next']['command'] ) . '</code> &mdash; ' . esc_html( $r['next']['why'] ) . '</p></div>';
 	}
 
 	const BIG  = 104857600; // 100 MB: shown as a neutral note, never a recommendation

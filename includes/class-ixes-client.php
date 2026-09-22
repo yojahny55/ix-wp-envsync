@@ -24,6 +24,7 @@ class IXES_Client {
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
 			'Authorization' => 'Bearer ' . $this->env['token'],
+			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
 			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step ),
 			'Content-Type'  => $ctype,
@@ -31,7 +32,7 @@ class IXES_Client {
 		];
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
-		$args = [ 'method' => $method, 'timeout' => 120, 'redirection' => 0, 'headers' => $headers ];
+		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? 120 ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
 		// ponytail: ?rest_route= works with any permalink structure; /wp-json/ 301s on plain permalinks and drops the Authorization header
 		$res = $this->transport( $this->env['url'] . '/?rest_route=' . $path, $args );
@@ -63,8 +64,8 @@ class IXES_Client {
 	public function get( $route )                    { return $this->request( 'GET', $route ); }
 	public function post( $route, $body, $opts = [] ) { return $this->request( 'POST', $route, $body, $opts ); }
 
-	public function info() {
-		if ( $this->info === null ) $this->info = $this->get( '/info' );
+	public function info( $timeout = null ) {
+		if ( $this->info === null ) $this->info = $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] );
 		return $this->info;
 	}
 

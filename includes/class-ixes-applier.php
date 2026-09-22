@@ -5,6 +5,30 @@ class IXES_Applier {
 
 	const LOCK = 'ixes_lock';
 	const ORDER = [ 'users', 'usermeta', 'terms', 'term_taxonomy', 'posts', 'postmeta', 'term_relationships', 'termmeta', 'comments', 'commentmeta' ];
+	const UNLOCK_MIN_AGE = 120; // seconds: a lock younger than this is a live push
+
+	// Lock transient value is "job|started". 0.3 wrote the bare job id; parse_lock() accepts both.
+	public static function lock_value( $job, $started ) { return $job . '|' . (int) $started; }
+	public static function parse_lock( $value ) {
+		if ( ! is_string( $value ) || $value === '' ) return [ 'job' => '', 'started' => null ];
+		$parts = explode( '|', $value, 2 );
+		return [ 'job' => $parts[0], 'started' => isset( $parts[1] ) ? (int) $parts[1] : null ];
+	}
+	public static function current_job() { return self::parse_lock( get_transient( self::LOCK ) )['job']; }
+	/** @return array{job:string,started:int|null}|null */
+	public static function lock_info() {
+		$l = self::parse_lock( get_transient( self::LOCK ) );
+		return $l['job'] === '' ? null : $l;
+	}
+	/** Whatever the hub sent, meta.json gets arrays where the admin page and rollback expect arrays. */
+	public static function plan_meta_shape( $raw ) {
+		$raw = is_array( $raw ) ? $raw : [];
+		$files = is_array( $raw['files'] ?? null ) ? $raw['files'] : [];
+		return [
+			'tables' => is_array( $raw['tables'] ?? null ) ? $raw['tables'] : [],
+			'files'  => [ 'push' => (array) ( $files['push'] ?? [] ), 'delete' => (array) ( $files['delete'] ?? [] ) ],
+		] + $raw;
+	}
 
 	private static function jobs_dir() { $d = ixes_storage_dir() . '/jobs'; wp_mkdir_p( $d ); return $d; }
 	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
@@ -24,9 +48,10 @@ class IXES_Applier {
 
 	public static function job_start( array $p ) {
 		global $wpdb;
-		if ( get_transient( self::LOCK ) ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
+		$p['plan_meta'] = self::plan_meta_shape( $p['plan_meta'] ?? null );
+		if ( self::current_job() !== '' ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
 		$job = date( 'Ymd-His' ) . '-' . substr( md5( uniqid() ), 0, 6 );
-		set_transient( self::LOCK, $job, HOUR_IN_SECONDS );
+		set_transient( self::LOCK, self::lock_value( $job, time() ), HOUR_IN_SECONDS );
 		$dir = self::job_dir( $job );
 		wp_mkdir_p( $dir . '/files' );
 		$meta = [ 'job' => $job, 'started' => time(), 'plan' => $p['plan_meta'], 'inserted' => [], 'created_files' => [] ];
@@ -107,7 +132,7 @@ class IXES_Applier {
 
 	public static function job_step( array $p ) {
 		global $wpdb;
-		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		$kind = $p['kind'] ?? '';
 
 		if ( $kind === 'rows' || $kind === 'delete_rows' ) {
@@ -186,7 +211,7 @@ class IXES_Applier {
 	}
 
 	public static function job_finish( array $p ) {
-		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		wp_cache_flush(); flush_rewrite_rules();
 		self::maintenance( false );
 		delete_transient( self::LOCK );
@@ -200,6 +225,16 @@ class IXES_Applier {
 		self::maintenance( false );
 		delete_transient( self::LOCK );
 		return $r;
+	}
+
+	public static function job_unlock( array $p ) {
+		$l = self::lock_info();
+		if ( ! $l ) return new WP_Error( 'nolock', 'no push is locked', [ 'status' => 404 ] );
+		$age = $l['started'] ? time() - $l['started'] : null;
+		if ( $age !== null && $age < self::UNLOCK_MIN_AGE ) return new WP_Error( 'too_recent', "lock is only {$age}s old; a push may still be running", [ 'status' => 409 ] );
+		self::maintenance( false );
+		delete_transient( self::LOCK );
+		return [ 'ok' => true, 'job' => $l['job'], 'age_minutes' => $age === null ? null : (int) floor( $age / 60 ) ];
 	}
 
 	public static function rollback( array $p ) {

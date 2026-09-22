@@ -8,6 +8,36 @@ user-invocable: false
 
 Drives the IX WP EnvSync WordPress plugin. Use it whenever the user wants content, code or media moved between WordPress environments.
 
+## Start here
+
+Run `wp envsync status --json` and act on `next.command`. Do not compose pull/diff/push from memory when `status` already says what to do.
+
+| next.command | tell the human before running it |
+|---|---|
+| `wp envsync pull <env>` | this overwrites the local site's database and files with the remote's |
+| `wp envsync push <env>` | this changes production; show the diff output first |
+| `wp envsync unlock <env>` | a push died on the remote; nothing is rolled back; `rollback` still restores that job |
+| `wp envsync env add …` | needs a token from the remote's Tools → EnvSync page |
+| upload the release zip | the remote runs an older plugin; a human uploads the zip through Plugins → Add New |
+
+Never run `push` or `unlock` without stating what `status` reported.
+
+## Which flags for which job
+
+| Situation | Command |
+|---|---|
+| First pull of a big site | `wp envsync pull prod`. If it drops, run the same command again and answer `y` to resume. `--fresh` starts over. |
+| Working on the theme, want prod's latest theme files | `wp envsync pull prod --only=themes --paths=themes/<slug>/` |
+| Client edited content, want it locally without touching your theme | `wp envsync pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
+| Fresh media only | `wp envsync pull prod --only=uploads` |
+| Ship theme work | `wp envsync diff prod --only=themes`, then `wp envsync push prod --only=themes` |
+| After any `--tables` pull that split a family (the plan prints a warning) | run a full `wp envsync pull prod` before the next push |
+
+Rules the agent must follow:
+- Scope on `push` never widens beyond what `diff` showed with the same flags. Run `diff` first with the flags you intend to push with.
+- A partial pull refreshes only the parts of the baseline it touched. `env list` shows `partial <date> (<scope>)` next to the full baseline date.
+- Resume refuses when the remote plugin version or the env's excludes/replace pairs changed since the pull started; use `--fresh`.
+
 ## The one rule
 
 **Never run `push` without showing the user a `diff` first.** The whole point of this plugin is that a human sees what moves before it moves. A push applies to a client's live site.
@@ -78,22 +108,6 @@ wp envsync diff prod --table=wp_posts --id=2231
 
 Shows a field-by-field comparison of that row on both sides.
 
-## Which flags for which job
-
-| Situation | Command |
-|---|---|
-| First pull of a big site | `wp envsync pull prod`. If it drops, run the same command again and answer `y` to resume. `--fresh` starts over. |
-| Working on the theme, want prod's latest theme files | `wp envsync pull prod --only=themes --paths=themes/<slug>/` |
-| Client edited content, want it locally without touching your theme | `wp envsync pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
-| Fresh media only | `wp envsync pull prod --only=uploads` |
-| Ship theme work | `wp envsync diff prod --only=themes`, then `wp envsync push prod --only=themes` |
-| After any `--tables` pull that split a family (the plan prints a warning) | run a full `wp envsync pull prod` before the next push |
-
-Rules the agent must follow:
-- Scope on `push` never widens beyond what `diff` showed with the same flags. Run `diff` first with the flags you intend to push with.
-- A partial pull refreshes only the parts of the baseline it touched. `env list` shows `partial <date> (<scope>)` next to the full baseline date.
-- Resume refuses when the remote plugin version or the env's excludes/replace pairs changed since the pull started; use `--fresh`.
-
 ## Reading a diff
 
 ```
@@ -116,9 +130,11 @@ prod  ←  local          baseline: 2026-09-08 02:06
 | `envsync env add <name> [<url>] [--token=] [--label=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | Manage and test environments |
 | `envsync env excludes <name>` | List every excluded path with its source, and the file count still in scope |
+| `envsync status [<env>] [--json]` | Report role, each env's state, and the one recommended next command |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--flush-cache]` | Overwrite this site from the remote, record baseline |
 | `envsync diff <env> [--details] [--json] [--table= --id=] [--flush-cache]` | Preview a push, changes nothing |
 | `envsync push <env> [--dry-run] [--yes] [--plan=<file>] [--force]` | Apply changes to the remote |
+| `envsync unlock <env> [--yes]` | Clear a stuck push lock; rolls nothing back |
 | `envsync rollback <env> [--job=<id>]` | Restore the pre-push snapshot |
 | `envsync token [--rotate]` | Show or reissue this site's token |
 
@@ -149,7 +165,7 @@ Warn them that a `chmod 664` sweep strips execute bits from any scripts under wp
 
 **`checksum mismatch`** — the file changed on the remote mid-transfer. Re-run.
 
-**423 / "another job is running"** — a push is already in progress from another machine, or a previous one died holding the lock. The lock expires after an hour.
+**423 / "another job is running"** — a push died on the remote; run `wp envsync status <env>` to see the lock's age, and `wp envsync unlock <env>` clears it once it is older than two minutes. Nothing is rolled back — `rollback` still restores that job.
 
 **Push reports skipped or stale items** — the remote changed those rows or files between the diff and the apply. Correct behavior, production wins. Pull again and redo the work if those changes mattered.
 
