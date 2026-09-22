@@ -137,8 +137,9 @@ class IXES_Pull {
 			$commit = IXES_Transfer::import_commit( $done );
 			if ( is_wp_error( $commit ) ) return $commit;
 			$state->committed();
-			// the imported options table is live now; the bootstrapped alloptions cache is not
-			if ( $options_in ) { wp_cache_flush(); $bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) ); }
+			// imported rows are live now; the bootstrapped object cache may still hold stale copies of any of them
+			wp_cache_flush();
+			if ( $options_in ) $bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
 		}
 
 		$n = count( $plan['files']['transfer'] );

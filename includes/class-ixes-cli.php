@@ -167,7 +167,8 @@ class IXES_CLI {
 		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "    {$p[0]}  →  {$p[1]}" );
 		WP_CLI::log( '  excludes: ' . implode( ', ', $plan['excludes'] ) );
 		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
-		if ( ! empty( $plan['scope'] ) ) WP_CLI::log( '  scope: ' . IXES_Scope::from_array( $plan['scope'], '' )->label() );
+		$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
+		if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
 		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
 			foreach ( [ 'transfer', 'delete' ] as $k ) {
 				$by = [];
@@ -224,6 +225,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
 		if ( ! empty( $assoc['json'] ) ) { WP_CLI::line( IXES_Planner::render_json( $plan ) ); return; }
 		WP_CLI::line( IXES_Planner::render_text( $plan ) );
+		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
 		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
 			foreach ( $plan['tables'] as $name => $t ) foreach ( [ 'push', 'insert', 'delete', 'conflict' ] as $k ) if ( $t[ $k ] ) WP_CLI::log( "  {$name} {$k}: " . implode( ', ', $t[ $k ] ) );
 			foreach ( [ 'push', 'delete', 'conflict' ] as $k ) foreach ( $plan['files'][ $k ] as $rel ) WP_CLI::log( "  file {$k}: {$rel}" );
@@ -292,6 +294,7 @@ class IXES_CLI {
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
 		}
 		WP_CLI::line( IXES_Planner::render_text( $plan ) );
+		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
 		if ( IXES_Planner::is_empty( $plan ) ) { WP_CLI::success( 'nothing to push' ); return; }
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );

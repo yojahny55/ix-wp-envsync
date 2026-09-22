@@ -55,6 +55,7 @@ class IXES_Planner {
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] ) $plan['tables'][ $name ] = $d;
 		}
+		$plan['warnings'] = $scope->family_warnings( array_keys( $plan['tables'] ) );
 
 		$plan['files'] = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
 		$plan['remote_file_hashes'] = [];
