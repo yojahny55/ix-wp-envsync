@@ -60,7 +60,7 @@ class IXES_Scope {
 		if ( ! $this->files_wanted() ) return false;
 		if ( $this->only && ! in_array( 'files', $this->only, true ) ) {
 			$hit = false;
-			foreach ( $this->only as $o ) { // phpcs:ignore PHPCompatibility.ControlStructures.ForbiddenBreakContinueOutsideLoop
+			foreach ( $this->only as $o ) {
 				if ( isset( self::FOLDER[ $o ] ) && strpos( $rel, self::FOLDER[ $o ] ) === 0 ) { $hit = true; break; }
 			}
 			if ( ! $hit ) return false;
