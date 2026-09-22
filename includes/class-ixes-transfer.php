@@ -19,6 +19,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
+			'caps'            => [ 'binary', 'scope' ],
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 		];
 	}
@@ -151,17 +152,19 @@ class IXES_Transfer {
 		return $rel;
 	}
 
-	public static function file_chunk( $rel, $offset, $size ) {
+	public static function file_chunk( $rel, $offset, $size, $as_binary = false ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused', [ 'status' => 400 ] );
 		$p = WP_CONTENT_DIR . '/' . $rel;
 		if ( ! is_file( $p ) ) return new WP_Error( 'not_found', 'no such file', [ 'status' => 404 ] );
 		$fh = fopen( $p, 'rb' ); fseek( $fh, $offset ); $data = fread( $fh, $size ); fclose( $fh );
+		if ( $data === false ) $data = '';
 		// cached: this used to rehash the whole file on every 2 MB chunk (O(n^2) on big media)
 		$sha = IXES_Hashcache::hash( $p, $rel, 'sha256' );
 		IXES_Hashcache::save();
 		if ( $sha === false ) return new WP_Error( 'io', 'cannot hash file', [ 'status' => 500 ] );
-		return [ 'data' => base64_encode( $data === false ? '' : $data ), 'size' => strlen( (string) $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
+		if ( $as_binary ) return [ 'bin' => $data, 'size' => strlen( $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
+		return [ 'data' => base64_encode( $data ), 'size' => strlen( $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
 	}
 
 	// ---------- hub side ----------
@@ -169,6 +172,11 @@ class IXES_Transfer {
 	public static function tmp_name( $table ) {
 		global $wpdb;
 		return $wpdb->prefix . 'ixes_tmp_' . substr( $table, strlen( $wpdb->prefix ) );
+	}
+
+	public static function tmp_exists( $table ) {
+		global $wpdb;
+		return (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', self::tmp_name( $table ) ) );
 	}
 
 	private static $local_columns = [];
@@ -198,7 +206,7 @@ class IXES_Transfer {
 		return true;
 	}
 
-	public static function import_rows( $table, array $rows, array $pairs ) {
+	public static function import_rows( $table, array $rows, array $pairs, $replace = false ) {
 		global $wpdb;
 		if ( ! $rows ) return 0;
 		$tmp   = self::tmp_name( $table );
@@ -220,7 +228,7 @@ class IXES_Transfer {
 				}
 				$vals[] = '(' . implode( ',', $cells ) . ')';
 			}
-			$sql = "INSERT INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
+			$sql = ( $replace ? 'REPLACE' : 'INSERT' ) . " INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
 			$ok  = $wpdb->query( $sql );
 			if ( $ok === false ) return new WP_Error( 'import_failed', "table {$table}: " . $wpdb->last_error );
 			$inserted += count( $batch );
@@ -289,8 +297,11 @@ class IXES_Transfer {
 		$tmp  = $dest . '.ixes-tmp';
 		$dir  = dirname( $dest );
 		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return new WP_Error( 'io', self::io_hint( "cannot create directory {$dir}", $dir ) );
-		$fh = @fopen( $tmp, $offset === 0 ? 'wb' : 'ab' );
+		// a retried chunk (after a 502/503/504/408) must overwrite at $offset, not append,
+		// or the bytes land twice and the final sha256 check fails
+		$fh = @fopen( $tmp, $offset === 0 ? 'wb' : 'c+b' );
 		if ( ! $fh ) return new WP_Error( 'io', self::io_hint( "cannot write {$rel}", $dir ) );
+		if ( $offset > 0 ) { fseek( $fh, $offset ); ftruncate( $fh, $offset ); }
 		$w = fwrite( $fh, $data );
 		fclose( $fh );
 		if ( $w === false || $w < strlen( $data ) ) { @unlink( $tmp ); return new WP_Error( 'io', self::io_hint( "short write on {$rel} (disk full?)", $dir ) ); }
@@ -374,10 +385,11 @@ class IXES_Transfer {
 		return [ $files, $bytes ];
 	}
 
-	public static function offset_auto_increment() {
+	public static function offset_auto_increment( array $imported = null ) {
 		global $wpdb;
 		$map = [ $wpdb->posts => 'ID', $wpdb->postmeta => 'meta_id', $wpdb->terms => 'term_id', $wpdb->term_taxonomy => 'term_taxonomy_id', $wpdb->comments => 'comment_ID', $wpdb->users => 'ID' ];
 		foreach ( $map as $t => $pk ) {
+			if ( $imported !== null && ! in_array( $t, $imported, true ) ) continue;
 			$max = (int) $wpdb->get_var( "SELECT MAX(`{$pk}`) FROM `{$t}`" );
 			$wpdb->query( "ALTER TABLE `{$t}` AUTO_INCREMENT = " . ( $max + 1000000 ) );
 		}

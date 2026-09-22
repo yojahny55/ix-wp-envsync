@@ -26,7 +26,7 @@ PY=$(A post create --post_title="Y" --post_content="y1" --post_status=publish --
 mkdir -p "$IXES_A/wp-content/themes/ixtest"; echo "/* v1 */" > "$IXES_A/wp-content/themes/ixtest/style.css"
 
 # 1. pull
-B envsync pull prod --yes
+B envsync pull prod --fresh --yes   # --fresh: a leftover resume state from an earlier run must not be auto-resumed here
 [ "$(B post get "$PX" --field=post_content)" = "x1" ] || die "pull did not bring post X"
 [ -f "$IXES_B/wp-content/themes/ixtest/style.css" ] || die "pull did not bring theme file"
 
@@ -70,5 +70,44 @@ B envsync push prod --yes >/dev/null
 B envsync rollback prod --yes
 [ "$(A post get "$PY" --field=post_content)" = "x-prod" ] && die "rollback restored wrong row"
 [ "$(A post get "$PY" --field=post_content)" = "y2" ] || die "rollback did not restore Y (got $(A post get "$PY" --field=post_content))"
+
+# 7. a pull killed mid-way resumes and completes
+dd if=/dev/urandom of="$IXES_A/wp-content/uploads/big.bin" bs=1M count=200 status=none
+# clean start with the big file in the plan; this run is killed the moment the partial file appears,
+# so the kill lands inside the file phase whatever the machine's speed
+rm -f "$IXES_B/wp-content/uploads/big.bin" "$IXES_B/wp-content/uploads/big.bin.ixes-tmp"
+# run wp directly (not the B function): $! must be the php process, or kill -9 only takes the subshell and the pull keeps running
+wp --path="$IXES_B" --url="$IXES_B_URL" envsync pull prod --fresh --yes >/dev/null 2>&1 &
+PULL_PID=$!
+for _ in $(seq 1 600); do [ -f "$IXES_B/wp-content/uploads/big.bin.ixes-tmp" ] && break; sleep 0.1; done
+[ -f "$IXES_B/wp-content/uploads/big.bin.ixes-tmp" ] || die "pull never reached the big file (still running: $(kill -0 $PULL_PID 2>/dev/null && echo yes || echo no))"
+kill -9 $PULL_PID 2>/dev/null || true; wait $PULL_PID 2>/dev/null || true
+ls "$IXES_B/wp-content/envsync-"*/pull-prod.json >/dev/null 2>&1 || die "no resume state after an interrupted pull"
+OUT=$(B envsync pull prod --yes)
+echo "$OUT" | grep -q "interrupted pull" || die "resume prompt not shown"
+cmp "$IXES_A/wp-content/uploads/big.bin" "$IXES_B/wp-content/uploads/big.bin" || die "big file differs after resume"
+ls "$IXES_B/wp-content/envsync-"*/pull-prod.json 2>/dev/null && die "state file left behind after a completed pull"
+
+# 8. --only=themes push: theme file goes up, prod-edited post untouched
+B envsync pull prod --yes >/dev/null
+echo "/* v3 */" > "$IXES_B/wp-content/themes/ixtest/style.css"
+B post update "$PX" --post_content="x-local-only" >/dev/null
+A post update "$PY" --post_content="y-prod-edit" >/dev/null
+B envsync diff prod --only=themes | grep -q "scope: themes" || die "scope not shown in diff"
+B envsync push prod --only=themes --yes >/dev/null
+grep -q v3 "$IXES_A/wp-content/themes/ixtest/style.css" || die "theme not pushed with --only=themes"
+[ "$(A post get "$PX" --field=post_content)" != "x-local-only" ] || die "db row pushed despite --only=themes"
+[ "$(A post get "$PY" --field=post_content)" = "y-prod-edit" ] || die "prod edit lost"
+B envsync env list | grep -q "partial" && die "a scoped push must not mark the baseline partial"
+B envsync pull prod --only=uploads --yes >/dev/null
+B envsync env list | grep -q "partial .*(uploads)" || die "partial pull not reflected in env list"
+
+# 9. a 0.2 hub asks for JSON: the remote must still answer base64
+TS=$(date +%s); BODY='{"path":"themes/ixtest/style.css","offset":0,"size":1024}'
+MSG=$(printf 'POST\n/envsync/v1/file/get\n%s\n%s' "$TS" "$(printf '%s' "$BODY" | sha256sum | cut -d' ' -f1)")
+SIG=$(printf '%s' "$MSG" | openssl dgst -sha256 -hmac "$TOKEN" | sed 's/^.* //')
+OUT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "X-Envsync-Ts: $TS" -H "X-Envsync-Sig: $SIG" -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$BODY" "$IXES_A_URL/?rest_route=/envsync/v1/file/get")
+echo "$OUT" | grep -q '"data":"' || die "JSON file/get no longer served: $OUT"
+echo "$OUT" | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit(hash("sha256",base64_decode($j["data"]))===$j["sha256"]?0:1);' || die "JSON chunk hash mismatch"
 
 echo "ALL OK"

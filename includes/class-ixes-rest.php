@@ -16,9 +16,10 @@ class IXES_Rest {
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
 		$r( '/dirs',       'POST', function () { return IXES_Transfer::dir_sizes(); } );
 		foreach ( [ 'start', 'step', 'finish', 'abort' ] as $op ) {
-			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, $req->get_json_params() ); } );
+			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
 		}
 		$r( '/rollback', 'POST', function ( $req ) { return self::applier( 'rollback', $req->get_json_params() ); } );
+		add_filter( 'rest_pre_serve_request', [ __CLASS__, 'serve_binary' ], 10, 4 );
 	}
 
 	public static function auth( WP_REST_Request $req ) {
@@ -29,9 +30,14 @@ class IXES_Rest {
 		$ok = IXES_Auth::verify(
 			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
 			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),
-			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' )
+			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ),
+			null, (string) $req->get_header( 'x-envsync-step' )
 		);
 		return $ok ? true : new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
+	}
+
+	private static function wants_binary( WP_REST_Request $req ) {
+		return stripos( (string) $req->get_header( 'accept' ), 'application/octet-stream' ) !== false;
 	}
 
 	private static function pairs( array $p ) {
@@ -52,9 +58,47 @@ class IXES_Rest {
 		return IXES_Transfer::dump( sanitize_text_field( $p['table'] ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ) );
 	}
 	public static function file_get( WP_REST_Request $req ) {
-		$p = $req->get_json_params();
-		return IXES_Transfer::file_chunk( $p['path'] ?? '', (int) ( $p['offset'] ?? 0 ), (int) ( $p['size'] ?? 2097152 ) );
+		$p   = $req->get_json_params();
+		$bin = self::wants_binary( $req );
+		$r   = IXES_Transfer::file_chunk( $p['path'] ?? '', (int) ( $p['offset'] ?? 0 ), (int) ( $p['size'] ?? 2097152 ), $bin );
+		if ( is_wp_error( $r ) || ! $bin ) return $r;
+		// Raw bytes must bypass the JSON encoder, but still go through the normal REST response
+		// pipeline (rest_post_dispatch, CORS/security plugins, etc.) instead of exiting early.
+		// rest_pre_serve_request is the hook WordPress provides for emitting a body itself; see
+		// serve_binary(). WP_REST_Server::serve_request() sends $result->get_headers() (including
+		// ours below) via PHP's header() before that filter runs, and header() replaces the
+		// earlier default 'Content-Type: application/json' with the last value set for that name.
+		$res = new WP_REST_Response( null, 200 );
+		$res->header( 'Content-Type', 'application/octet-stream' );
+		$res->header( 'Content-Length', (string) $r['size'] );
+		$res->header( 'X-Envsync-Total', (string) $r['total'] );
+		$res->header( 'X-Envsync-Size', (string) $r['size'] );
+		$res->header( 'X-Envsync-Sha256', $r['sha256'] );
+		$res->header( 'Cache-Control', 'no-cache' );
+		$res->set_data( $r['bin'] );
+		$res->ixes_binary = true; // marker read by serve_binary()
+		return $res;
 	}
+
+	/** Emit a binary file_get response as raw bytes instead of JSON; headers were already sent by the server. */
+	public static function serve_binary( $served, $result, $request, $server ) {
+		if ( $served || ! ( $result instanceof WP_REST_Response ) || empty( $result->ixes_binary ) ) return $served;
+		echo $result->get_data(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary file body, not HTML
+		return true;
+	}
+
+	/** Step params: JSON body, or X-Envsync-Step header plus raw body when the hub sends octet-stream. */
+	private static function step_params( WP_REST_Request $req ) {
+		if ( stripos( (string) $req->get_header( 'content-type' ), 'application/octet-stream' ) === 0 ) {
+			$p = json_decode( (string) $req->get_header( 'x-envsync-step' ), true );
+			if ( ! is_array( $p ) ) return [];
+			$p['bin'] = (string) $req->get_body();
+			return $p;
+		}
+		$p = $req->get_json_params();
+		return is_array( $p ) ? $p : [];
+	}
+
 	private static function applier( $method, $params ) {
 		if ( ! class_exists( 'IXES_Applier' ) ) return new WP_Error( 'unavailable', 'applier missing', [ 'status' => 501 ] );
 		return call_user_func( [ 'IXES_Applier', $method ], is_array( $params ) ? $params : [] );

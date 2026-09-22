@@ -26,7 +26,7 @@ class IXES_Admin {
 			echo '<h2>Environments</h2><table class="widefat striped"><thead><tr><th>Name</th><th>Label</th><th>URL</th><th>Baseline</th></tr></thead><tbody>';
 			foreach ( $envs as $e ) {
 				$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $e['name'] . '.sqlite' );
-				printf( '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>', esc_html( $e['name'] ), esc_html( $e['label'] ), esc_html( $e['url'] ), $bl->exists() ? esc_html( wp_date( 'Y-m-d H:i', $bl->meta( 'created_at' ) ) ) : '—' );
+				printf( '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>', esc_html( $e['name'] ), esc_html( $e['label'] ), esc_html( $e['url'] ), esc_html( $bl->baseline_label() ) );
 			}
 			echo '</tbody></table>';
 		}
@@ -40,7 +40,7 @@ class IXES_Admin {
 			echo '</ul>';
 		}
 
-		$plans = glob( ixes_storage_dir() . '/plans/plan-*.json' );
+		$plans = array_filter( (array) glob( ixes_storage_dir() . '/plans/plan-*.json' ), function ( $f ) { return strpos( basename( $f ), 'plan-pull-' ) !== 0; } );
 		if ( $plans ) {
 			sort( $plans ); $plan = json_decode( file_get_contents( end( $plans ) ), true );
 			if ( is_array( $plan ) ) echo '<h2>Last plan (' . esc_html( basename( end( $plans ) ) ) . ')</h2><pre style="background:#fff;padding:12px;overflow:auto">' . esc_html( IXES_Planner::render_text( $plan ) ) . '</pre>';

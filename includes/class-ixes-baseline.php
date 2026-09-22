@@ -28,8 +28,33 @@ class IXES_Baseline {
 			$this->pdo->exec( 'DELETE FROM rows; DELETE FROM files; DELETE FROM meta;' );
 		} else {
 			$this->json = [ 'rows' => [], 'files' => [], 'meta' => [] ];
+			$this->save_json();
 		}
-		$this->meta( 'created_at', time() );
+	}
+
+	/** Marks the baseline as complete. Called once the pull has committed tables and finished files. */
+	public function commit() { $this->meta( 'created_at', time() ); }
+
+	public function delete_table( $table ) {
+		if ( $this->pdo ) {
+			$st = $this->pdo->prepare( 'DELETE FROM rows WHERE tbl = ?' ); $st->execute( [ $table ] );
+		} else {
+			unset( $this->json['rows'][ $table ] ); $this->save_json();
+		}
+	}
+
+	public function delete_file( $path ) {
+		if ( $this->pdo ) { $st = $this->pdo->prepare( 'DELETE FROM files WHERE path = ?' ); $st->execute( [ $path ] ); }
+		else { unset( $this->json['files'][ $path ] ); $this->save_json(); }
+	}
+
+	/** "2026-09-12", "2026-09-12 · partial 2026-09-22 (themes)" or "-" for CLI and admin tables. */
+	public function baseline_label() {
+		$c = $this->meta( 'created_at' ); $p = $this->meta( 'partial_at' );
+		if ( ! $c && ! $p ) return '-';
+		$out = $c ? wp_date( 'Y-m-d H:i', (int) $c ) : 'none';
+		if ( $p && ( ! $c || $p > $c ) ) $out .= ' · partial ' . wp_date( 'Y-m-d H:i', (int) $p ) . ' (' . $this->meta( 'partial_scope' ) . ')';
+		return $out;
 	}
 
 	public function write_rows( $table, array $map ) {

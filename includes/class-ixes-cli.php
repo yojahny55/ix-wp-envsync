@@ -12,6 +12,11 @@ class IXES_CLI {
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
 	private function logger() { return function ( $m ) { WP_CLI::log( $m ); }; }
+	private function scope( $assoc ) {
+		global $wpdb;
+		try { return IXES_Scope::from_assoc( $assoc, $wpdb->prefix ); }
+		catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
+	}
 
 	/**
 	 * Manage environments.
@@ -50,7 +55,7 @@ class IXES_CLI {
 			$rows = [];
 			foreach ( IXES_Env::all() as $e ) {
 				$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $e['name'] . '.sqlite' );
-				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'baseline' => $bl->exists() ? date( 'Y-m-d H:i', $bl->meta( 'created_at' ) ) : '-' ];
+				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'baseline' => $bl->baseline_label() ];
 			}
 			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'baseline' ] );
 			return;
@@ -120,15 +125,52 @@ class IXES_CLI {
 	 *
 	 * [--details]
 	 * : Break the file counts down by directory.
+	 *
+	 * [--fresh]
+	 * : Discard an interrupted pull and start over.
+	 *
+	 * [--only=<parts>]
+	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+	 *
+	 * [--tables=<tables>]
+	 * : Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
+	 *
+	 * [--paths=<paths>]
+	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
-		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c ) );
+		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
+		$state = IXES_PullState::load( $env['name'] );
+		if ( $state ) {
+			if ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) WP_CLI::error( 'scope flags cannot change while resuming; use --fresh' );
+			$plan = is_file( (string) $state->get( 'plan' ) ) ? json_decode( file_get_contents( $state->get( 'plan' ) ), true ) : null;
+			$info = $this->fail_if_error( $c->info() );
+			$why  = ! is_array( $plan ) ? 'saved plan file is missing' : $state->refusal(
+				(string) ( $info['plugin'] ?? '' ), (array) $plan['excludes'], IXES_Pull::excludes( $env ),
+				(array) ( $plan['extra_replace'] ?? [] ), (array) $env['extra_replace'],
+				$state->get( 'table' ) ? IXES_Transfer::tmp_exists( $state->get( 'table' ) ) : true
+			);
+			if ( $why ) WP_CLI::error( "cannot resume: {$why}. Run again with --fresh to start over." );
+			WP_CLI::log( $state->describe( count( $plan['files']['transfer'] ) ) );
+			$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
+			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
+			if ( ! empty( $assoc['dry-run'] ) ) return;
+			$this->confirm( $assoc, 'Resume?' );
+			$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger(), $state ) );
+			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
+			return;
+		}
+		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc ) ) );
+		// ... existing plan printing (rows, files, rewrite, excludes, --details) unchanged ...
 		$rows = array_sum( array_column( $plan['tables'], 'rows' ) );
 		WP_CLI::log( sprintf( "PULL %s → local\n  tables: %d (%d rows)\n  files: %d to transfer, %d to delete\n  rewrite:", $env['name'], count( $plan['tables'] ), $rows, count( $plan['files']['transfer'] ), count( $plan['files']['delete'] ) ) );
 		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "    {$p[0]}  →  {$p[1]}" );
 		WP_CLI::log( '  excludes: ' . implode( ', ', $plan['excludes'] ) );
+		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
+		$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
+		if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
 		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
 			foreach ( [ 'transfer', 'delete' ] as $k ) {
 				$by = [];
@@ -167,15 +209,25 @@ class IXES_CLI {
 	 *
 	 * [--flush-cache]
 	 * : Discard the file hash cache and rehash everything.
+	 *
+	 * [--only=<parts>]
+	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+	 *
+	 * [--tables=<tables>]
+	 * : Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
+	 *
+	 * [--paths=<paths>]
+	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 	 */
 	public function diff( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c ) );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc ) ) );
 		$path = IXES_Planner::save( $plan );
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
 		if ( ! empty( $assoc['json'] ) ) { WP_CLI::line( IXES_Planner::render_json( $plan ) ); return; }
 		WP_CLI::line( IXES_Planner::render_text( $plan ) );
+		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
 		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
 			foreach ( $plan['tables'] as $name => $t ) foreach ( [ 'push', 'insert', 'delete', 'conflict' ] as $k ) if ( $t[ $k ] ) WP_CLI::log( "  {$name} {$k}: " . implode( ', ', $t[ $k ] ) );
 			foreach ( [ 'push', 'delete', 'conflict' ] as $k ) foreach ( $plan['files'][ $k ] as $rel ) WP_CLI::log( "  file {$k}: {$rel}" );
@@ -218,10 +270,20 @@ class IXES_CLI {
 	 *
 	 * [--plan=<file>]
 	 * : Apply a previously saved plan file.
+	 *
+	 * [--only=<parts>]
+	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+	 *
+	 * [--tables=<tables>]
+	 * : Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
+	 *
+	 * [--paths=<paths>]
+	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 	 */
 	public function push( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c ) );
+		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc ) ) );
 		if ( ! empty( $assoc['plan'] ) ) {
 			$saved = json_decode( file_get_contents( $assoc['plan'] ), true );
 			if ( ! $saved ) WP_CLI::error( 'cannot read plan file' );
@@ -234,9 +296,10 @@ class IXES_CLI {
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
 		}
 		WP_CLI::line( IXES_Planner::render_text( $plan ) );
+		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
 		if ( IXES_Planner::is_empty( $plan ) ) { WP_CLI::success( 'nothing to push' ); return; }
 		if ( ! empty( $assoc['dry-run'] ) ) return;
-		$this->confirm( $assoc, "Apply this plan to {$env['name']} ({$env['url']})?" );
+		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
 		$r = $this->fail_if_error( IXES_Applier::apply( $env, $c, $plan, $this->logger() ) );
 		if ( $r['stale'] ) WP_CLI::warning( 'skipped (changed on prod during push): ' . implode( ', ', $r['stale'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
