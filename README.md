@@ -144,7 +144,7 @@ Run `status` whenever you're unsure what state a site is in. It names the one co
 
 You built the site locally and production (or staging) is a fresh WordPress install. There is no baseline yet, and pulling first would overwrite your work with the empty site. Push with `--force` instead, then pull once to record the baseline.
 
-> `status` says `wp envsync pull <env>` for any environment without a baseline. On a first deploy, skip that advice and follow the steps below.
+> `status` spots this case. When there is no baseline and the remote has 5 posts or fewer (a fresh install), it recommends `wp envsync push <env> --force --dry-run` instead of `pull`.
 
 1. **On the new site:** install WordPress with the **same table prefix** as your local site (the plugin stops on a mismatch). Upload the plugin zip, activate it, and copy the token from **Tools → EnvSync**.
 2. **On your local site (the hub):** register it and check the connection:

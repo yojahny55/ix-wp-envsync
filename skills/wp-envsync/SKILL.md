@@ -125,7 +125,7 @@ prod  ←  local          baseline: 2026-09-08 02:06
 
 ## First deploy onto a fresh install
 
-If the user built the site locally and the remote is a **fresh WordPress install** they are deploying to for the first time, pulling first would wipe their local work with the empty site. In that case, ignore the `pull` that `status` recommends, and run:
+If the user built the site locally and the remote is a **fresh WordPress install** they are deploying to for the first time, pulling first would wipe their local work with the empty site. `status` recommends `push <env> --force --dry-run` when there is no baseline and the remote has 5 posts or fewer. For a remote with more posts that the user says is still fresh, ignore the `pull` that `status` recommends. Either way, run:
 
 1. `wp envsync push <env> --force --dry-run`. Show the plan to the user.
 2. Before they approve, tell them three things. Local users replace the remote's users, so they will log in with their local credentials. Active local dev plugins go up too. Nothing on the remote is deleted, so an old site's content stays mixed in.

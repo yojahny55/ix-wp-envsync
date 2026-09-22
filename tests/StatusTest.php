@@ -68,6 +68,16 @@ class StatusTest extends TestCase {
 		$this->assertSame( 'wp envsync pull prod', $n['command'] );
 		$this->assertStringContainsString( 'no baseline', $n['why'] );
 	}
+	public function test_no_baseline_and_fresh_remote_suggests_first_deploy() {
+		$ctx = $this->ctx( [ 'baseline' => function () { return [ 'created_at' => null, 'partial_at' => null, 'partial_scope' => null ]; } ] );
+		$tables = [ [ 'name' => 'wp_posts', 'pk' => 'ID', 'rows' => 3 ], [ 'name' => 'wp_users', 'pk' => 'ID', 'rows' => 1 ] ];
+		$n = $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) );
+		$this->assertSame( 'wp envsync push prod --force --dry-run', $n['command'] );
+		$this->assertStringContainsString( 'fresh install (3 posts)', $n['why'] );
+		$tables[0]['rows'] = 400;
+		$this->assertSame( 'wp envsync pull prod', $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) )['command'] );
+	}
+
 	public function test_old_baseline() {
 		$ctx = $this->ctx( [ 'baseline' => function () { return [ 'created_at' => $this->now - 10 * 86400, 'partial_at' => null, 'partial_scope' => null ]; } ] );
 		$n = $this->next( $ctx, $this->info() );
