@@ -110,7 +110,7 @@ class IXES_Client {
 	 * Pull one file chunk by chunk. $write( $offset, $data, $final, $sha256 ) returns true or WP_Error.
 	 * @return true|WP_Error
 	 */
-	public function fetch_file( $rel, callable $write ) {
+	public function fetch_file( $rel, callable $write, callable $on_bytes = null ) {
 		$ch = new IXES_Chunker( $this->binary() ? 2097152 : self::CHUNK_JSON_SIZE );
 		$offset = 0;
 		while ( true ) {
@@ -134,6 +134,7 @@ class IXES_Client {
 			$final = $next >= $total || $data === '';
 			$w = $write( $offset, $data, $final, $sha );
 			if ( is_wp_error( $w ) ) return $w;
+			if ( $on_bytes ) $on_bytes( strlen( $data ) );
 			if ( $final ) return true;
 			$offset = $next;
 		}
@@ -143,7 +144,7 @@ class IXES_Client {
 	 * Push one file chunk by chunk through /job/step. $first_meta (expect, algo) is merged into the offset-0 step.
 	 * @return array{ok:bool,refused:bool}|WP_Error
 	 */
-	public function send_file( $job, $rel, $abs, array $first_meta ) {
+	public function send_file( $job, $rel, $abs, array $first_meta, callable $on_bytes = null ) {
 		$sha = hash_file( 'sha256', $abs ); $total = filesize( $abs );
 		$ch  = new IXES_Chunker( $this->binary() ? 2097152 : self::CHUNK_JSON_SIZE );
 		$fh  = fopen( $abs, 'rb' );
@@ -164,6 +165,7 @@ class IXES_Client {
 				return new WP_Error( 'transfer', "{$rel}: gave up at offset {$offset} after {$ch->attempts()} attempts: " . $r->get_error_message() );
 			}
 			$ch->ok( microtime( true ) - $t0 ); $ch->reset_attempts();
+			if ( $on_bytes ) $on_bytes( strlen( $data ) );
 			if ( ! empty( $r['refused'] ) ) { fclose( $fh ); return [ 'ok' => false, 'refused' => true ]; }
 			if ( $final ) { fclose( $fh ); return [ 'ok' => true, 'refused' => false ]; }
 			$offset += strlen( $data );
