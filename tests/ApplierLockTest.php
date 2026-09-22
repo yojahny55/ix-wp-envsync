@@ -20,4 +20,19 @@ class ApplierLockTest extends TestCase {
 		$this->assertSame( [ 'x' ], $s['files']['push'] );
 		$this->assertSame( [], $s['files']['delete'] );
 	}
+	private function upgrading_for( array $server ) {
+		$f = tempnam( sys_get_temp_dir(), 'ixes' );
+		file_put_contents( $f, IXES_Applier::maintenance_body( 1758535000 ) );
+		$saved = $_SERVER; $_SERVER = $server;
+		include $f;
+		$_SERVER = $saved; unlink( $f );
+		return $upgrading;
+	}
+	public function test_maintenance_blocks_visitors_but_not_health_checks_or_our_calls() {
+		$this->assertSame( 1758535000, $this->upgrading_for( [ 'REMOTE_ADDR' => '172.18.0.5', 'REQUEST_URI' => '/' ] ) );
+		$this->assertSame( 1758535000, $this->upgrading_for( [ 'REMOTE_ADDR' => '172.18.0.5', 'REQUEST_URI' => '/wp-json/envsync/v1/job/step' ] ) );
+		$this->assertSame( 1, $this->upgrading_for( [ 'REMOTE_ADDR' => '127.0.0.1', 'REQUEST_URI' => '/' ] ) );
+		$this->assertSame( 1, $this->upgrading_for( [ 'REMOTE_ADDR' => '::1', 'REQUEST_URI' => '/' ] ) );
+		$this->assertSame( 1, $this->upgrading_for( [ 'REMOTE_ADDR' => '172.18.0.5', 'REQUEST_URI' => '/wp-json/envsync/v1/job/step', 'HTTP_X_ENVSYNC_SIG' => 'x' ] ) );
+	}
 }
