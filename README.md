@@ -71,7 +71,7 @@ CONFLICTS (prod wins)
 **Conflicts.** Each conflicting row or file is listed by name. Check that list before every push.
 
 ```
-  wp_posts #2231  "Services"
+  wp_posts             #2231  Services
 ```
 
 The three-way compare works the same for every row and file:
@@ -107,7 +107,7 @@ FILES
   themes/mk-adventure/            push 14   delete 2
   plugins/advanced-custom-fields/ kept-prod
 CONFLICTS (prod wins)
-  wp_posts #2231  "Services"
+  wp_posts             #2231  Services
 ```
 
 Every DB and FILES row uses the same counts:

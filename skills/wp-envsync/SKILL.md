@@ -165,7 +165,7 @@ Warn them that a `chmod 664` sweep strips execute bits from any scripts under wp
 
 **`checksum mismatch`** — the file changed on the remote mid-transfer. Re-run.
 
-**423 / "another job is running"** — a push is already in progress from another machine, or a previous one died holding the lock. The lock expires after an hour.
+**423 / "another job is running"** — a push died on the remote; run `wp envsync status <env>` to see the lock's age, and `wp envsync unlock <env>` clears it once it is older than two minutes. Nothing is rolled back — `rollback` still restores that job.
 
 **Push reports skipped or stale items** — the remote changed those rows or files between the diff and the apply. Correct behavior, production wins. Pull again and redo the work if those changes mattered.
 
