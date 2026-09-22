@@ -1,101 +1,123 @@
 ---
 name: wp-envsync
-description: Sync a WordPress site between local, staging and production with the IX WP EnvSync plugin — pull a full copy down, preview a three-way diff, push back only your changes with production always winning, and roll back a bad push. Use when the user asks to pull from prod, push to staging or prod, sync environments, see what would change before syncing, migrate a site between environments, or recover from a failed sync.
+description: Sync a WordPress site between local, staging and production with the IX WP EnvSync plugin — pull a full copy down, preview a three-way diff, push back only your changes with production always winning, deploy a locally built site to a fresh install, and roll back a bad push. Use when the user asks to pull from prod, push to staging or prod, deploy a new site, sync environments, see what would change before syncing, or recover from a failed or stuck sync.
 user-invocable: false
 ---
 
 # WP EnvSync
 
-Drives the IX WP EnvSync WordPress plugin. Use it whenever the user wants content, code or media moved between WordPress environments.
+Drives the IX WP EnvSync WordPress plugin through WP-CLI. Use it whenever the user wants content, code or media moved between WordPress environments.
 
-## Start here
+## The loop
 
-Run `wp envsync status --json` and act on `next.command`. Do not compose pull/diff/push from memory when `status` already says what to do.
+Every task follows the same four steps. Do not skip one.
 
-| next.command | tell the human before running it |
-|---|---|
-| `wp envsync pull <env>` | this overwrites the local site's database and files with the remote's |
-| `wp envsync push <env>` | this changes production; show the diff output first |
-| `wp envsync unlock <env>` | a push died on the remote; nothing is rolled back; `rollback` still restores that job |
-| `wp envsync env add …` | needs a token from the remote's Tools → EnvSync page |
-| upload the release zip | the remote runs an older plugin; a human uploads the zip through Plugins → Add New |
+1. **Read the state:** `wp --path=<site> envsync status --json`
+2. **Act on `next.command`.** Do not compose pull, diff or push from memory when `status` already names the step.
+3. **Preview anything that changes a site** with `--dry-run` (or `diff` before a push). Show the output to the user and say what it means.
+4. **After the user approves, rerun the same command with `--yes`.**
 
-Never run `push` or `unlock` without stating what `status` reported.
+Why `--yes`: `pull`, `push`, `rollback` and `unlock` each stop at a `[y/n]` prompt. Your shell cannot answer it, so without `--yes` the command aborts. `--yes` is only for a plan the user approved in this conversation.
 
-## Which flags for which job
+Always pass `--path=<site root>`. The hub is the site you run commands from.
 
-| Situation | Command |
-|---|---|
-| First pull of a big site | `wp envsync pull prod`. If it drops, run the same command again and answer `y` to resume. `--fresh` starts over. |
-| Working on the theme, want prod's latest theme files | `wp envsync pull prod --only=themes --paths=themes/<slug>/` |
-| Client edited content, want it locally without touching your theme | `wp envsync pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
-| Fresh media only | `wp envsync pull prod --only=uploads` |
-| Ship theme work | `wp envsync diff prod --only=themes`, then `wp envsync push prod --only=themes` |
-| After any `--tables` pull that split a family (the plan prints a warning) | run a full `wp envsync pull prod` before the next push |
+## Reading `status --json`
 
-Rules the agent must follow:
-- Scope on `push` never widens beyond what `diff` showed with the same flags. Run `diff` first with the flags you intend to push with.
-- A partial pull refreshes only the parts of the baseline it touched. `env list` shows `partial <date> (<scope>)` next to the full baseline date.
-- Resume refuses when the remote plugin version or the env's excludes/replace pairs changed since the pull started; use `--fresh`.
-
-## The one rule
-
-**Never run `push` without showing the user a `diff` first.** The whole point of this plugin is that a human sees what moves before it moves. A push applies to a client's live site.
-
-`pull` and `push` are destructive. Show the plan, wait for the user, then act. `--yes` is only for a plan the user has already approved in this conversation.
-
-## Model
-
-One plugin on every site. The site you run commands from is the **hub** (needs WP-CLI); the others are **remotes** (need only the plugin and a token, reached over HTTPS).
-
-- **pull** = replace the hub with a copy of the remote, then record a **baseline** (hashes of every row and file).
-- **push** = three-way compare of baseline, hub now, remote now. Your changes go up; remote-changed rows are kept; both-changed means the remote wins and is reported as a conflict.
-
-The baseline is the safety mechanism. Without a recent pull the plugin can only compare two sides and will refuse to push without `--force`.
-
-## Before doing anything
-
-Always establish these, do not assume:
-
-```bash
-wp --path=<site> envsync env list       # which environments exist, and baseline dates
-wp --path=<site> envsync env ping <env> # connectivity and credentials
+```json
+{
+  "role": "both",
+  "hub_version": "0.4.1",
+  "envs": {
+    "prod": {
+      "url": "https://client.com", "label": "prod",
+      "reachable": true, "error": null,
+      "remote_version": "0.4.1", "version_ok": true, "auth_via": "authorization",
+      "baseline": { "created_at": 1789192836, "partial_at": null, "partial_scope": null, "age_days": 2 },
+      "interrupted_pull": null,
+      "remote_lock": null,
+      "remote_posts": 218,
+      "excludes_count": 7
+    }
+  },
+  "next": { "command": "wp envsync diff prod", "why": "ready", "env": "prod" }
+}
 ```
 
-If `env list` is empty the user needs to register the remote, which requires a token from that site's Tools → EnvSync page. Ask for it; never invent one.
+- `role`: `hub` or `both` means you can run pull/diff/push from here. `remote` means this site is only a target, so go to the hub. `unconfigured` means no environment is registered yet.
+- `next.why` is the reason. Quote it to the user.
+- `reachable: false`: `error` says why (DNS, 401 bad token, TLS).
+- `version_ok: false`: the remote runs an older plugin.
+- `baseline.created_at: null`: no pull has been done for this environment.
+- `remote_lock`: `{job, started, age_minutes}` means a push is running or died there.
+- `interrupted_pull`: `{started, table, files_done, files_total}` means a pull stopped partway.
+- `remote_posts`: the number of rows in the remote's posts table. 5 or fewer means a fresh install.
 
-Always pass `--path=` explicitly when the working directory is not the site root.
+## What to do for each `next.command`
+
+| `next.command` | `next.why` | What you do |
+|---|---|---|
+| `wp envsync env add <name> <url> --token=…` | not set up, or cannot reach | Ask the user for the token from that site's **Tools → EnvSync** page. Never invent one. |
+| `upload the release zip to <url>` | remote runs X, hub runs Y | Tell the user to upload the release zip through **Plugins → Add New → Upload** on that site. You cannot do it. |
+| `wp envsync unlock <env>` | a push … never finished | Tell the user a push died. Nothing is rolled back. Then run `unlock <env> --yes` after approval. |
+| `wp envsync pull <env>` | an interrupted pull can be resumed | Run `pull <env> --dry-run` (it shows where it stopped), then `pull <env> --yes` to resume. Use `--fresh` only if resume is refused. |
+| `wp envsync push <env> --force --dry-run` | looks like a fresh install | This is a first deploy. See [First deploy](#first-deploy-onto-a-fresh-install). |
+| `wp envsync pull <env>` | no baseline | Run `pull <env> --dry-run`, show it, then `pull <env> --yes`. The pull overwrites the local site. |
+| `wp envsync diff <env>` | baseline is N days old | Suggest pulling first. If the user declines, continue as for "ready". |
+| `wp envsync diff <env>` | ready | Run `diff <env>`, show it, then `push <env> --yes` after approval. |
 
 ## Workflows
 
-### Bring production down to local
+### Bring the remote down to local
 
 ```bash
-wp envsync pull prod --dry-run   # show this output to the user
-wp envsync pull prod             # only after they approve
+wp --path=<site> envsync pull prod --dry-run   # show this
+wp --path=<site> envsync pull prod --yes       # after approval
 ```
 
-The dry run reports table and row counts, files to transfer, files to delete, and the URL rewrites. **Report the delete count to the user.** Those files exist locally and not on the remote, and they will be removed. If the count looks large, get the detail before proceeding rather than guessing:
-
-```bash
-wp envsync pull <env> --dry-run --details
-```
+The dry run lists tables and rows, files to transfer, **files to delete**, and URL rewrites. Report the delete count: those files exist only locally and will be removed. If it looks large, add `--details` to see the counts per folder.
 
 ### Ship local changes
 
 ```bash
-wp envsync diff prod             # show the full plan to the user
-wp envsync push prod             # after approval
+wp --path=<site> envsync diff prod             # show this
+wp --path=<site> envsync push prod --yes       # after approval
 ```
 
-Point out the `prod-wins` and `CONFLICTS` sections explicitly. Those are the user's edits that will **not** be applied because production changed the same thing. That is correct behavior, not an error, but the user needs to know which of their changes are being dropped.
+Point out `prod-wins` and `CONFLICTS`. Those are the user's edits that will **not** be applied, because the remote changed the same thing. That is correct behaviour, but the user needs to know which of their changes are dropped. After the push, tell the user to pull again before their next round of work.
 
-Typical release path: push to staging for review, then to production.
+The usual release path is to push to staging first, then to production.
+
+### Sync only part of a site
+
+| Situation | Command |
+|---|---|
+| Theme work only | `diff prod --only=themes`, then `push prod --only=themes --yes` |
+| Prod's latest files for one theme | `pull prod --only=themes --paths=themes/<slug>/` |
+| Client's content, keep your theme | `pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
+| Media only | `pull prod --only=uploads` |
+
+Rules:
+- `push` never syncs more than the `diff` you ran with the same flags. Run `diff` with exactly the flags you will push with.
+- If a `--tables` pull prints a warning about splitting a family (for example posts without postmeta), run a full pull before the next push.
+
+### First deploy onto a fresh install
+
+The user built the site locally, and the remote is a fresh WordPress install. Pulling first would overwrite their work with the empty site. `status` recommends this path when there is no baseline and the remote has 5 posts or fewer. If the remote has more posts but the user says it is still fresh, use this path anyway. Otherwise pull first.
+
+1. Ask the user to confirm the remote is fresh.
+2. Run `push <env> --force --dry-run` and show the plan.
+3. Tell the user three things before they approve:
+   - Local users replace the remote's users, so they will log in with their **local** credentials.
+   - Active local dev plugins go up too.
+   - Nothing on the remote is deleted, so an old site's content stays mixed in.
+4. Run `push <env> --force --yes` after approval.
+5. Run `pull <env> --yes` to record the baseline. From now on, use the normal loop and never `--force`.
 
 ### Undo a bad push
 
 ```bash
-wp envsync rollback prod
+wp --path=<site> envsync rollback prod --yes           # the last push
+wp --path=<site> envsync rollback prod --job=<id> --yes
 ```
 
 Restores the snapshot the remote took before the push. Only the last three jobs are kept.
@@ -103,10 +125,10 @@ Restores the snapshot the remote took before the push. Only the last three jobs 
 ### Investigate one conflict
 
 ```bash
-wp envsync diff prod --table=wp_posts --id=2231
+wp --path=<site> envsync diff prod --table=wp_posts --id=2231
 ```
 
-Shows a field-by-field comparison of that row on both sides.
+Shows the row field by field, on both sides.
 
 ## Reading a diff
 
@@ -115,49 +137,42 @@ prod  ←  local          baseline: 2026-09-08 02:06
   wp_posts   push 12   insert 3   delete 1   prod-wins 2   kept-prod 41
 ```
 
-- `push` — the user's changes going up.
-- `insert` — rows they created.
-- `delete` — rows they deleted that the remote has not touched.
-- `prod-wins` — both sides changed it; the remote's version stays. Report these.
-- `kept-prod` — the remote changed it and the user did not. Normal, not a problem.
+- `push`: the user's changes going up.
+- `insert`: rows they created.
+- `delete`: rows they deleted, which the remote has not touched.
+- `prod-wins`: both sides changed it, and the remote's version stays. Report these.
+- `kept-prod`: the remote changed it and the user did not. This is normal.
 
-`baseline: NONE (2-way)` means no pull has been done for this environment. Do not reach for `--force`. Tell the user to pull first. The one exception is a first deploy (see below).
+`baseline: NONE (2-way)` means no pull has been done. Pull first, unless this is a first deploy.
 
-## First deploy onto a fresh install
-
-If the user built the site locally and the remote is a **fresh WordPress install** they are deploying to for the first time, pulling first would wipe their local work with the empty site. `status` recommends `push <env> --force --dry-run` when there is no baseline and the remote has 5 posts or fewer. For a remote with more posts that the user says is still fresh, ignore the `pull` that `status` recommends. Either way, run:
-
-1. `wp envsync push <env> --force --dry-run`. Show the plan to the user.
-2. Before they approve, tell them three things. Local users replace the remote's users, so they will log in with their local credentials. Active local dev plugins go up too. Nothing on the remote is deleted, so an old site's content stays mixed in.
-3. `wp envsync push <env> --force` after explicit approval.
-4. `wp envsync pull <env>` to record the baseline. After that, the normal loop applies and `--force` is never used again.
-
-Confirm that the remote really is fresh (ask the user) before using this path. If it has real content, the path is pull first.
+Use `diff <env> --json` when you need to reason about a plan in code rather than show it.
 
 ## Commands
 
+All commands take `--path=<site>`.
+
 | Command | Purpose |
 |---|---|
+| `envsync status [<env>] [--json]` | Role, each environment's state, and the one next command |
 | `envsync env add <name> [<url>] [--token=] [--label=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
-| `envsync env list` / `remove <name>` / `ping <name>` | Manage and test environments |
-| `envsync env excludes <name>` | List every excluded path with its source, and the file count still in scope |
-| `envsync status [<env>] [--json]` | Report role, each env's state, and the one recommended next command |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--flush-cache]` | Overwrite this site from the remote, record baseline |
-| `envsync diff <env> [--details] [--json] [--table= --id=] [--flush-cache]` | Preview a push, changes nothing |
-| `envsync push <env> [--dry-run] [--yes] [--plan=<file>] [--force]` | Apply changes to the remote |
-| `envsync unlock <env> [--yes]` | Clear a stuck push lock; rolls nothing back |
-| `envsync rollback <env> [--job=<id>]` | Restore the pre-push snapshot |
-| `envsync token [--rotate]` | Show or reissue this site's token |
+| `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
+| `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync diff <env> [--json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
+| `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
+| `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
+| `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
-`--json` on `diff` is the right choice when you need to reason about a plan programmatically rather than show it.
+`--only` takes `db,files,uploads,themes,plugins,mu-plugins`. `--tables` takes table names or globs and implies `--only=db`. `--paths` takes wp-content paths or globs and implies `--only=files`.
 
 ## Diagnosing failures
 
-Match the error, then act. Do not retry the same command blindly.
+Match the error, then act. Do not retry the same command blindly. When in doubt, run `status --json` again.
 
-**`prefix_mismatch`** — the two sites use different table prefixes. This version cannot bridge that. Report it; the sites must be aligned first.
+**`prefix_mismatch`**: the two sites use different table prefixes. The plugin cannot bridge that. Report it; the sites must be aligned first.
 
-**`cannot write <path>` / `cannot create directory`** — a filesystem permission problem, usually folders owned by the web-server user because plugins were installed through the browser. The message names the folder, owner and mode. The fix needs sudo, so give it to the user to run rather than attempting it:
+**`cannot write <path>` / `cannot create directory`**: a filesystem permission problem, usually folders owned by the web-server user because plugins were installed through the browser. The message names the folder, its owner and its mode. The fix needs sudo, so give it to the user to run:
 
 ```bash
 sudo chown -R <user>:<webgroup> wp-content
@@ -165,42 +180,36 @@ sudo find wp-content -type d -exec chmod 2775 {} +
 sudo find wp-content -type f -exec chmod 664 {} +
 ```
 
-Warn them that a `chmod 664` sweep strips execute bits from any scripts under wp-content.
+Warn them that the `chmod 664` sweep strips execute bits from any scripts under wp-content.
 
-**A pull that failed partway** left the database replaced and files half-copied. The site may fatal on a half-updated plugin. Recover in this order:
+**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
-1. Get the site up: `wp --skip-plugins --skip-themes plugin deactivate <broken-plugin>`
-2. Clean leftovers: `find wp-content -name '*.ixes-tmp' -delete`
-3. Fix the underlying cause (usually permissions).
-4. Run the pull again. Already-transferred files are skipped, so it is cheap.
+**`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 
-**`checksum mismatch`** — the file changed on the remote mid-transfer. Re-run.
+**423 / "another job is running"**: a push is running or died on the remote. `status` shows the lock's age. `unlock <env> --yes` clears a lock older than two minutes. Nothing is rolled back; `rollback` still restores that job.
 
-**423 / "another job is running"** — a push died on the remote; run `wp envsync status <env>` to see the lock's age, and `wp envsync unlock <env>` clears it once it is older than two minutes. Nothing is rolled back — `rollback` still restores that job.
+**Push reports skipped or stale items**: the remote changed those rows or files between the diff and the push. This is correct: production wins. If those changes mattered, pull again and redo the work.
 
-**Push reports skipped or stale items** — the remote changed those rows or files between the diff and the apply. Correct behavior, production wins. Pull again and redo the work if those changes mattered.
+**401 / "missing token"**: the token is wrong or was rotated. Ask the user for the current one from the remote's Tools → EnvSync page, then run `env add <name> --token=<new>`. You do not need the URL again.
 
 ## Excludes
 
-Large junk folders (backups, caches) slow every operation. Check them in the admin at Tools → EnvSync, or set them when registering:
+Large junk folders (backups, caches) slow every operation.
 
 ```bash
-wp envsync env excludes prod                                        # what is excluded now
-wp envsync env add prod --add-exclude=ai1wm-backups/,cache/         # append, never retype
-wp envsync env add prod --remove-exclude=cache/                     # drop one
+wp --path=<site> envsync env excludes prod                                 # what is excluded now
+wp --path=<site> envsync env add prod --add-exclude=ai1wm-backups/,cache/  # append
+wp --path=<site> envsync env add prod --remove-exclude=cache/              # drop one
 ```
 
-Check `env excludes` before changing anything: `--exclude=` replaces the whole list, while `--add-exclude=`/`--remove-exclude=` edit it in place. Prefer the latter two.
-
-Excluding **protects** a folder: it is not hashed, transferred or deleted on either side. Never exclude `uploads/`, `themes/` or `plugins/` without the user explicitly asking, since media or code silently stops syncing.
-
-Re-running `env add` on an existing name updates only the options you pass; everything else is kept. To rotate a token: rotate it on the remote, then `wp envsync env add <name> --token=<new>` on the hub. No URL needed.
+`--exclude=` replaces the whole list. `--add-exclude=` and `--remove-exclude=` edit it in place, so prefer those. An excluded folder is not hashed, transferred or deleted on either side.
 
 ## Guardrails
 
-- Do not run `push` against a `prod`-labelled environment without explicit approval in the current conversation.
-- Do not use `--force`, except for a first deploy onto a fresh install that the user has confirmed (see above). Otherwise the correct action is to pull.
-- Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` on your own initiative.
-- Do not put a token in a file, a commit, or any message that leaves the machine. Read it from the admin page or `envsync token`.
-- After a push, tell the user to pull again before their next round of work, so the baseline stays current.
-- If the user asks to sync a site that has no baseline and no recent pull, pull first, unless it is a first deploy onto a fresh install.
+- Never run `push` without showing the user a `diff` (or a `--dry-run`) first. A push changes a client's live site.
+- Never pass `--yes` to a plan the user has not approved in this conversation.
+- Do not push to a `prod`-labelled environment without explicit approval in this conversation.
+- Use `--force` only for a first deploy onto a fresh install the user has confirmed.
+- Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.
+- Never put a token in a file, a commit, or any message that leaves the machine.
+- After a push, tell the user to pull again before their next round of work.
