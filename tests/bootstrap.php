@@ -28,6 +28,23 @@ if ( ! function_exists( 'ixes_storage_dir' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_json_encode' ) ) { function wp_json_encode( $v, $f = 0 ) { return json_encode( $v, $f ); } }
+if ( ! function_exists( 'untrailingslashit' ) ) { function untrailingslashit( $s ) { return rtrim( $s, '/\\' ); } }
+if ( ! function_exists( 'is_wp_error' ) ) { function is_wp_error( $v ) { return $v instanceof WP_Error; } }
+if ( ! class_exists( 'WP_Error' ) ) {
+	class WP_Error {
+		private $code; private $msg; private $data;
+		public function __construct( $code = '', $msg = '', $data = null ) { $this->code = $code; $this->msg = $msg; $this->data = $data; }
+		public function get_error_code() { return $this->code; }
+		public function get_error_message() { return $this->msg; }
+		public function get_error_data() { return $this->data; }
+	}
+}
+if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) { function wp_remote_retrieve_response_code( $r ) { return $r['response']['code'] ?? 0; } }
+if ( ! function_exists( 'wp_remote_retrieve_body' ) ) { function wp_remote_retrieve_body( $r ) { return $r['body'] ?? ''; } }
+if ( ! function_exists( 'wp_remote_retrieve_header' ) ) { function wp_remote_retrieve_header( $r, $h ) { return $r['headers'][ strtolower( $h ) ] ?? ''; } }
+if ( ! function_exists( 'wp_remote_retrieve_headers' ) ) { function wp_remote_retrieve_headers( $r ) { return $r['headers'] ?? []; } }
+
 spl_autoload_register( function ( $class ) {
 	if ( strpos( $class, 'IXES_' ) !== 0 ) return;
 	$file = __DIR__ . '/../includes/class-' . strtolower( str_replace( '_', '-', $class ) ) . '.php';
