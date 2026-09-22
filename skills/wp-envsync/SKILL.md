@@ -121,7 +121,18 @@ prod  ←  local          baseline: 2026-09-08 02:06
 - `prod-wins` — both sides changed it; the remote's version stays. Report these.
 - `kept-prod` — the remote changed it and the user did not. Normal, not a problem.
 
-`baseline: NONE (2-way)` means no pull has been done for this environment. Do not reach for `--force`. Tell the user to pull first.
+`baseline: NONE (2-way)` means no pull has been done for this environment. Do not reach for `--force`. Tell the user to pull first. The one exception is a first deploy (see below).
+
+## First deploy onto a fresh install
+
+If the user built the site locally and the remote is a **fresh WordPress install** they are deploying to for the first time, pulling first would wipe their local work with the empty site. In that case, ignore the `pull` that `status` recommends, and run:
+
+1. `wp envsync push <env> --force --dry-run`. Show the plan to the user.
+2. Before they approve, tell them three things. Local users replace the remote's users, so they will log in with their local credentials. Active local dev plugins go up too. Nothing on the remote is deleted, so an old site's content stays mixed in.
+3. `wp envsync push <env> --force` after explicit approval.
+4. `wp envsync pull <env>` to record the baseline. After that, the normal loop applies and `--force` is never used again.
+
+Confirm that the remote really is fresh (ask the user) before using this path. If it has real content, the path is pull first.
 
 ## Commands
 
@@ -188,8 +199,8 @@ Re-running `env add` on an existing name updates only the options you pass; ever
 ## Guardrails
 
 - Do not run `push` against a `prod`-labelled environment without explicit approval in the current conversation.
-- Do not use `--force`. It exists for a missing baseline; the correct action is to pull.
+- Do not use `--force`, except for a first deploy onto a fresh install that the user has confirmed (see above). Otherwise the correct action is to pull.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` on your own initiative.
 - Do not put a token in a file, a commit, or any message that leaves the machine. Read it from the admin page or `envsync token`.
 - After a push, tell the user to pull again before their next round of work, so the baseline stays current.
-- If the user asks to sync a site that has no baseline and no recent pull, pull first.
+- If the user asks to sync a site that has no baseline and no recent pull, pull first, unless it is a first deploy onto a fresh install.
