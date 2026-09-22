@@ -68,6 +68,9 @@ jobs:
           ignore-codes: |
             PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite
             PluginCheck.Security.DirectDB.UnescapedDBParameter
+          # rescue.php is meant to be requested directly (it boots WordPress itself, with plugins off, and
+          # authenticates like the REST API), so the direct-access check cannot apply to it.
+          exclude-files: rescue.php
 
   version:
     name: Version header matches constant
