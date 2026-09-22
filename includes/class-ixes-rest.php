@@ -4,11 +4,15 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class IXES_Rest {
 	const NS = 'envsync/v1';
 
+	private static $auth_via = null;
+
+	public static function auth_via() { return self::$auth_via; }
+
 	public static function register() {
 		$r = function ( $route, $method, $cb ) {
 			register_rest_route( self::NS, $route, [ 'methods' => $method, 'callback' => $cb, 'permission_callback' => [ __CLASS__, 'auth' ] ] );
 		};
-		$r( '/ping',       'GET',  function () { return [ 'ok' => true, 'time' => time() ]; } );
+		$r( '/ping',       'GET',  function () { return [ 'ok' => true, 'time' => time(), 'auth_via' => self::auth_via() ]; } );
 		$r( '/info',       'GET',  function () { return IXES_Transfer::info(); } );
 		$r( '/hash/rows',  'POST', [ __CLASS__, 'hash_rows' ] );
 		$r( '/hash/files', 'POST', [ __CLASS__, 'hash_files' ] );
@@ -24,9 +28,9 @@ class IXES_Rest {
 
 	public static function auth( WP_REST_Request $req ) {
 		if ( ! is_ssl() && ! ( defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP ) ) return new WP_Error( 'https', 'https required', [ 'status' => 403 ] );
-		$hdr = $req->get_header( 'authorization' );
-		if ( ! $hdr || stripos( $hdr, 'Bearer ' ) !== 0 ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
-		$token = trim( substr( $hdr, 7 ) );
+		list( $token, $via ) = IXES_Auth::token_from_headers( $req->get_header( 'authorization' ), $req->get_header( 'x-envsync-token' ) );
+		if ( $token === '' ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
+		self::$auth_via = $via;
 		$ok = IXES_Auth::verify(
 			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
 			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),

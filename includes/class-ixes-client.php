@@ -24,6 +24,7 @@ class IXES_Client {
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
 			'Authorization' => 'Bearer ' . $this->env['token'],
+			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
 			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step ),
 			'Content-Type'  => $ctype,

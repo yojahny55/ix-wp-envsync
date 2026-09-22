@@ -36,4 +36,15 @@ class IXES_Auth {
 		if ( stripos( $url, 'https://' ) === 0 ) return true;
 		return defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP;
 	}
+
+	/**
+	 * Some hosts strip the Authorization header before PHP sees it. The hub therefore also sends
+	 * X-Envsync-Token; the remote prefers Authorization and falls back. Returns [ token, carrier ].
+	 */
+	public static function token_from_headers( $authorization, $x_token ) {
+		$authorization = (string) $authorization; $x_token = trim( (string) $x_token );
+		if ( $authorization !== '' && stripos( $authorization, 'Bearer ' ) === 0 ) return [ trim( substr( $authorization, 7 ) ), 'authorization' ];
+		if ( $x_token !== '' ) return [ $x_token, 'x-envsync-token' ];
+		return [ '', null ];
+	}
 }
