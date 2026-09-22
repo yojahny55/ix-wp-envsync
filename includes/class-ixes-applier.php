@@ -14,7 +14,7 @@ class IXES_Applier {
 		// has to live inside the file itself (an $upgrading in the past means "not in maintenance")
 		$body = "<?php\n\$upgrading = " . time() . ";\n"
 			. "\$ixes_uri = isset( \$_SERVER['REQUEST_URI'] ) ? \$_SERVER['REQUEST_URI'] : '';\n"
-			. "if ( strpos( \$ixes_uri, '?rest_route=/" . IXES_Rest::NS . "' ) !== false || strpos( \$ixes_uri, '/wp-json/" . IXES_Rest::NS . "' ) !== false ) \$upgrading = 1;\n";
+			. "if ( isset( \$_SERVER['HTTP_X_ENVSYNC_SIG'] ) && preg_match( '#^[^?]*(\\\\?rest_route=|/wp-json)/" . IXES_Rest::NS . "/#', \$ixes_uri ) ) \$upgrading = 1;\n";
 		if ( $on ) file_put_contents( $f, $body );
 		elseif ( file_exists( $f ) ) unlink( $f );
 	}

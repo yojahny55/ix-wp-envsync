@@ -69,7 +69,7 @@ Re-running `env add` on a name that already exists updates only the options you 
 wp envsync pull prod            # fresh copy of production, records the baseline
                                 # ... do your work ...
 wp envsync diff prod            # preview: exactly what would change
-wp envsync push staging --yes   # full overwrite of staging for client review
+wp envsync push staging --force --yes   # overwrite staging (no baseline there) for client review
 wp envsync push prod            # apply to production after approval
 ```
 

@@ -18,8 +18,11 @@ class IXES_Planner {
 		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [] ];
 
 		foreach ( $info['tables'] as $t ) {
-			$name = $t['name']; $pk = $t['pk'];
-			if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $name ) ) ) continue;
+			$name = $t['name'];
+			if ( ! IXES_Transfer::valid_table( $name ) ) continue;
+			// the remote names the pk column; only trust it if it is a real local column (it goes into SQL in apply())
+			$pk = $t['pk'] === null ? null : IXES_Transfer::safe_pk( $name, $t['pk'] );
+			if ( $t['pk'] !== null && ! $pk ) return new WP_Error( 'bad_pk', "remote reports unknown pk column '{$t['pk']}' for {$name}" );
 			$remote = [];
 			$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
 			if ( is_wp_error( $r ) ) return $r;

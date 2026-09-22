@@ -11,8 +11,9 @@ class IXES_Client {
 		$ts   = time();
 		$raw  = $body === null ? '' : wp_json_encode( $body );
 		$args = [
-			'method'  => $method,
-			'timeout' => 120,
+			'method'      => $method,
+			'timeout'     => 120,
+			'redirection' => 0, // security: the token must never follow a Location header to another host
 			'headers' => [
 				'Authorization' => 'Bearer ' . $this->env['token'],
 				'X-Envsync-Ts'  => $ts,
@@ -25,6 +26,7 @@ class IXES_Client {
 		$res = wp_remote_request( $this->env['url'] . '/?rest_route=' . $path, $args );
 		if ( is_wp_error( $res ) ) return $res;
 		$code = wp_remote_retrieve_response_code( $res );
+		if ( $code >= 300 && $code < 400 ) return new WP_Error( 'remote_redirect', "remote redirected to " . wp_remote_retrieve_header( $res, 'location' ) . "; register the final URL with env add" );
 		$json = json_decode( wp_remote_retrieve_body( $res ), true );
 		if ( $code < 200 || $code >= 300 ) {
 			$msg = is_array( $json ) && isset( $json['message'] ) ? $json['message'] : wp_remote_retrieve_body( $res );

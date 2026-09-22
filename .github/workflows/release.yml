@@ -1,0 +1,45 @@
+name: Release
+
+# Tag a merged main commit as vX.Y.Z and this builds the plugin zip and publishes a GitHub Release.
+#   git tag v0.2.2 && git push origin v0.2.2
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the plugin header and the version constant
+        run: |
+          T=${GITHUB_REF_NAME#v}
+          H=$(sed -n 's/^ \* Version: *//p' ix-wp-envsync.php)
+          C=$(sed -n "s/^define( 'IXES_VERSION', '\([^']*\)' );/\1/p" ix-wp-envsync.php)
+          echo "tag=$T header=$H constant=$C"
+          [ "$T" = "$H" ] && [ "$T" = "$C" ] || { echo "::error::bump the Version header and IXES_VERSION to $T before tagging"; exit 1; }
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - uses: ramsey/composer-install@v3
+      - name: Gates must be green on the tagged commit
+        run: |
+          git ls-files '*.php' | grep -v '^tests/' | xargs -n1 -P4 php -l
+          vendor/bin/phpcs
+          vendor/bin/phpunit
+
+      - name: Build zip (git archive honours .gitattributes export-ignore)
+        run: git archive --format=zip --prefix=ix-wp-envsync/ -o "ix-wp-envsync-${GITHUB_REF_NAME#v}.zip" HEAD
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "ix-wp-envsync-${GITHUB_REF_NAME#v}.zip" \
+            --title "$GITHUB_REF_NAME" --generate-notes

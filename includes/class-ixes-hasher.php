@@ -35,8 +35,12 @@ class IXES_Hasher {
 	}
 
 	public static function normalize( $value, array $pairs ) {
+		// security: never instantiate application classes from DB strings (comments, form entries and
+		// custom tables are visitor-controlled). Only stdClass is walked; any other class stays opaque
+		// and serialize() re-emits it byte-for-byte, so its URLs are simply not rewritten.
+		if ( $value instanceof __PHP_Incomplete_Class ) return $value;
 		if ( is_string( $value ) ) {
-			$un = maybe_unserialize( $value );
+			$un = is_serialized( $value ) ? @unserialize( trim( $value ), [ 'allowed_classes' => [ 'stdClass' ] ] ) : $value;
 			if ( $un !== $value && ( is_array( $un ) || is_object( $un ) ) ) {
 				return maybe_serialize( self::normalize( $un, $pairs ) );
 			}
