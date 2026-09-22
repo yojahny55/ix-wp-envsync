@@ -52,6 +52,8 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `interrupted_pull`: `{started, table, files_done, files_total}` means a pull stopped partway.
 - `remote_posts`: the number of rows in the remote's posts table. 5 or fewer means a fresh install.
 
+In a push plan, `new_tables` lists tables the push will create on the remote (shown as `(new)` in the table). Mention them to the user.
+
 ## What to do for each `next.command`
 
 | `next.command` | `next.why` | What you do |
@@ -199,6 +201,10 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 **A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
 **`503 … no available server`**: the host's proxy (Traefik on Coolify) has no healthy container for the site. WordPress never saw the request. Retrying will not help. Tell the user to restart the container in Coolify and to check that the site files are on a persistent volume. If the remote runs a plugin older than 0.4.2, maintenance mode during a push fails the health check and causes exactly this, so the remote needs the new zip first.
+
+**`old_remote` / "creates N table(s) the remote lacks"**: the push has to create plugin tables, and the remote plugin is older than 0.5.0. Tell the user to upload the current zip to that site first. Nothing was changed.
+
+**`500 … critical error` on `/job/step`**: a plugin crashed on the remote during the push. On a remote older than 0.5.0, the usual cause is plugins switching on before their tables exist. Tell the user to switch plugins off from the host's terminal (`wp --skip-plugins --skip-themes option update active_plugins '["ix-wp-envsync/ix-wp-envsync.php"]' --format=json`). Then upload the current plugin to the remote and push again.
 
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 

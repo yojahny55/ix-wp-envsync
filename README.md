@@ -365,7 +365,11 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
-Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
+Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
+
+Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks.
+
+Tables that exist only on your site, typically ones a plugin creates for itself (Action Scheduler, security logs, SEO indexes), are created on the remote first and marked `(new)` in the plan. Plugins switch on as the last step, after their tables and data are in place. `rollback` drops any table the push created. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
 
 ### `wp envsync unlock <env>`
 
