@@ -19,7 +19,7 @@ class IXES_Rest {
 		$r( '/dump',       'POST', [ __CLASS__, 'dump' ] );
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
 		$r( '/dirs',       'POST', function () { return IXES_Transfer::dir_sizes(); } );
-		foreach ( [ 'start', 'step', 'finish', 'abort' ] as $op ) {
+		foreach ( [ 'start', 'step', 'finish', 'abort', 'unlock' ] as $op ) {
 			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
 		}
 		$r( '/rollback', 'POST', function ( $req ) { return self::applier( 'rollback', $req->get_json_params() ); } );

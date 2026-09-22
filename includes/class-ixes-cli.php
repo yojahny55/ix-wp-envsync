@@ -103,7 +103,16 @@ class IXES_CLI {
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); WP_CLI::success( 'removed' ); return; }
-		if ( $action === 'ping' ) { $r = $this->fail_if_error( $this->client( $args[1] )->get( '/ping' ) ); WP_CLI::success( 'ok, remote time ' . date( 'c', $r['time'] ) ); return; }
+		if ( $action === 'ping' ) {
+			$c = $this->client( $args[1] );
+			$r = $this->fail_if_error( $c->get( '/ping' ) );
+			$info = $this->fail_if_error( $c->info() );
+			$via = ( $r['auth_via'] ?? 'authorization' ) === 'x-envsync-token' ? 'X-Envsync-Token (this host strips the Authorization header; that is fine)' : 'Authorization';
+			WP_CLI::success( 'ok, remote time ' . date( 'c', $r['time'] ) . ", remote {$info['plugin']}, auth via {$via}" );
+			if ( version_compare( (string) $info['plugin'], IXES_VERSION, '<' ) ) WP_CLI::warning( "remote runs {$info['plugin']}, hub runs " . IXES_VERSION . ": upload the release zip to {$this->get_env( $args[1] )['url']}" );
+			elseif ( version_compare( (string) $info['plugin'], IXES_VERSION, '>' ) ) WP_CLI::log( "note: remote runs {$info['plugin']}, newer than this hub (" . IXES_VERSION . ')' );
+			return;
+		}
 		WP_CLI::error( 'unknown action' );
 	}
 
@@ -324,6 +333,27 @@ class IXES_CLI {
 		$this->confirm( $assoc, "Rollback last push on {$env['name']}?" );
 		$r = $this->fail_if_error( $c->post( '/rollback', [ 'job' => $assoc['job'] ?? null ] ) );
 		WP_CLI::success( "restored {$r['restored']} rows/files from job {$r['job']}" );
+	}
+
+	/**
+	 * Clear a push lock left behind by a hub that died mid-push. Rolls nothing back.
+	 * ## OPTIONS
+	 *
+	 * <env>
+	 * : Environment name.
+	 *
+	 * [--yes]
+	 * : Skip confirmation.
+	 */
+	public function unlock( $args, $assoc ) {
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$info = $this->fail_if_error( $c->info() );
+		$lock = $info['lock'] ?? null;
+		if ( ! $lock ) WP_CLI::error( "no push is locked on {$env['name']}" );
+		$age = $lock['started'] ? (int) floor( ( time() - $lock['started'] ) / 60 ) . ' min' : 'unknown age';
+		$this->confirm( $assoc, "Clear the lock from job {$lock['job']} ({$age}) on {$env['name']}? Nothing is rolled back; 'wp envsync rollback {$env['name']}' still restores that job's snapshot." );
+		$r = $this->fail_if_error( $c->post( '/job/unlock', [] ) );
+		WP_CLI::success( "unlocked {$env['name']} (job {$r['job']})" );
 	}
 
 	/**

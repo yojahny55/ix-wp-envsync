@@ -5,6 +5,7 @@ class IXES_Applier {
 
 	const LOCK = 'ixes_lock';
 	const ORDER = [ 'users', 'usermeta', 'terms', 'term_taxonomy', 'posts', 'postmeta', 'term_relationships', 'termmeta', 'comments', 'commentmeta' ];
+	const UNLOCK_MIN_AGE = 120; // seconds: a lock younger than this is a live push
 
 	// Lock transient value is "job|started". 0.3 wrote the bare job id; parse_lock() accepts both.
 	public static function lock_value( $job, $started ) { return $job . '|' . (int) $started; }
@@ -214,6 +215,16 @@ class IXES_Applier {
 		self::maintenance( false );
 		delete_transient( self::LOCK );
 		return $r;
+	}
+
+	public static function job_unlock( array $p ) {
+		$l = self::lock_info();
+		if ( ! $l ) return new WP_Error( 'nolock', 'no push is locked', [ 'status' => 404 ] );
+		$age = $l['started'] ? time() - $l['started'] : null;
+		if ( $age !== null && $age < self::UNLOCK_MIN_AGE ) return new WP_Error( 'too_recent', "lock is only {$age}s old; a push may still be running", [ 'status' => 409 ] );
+		self::maintenance( false );
+		delete_transient( self::LOCK );
+		return [ 'ok' => true, 'job' => $l['job'], 'age_minutes' => $age === null ? null : (int) floor( $age / 60 ) ];
 	}
 
 	public static function rollback( array $p ) {
