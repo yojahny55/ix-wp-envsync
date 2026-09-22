@@ -7,6 +7,7 @@ PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 A() { wp --path="$IXES_A" --url="$IXES_A_URL" "$@"; }
 B() { wp --path="$IXES_B" --url="$IXES_B_URL" "$@"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
+A config delete ENVSYNC_TEST_DROP_AUTHORIZATION >/dev/null 2>&1 || true   # a run that died inside scenario 12 must not poison the next run
 
 for P in "$IXES_A" "$IXES_B"; do
   rm -rf "$P/wp-content/plugins/ix-wp-envsync"; ln -s "$PLUGIN" "$P/wp-content/plugins/ix-wp-envsync"

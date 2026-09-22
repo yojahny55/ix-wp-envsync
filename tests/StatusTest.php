@@ -42,6 +42,16 @@ class StatusTest extends TestCase {
 		$n = $this->next( $ctx, $this->info( [ 'lock' => [ 'job' => 'j1', 'started' => $this->now - 1200 ] ] ) );
 		$this->assertSame( 'wp envsync unlock prod', $n['command'] );
 	}
+	public function test_bare_lock_with_no_started_is_treated_as_stale() {
+		$r = IXES_Status::build( null, $this->info( [ 'lock' => [ 'job' => 'j1', 'started' => null ] ] ), $this->ctx() );
+		$this->assertSame( 'wp envsync unlock prod', $r['next']['command'] );
+		$this->assertNull( $r['envs']['prod']['remote_lock']['age_minutes'] );
+	}
+	public function test_unknown_env_name_yields_no_such_environment() {
+		$r = IXES_Status::build( 'nonexistent', $this->info(), $this->ctx() );
+		$this->assertSame( 'no such environment', $r['next']['why'] );
+		$this->assertSame( [], $r['envs'] );
+	}
 	public function test_young_lock_does_not_change_next() {
 		$n = $this->next( $this->ctx(), $this->info( [ 'lock' => [ 'job' => 'j1', 'started' => $this->now - 60 ] ] ) );
 		$this->assertSame( 'wp envsync diff prod', $n['command'] );

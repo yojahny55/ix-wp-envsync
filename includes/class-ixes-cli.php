@@ -357,7 +357,8 @@ class IXES_CLI {
 		$lock = $info['lock'] ?? null;
 		if ( ! $lock ) WP_CLI::error( "no push is locked on {$env['name']}" );
 		$age = $lock['started'] ? (int) floor( ( time() - $lock['started'] ) / 60 ) . ' min' : 'unknown age';
-		$this->confirm( $assoc, "Clear the lock from job {$lock['job']} ({$age}) on {$env['name']}? Nothing is rolled back; 'wp envsync rollback {$env['name']}' still restores that job's snapshot." );
+		WP_CLI::log( "Nothing is rolled back; 'wp envsync rollback {$env['name']}' still restores that job's snapshot." );
+		$this->confirm( $assoc, "Clear the lock from job {$lock['job']} ({$age}) on {$env['name']}?" );
 		$r = $this->fail_if_error( $c->post( '/job/unlock', [] ) );
 		$this->forget_status();
 		WP_CLI::success( "unlocked {$env['name']} (job {$r['job']})" );
@@ -380,6 +381,7 @@ class IXES_CLI {
 	 * ---
 	 */
 	public function status( $args, $assoc ) {
+		if ( isset( $args[0] ) ) $this->get_env( $args[0] );
 		$r = IXES_Status::build( $args[0] ?? null );
 		if ( ( $assoc['format'] ?? 'text' ) === 'json' ) { WP_CLI::line( wp_json_encode( $r, JSON_PRETTY_PRINT ) ); return; }
 		WP_CLI::line( IXES_Status::render_text( $r ) );
@@ -393,7 +395,7 @@ class IXES_CLI {
 	 * : Issue a new token.
 	 */
 	public function token( $args, $assoc ) {
-		if ( ! empty( $assoc['rotate'] ) || ! get_option( 'ixes_token_hash' ) ) { WP_CLI::line( IXES_Auth::install_token() ); return; }
+		if ( ! empty( $assoc['rotate'] ) || ! get_option( 'ixes_token_hash' ) ) { $t = IXES_Auth::install_token(); $this->forget_status(); WP_CLI::line( $t ); return; }
 		$t = get_transient( 'ixes_token_show' );
 		if ( $t ) WP_CLI::line( $t ); else WP_CLI::error( 'token already shown; use --rotate to issue a new one' );
 	}

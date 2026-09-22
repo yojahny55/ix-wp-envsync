@@ -8,7 +8,9 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class IXES_Status {
 	const LOCK_STALE_MIN = 10;   // minutes before a remote lock is presumed dead
 	const BASELINE_OLD_DAYS = 7;
-	const RULES = [ 'unconfigured', 'remote_only', 'unreachable', 'old_remote', 'stale_lock', 'interrupted_pull', 'no_baseline', 'old_baseline', 'ready' ];
+	// rule order (the contract above): unconfigured, remote_only, unreachable, old_remote, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
+	// admin page renders this synchronously on a cache miss, so a dead remote must fail fast and stay under wp-admin's max_execution_time
+	const INFO_TIMEOUT = 10;
 
 	private static function defaults() {
 		return [
@@ -32,7 +34,7 @@ class IXES_Status {
 
 	public static function build( $env_name = null, callable $info_for = null, array $ctx = null ) {
 		$ctx = ( $ctx ?: [] ) + self::defaults();
-		if ( $info_for === null ) $info_for = function ( array $env ) { return ( new IXES_Client( $env ) )->info(); };
+		if ( $info_for === null ) $info_for = function ( array $env ) { return ( new IXES_Client( $env ) )->info( IXES_Status::INFO_TIMEOUT ); };
 		$envs = $ctx['envs'];
 		if ( $env_name !== null ) $envs = isset( $envs[ $env_name ] ) ? [ $env_name => $envs[ $env_name ] ] : [];
 		$is_hub = ! empty( $ctx['envs'] );
@@ -107,7 +109,7 @@ class IXES_Status {
 			if ( $r['token']['shown_pending'] ) $o[] = '  The token has not been read yet: wp envsync token';
 			return implode( "\n", $o ) . "\n";
 		}
-		$d = function ( $t ) { return $t ? date( 'Y-m-d H:i', (int) $t ) : '-'; };
+		$d = function ( $t ) { return $t ? wp_date( 'Y-m-d H:i', (int) $t ) : '-'; };
 		foreach ( $r['envs'] as $name => $e ) {
 			$o[] = "{$name}  {$e['url']}  ({$e['label']})";
 			if ( ! $e['reachable'] ) { $o[] = "  unreachable: {$e['error']}"; }

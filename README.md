@@ -177,6 +177,8 @@ Run `wp envsync unlock prod` to clear it. Nothing is rolled back — `rollback` 
 
 **"missing token" on a host that strips the Authorization header.** The plugin also sends the token as `X-Envsync-Token`, so most hosts recover on their own. If a remote still rejects every request, `status` reports it as unreachable:
 
+Some hosts log request headers verbatim, so a request carrying `X-Envsync-Token` can put the token in full into that host's access logs — treat those logs as sensitive.
+
 ```
   unreachable: remote 401 on /info: missing token
 ```
