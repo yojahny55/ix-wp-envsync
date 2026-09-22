@@ -45,9 +45,9 @@ class IXES_Pull {
 		if ( $info['prefix'] !== $wpdb->prefix ) return new WP_Error( 'prefix_mismatch', "remote prefix '{$info['prefix']}' differs from local '{$wpdb->prefix}'; v0.1 requires identical prefixes" );
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );
-		$remote = []; $local = []; $transfer = []; $delete = [];
+		$remote = []; $local = []; $transfer = []; $delete = []; $sizes = [];
 		if ( $scope->files_wanted() ) {
-			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000 ], function ( $res ) use ( &$remote ) { $remote += $res['files']; }, 'cursor' );
+			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'sizes' => true ], function ( $res ) use ( &$remote, &$sizes ) { $remote += $res['files']; if ( isset( $res['sizes'] ) && $sizes !== null ) $sizes += $res['sizes']; else $sizes = null; }, 'cursor' );
 			if ( is_wp_error( $r ) ) return $r;
 			$remote = self::drop_excluded( $remote, $ex );
 			foreach ( array_keys( $remote ) as $rel ) if ( ! $scope->path_in( $rel ) ) unset( $remote[ $rel ] );
@@ -62,6 +62,8 @@ class IXES_Pull {
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
 			'tables' => $tables_in_scope,
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
+			// null: a pre-0.5.0 remote that does not report sizes
+			'sizes' => $sizes === null ? null : array_intersect_key( $sizes, array_flip( $transfer ) ),
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
 			'scope' => $scope->to_array(),
 			'warnings' => $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ),
@@ -80,9 +82,11 @@ class IXES_Pull {
 
 	/**
 	 * @param IXES_PullState|null $state  null = fresh pull; an instance = resume from it (plan must be the saved one)
+	 * @param IXES_Progress|null  $progress  null = one line per table/file through $log
 	 */
-	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null ) {
+	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, IXES_Progress $progress = null ) {
 		global $wpdb;
+		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$pairs = $plan['pairs'];
 		$scope = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), $wpdb->prefix );
 		$partial = ! $scope->is_full();
@@ -98,6 +102,7 @@ class IXES_Pull {
 		$done    = (array) $state->get( 'tables_done' );
 		$resume  = $state->get( 'table' );
 
+		$progress->stage( 'Database', null, count( array_diff( array_column( $plan['tables'], 'name' ), $done ) ) );
 		foreach ( $plan['tables'] as $t ) {
 			$name = $t['name'];
 			if ( in_array( $name, $done, true ) ) continue;
@@ -106,11 +111,10 @@ class IXES_Pull {
 			// never got to save (killed in between): the tmp table already holds every row, and for
 			// a no-PK table (plain INSERT, no REPLACE) re-running from "start" would duplicate them all.
 			// Fall through to the fresh-table branch below so import_begin()/delete_table() restart it clean.
-			if ( $resume === $name && $state->get( 'cursor' ) !== null ) { $from = $state->get( 'cursor' ); $log( "table {$name} (resuming at {$from})" ); }
+			if ( $resume === $name && $state->get( 'cursor' ) !== null ) { $from = $state->get( 'cursor' ); $progress->note( "table {$name} (resuming at {$from})" ); }
 			else {
-				$log( "table {$name} ({$t['rows']} rows)" );
 				$b = IXES_Transfer::import_begin( $name );
-				if ( is_wp_error( $b ) ) { $log( 'skip: ' . $b->get_error_message() ); continue; }
+				if ( is_wp_error( $b ) ) { $progress->note( 'skip: ' . $b->get_error_message() ); continue; }
 				$bl->delete_table( $name );
 			}
 			$pk = $t['pk'];
@@ -131,7 +135,9 @@ class IXES_Pull {
 			if ( $row_err ) return $row_err;
 			$state->table_done( $name );
 			$done[] = $name;
+			$progress->item( "{$name} ({$t['rows']} rows)" );
 		}
+		$progress->end();
 		if ( ! $done && $scope->db_wanted() ) return new WP_Error( 'nothing_imported', 'no tables were imported' );
 		// a missing tmp table after a finished table phase can only mean the RENAME already ran (crash before committed() was written)
 		if ( $done && ! $state->get( 'committed' ) && ! IXES_Transfer::tmp_exists( $done[0] ) ) $state->committed();
@@ -146,25 +152,29 @@ class IXES_Pull {
 			if ( $options_in ) $bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
 		}
 
-		$n = count( $plan['files']['transfer'] );
 		$skipped = [];
 		$start = (int) $state->get( 'files_done' );
+		$left  = array_slice( $plan['files']['transfer'], $start );
+		$sizes = $plan['sizes'] ?? null;
+		$progress->stage( 'Files', is_array( $sizes ) ? array_sum( array_intersect_key( $sizes, array_flip( $left ) ) ) : null, count( $left ) );
+		$on_bytes = function ( $b ) use ( $progress ) { $progress->bytes( $b ); };
 		foreach ( $plan['files']['transfer'] as $i => $rel ) {
 			if ( $i < $start ) continue;
-			$log( "file " . ( $i + 1 ) . "/{$n} {$rel}" );
 			$r = $c->fetch_file( $rel, function ( $offset, $data, $final, $sha ) use ( $rel ) {
 				return IXES_Transfer::write_file_chunk( $rel, $offset, $data, $final, $sha );
-			} );
+			}, $on_bytes );
 			// A path this side refuses is a policy difference between the two plugin
 			// versions, not a transfer failure: skip it rather than abort the pull.
 			if ( is_wp_error( $r ) && $r->get_error_code() === 'bad_path' ) { $skipped[] = $rel; $state->files_done( $i + 1 ); continue; }
 			if ( is_wp_error( $r ) ) return $r;
 			$state->files_done( $i + 1 );
+			$progress->item( $rel );
 		}
-		if ( $skipped ) $log( 'skipped ' . count( $skipped ) . ' excluded path(s) offered by the remote, e.g. ' . $skipped[0] );
+		$progress->end();
+		if ( $skipped ) $progress->note( 'skipped ' . count( $skipped ) . ' excluded path(s) offered by the remote, e.g. ' . $skipped[0] );
 		$undeleted = 0;
 		foreach ( $plan['files']['delete'] as $rel ) if ( ! IXES_Transfer::delete_file( $rel ) ) $undeleted++;
-		if ( $undeleted ) $log( "warning: {$undeleted} stale file(s) could not be deleted (check ownership under wp-content)" );
+		if ( $undeleted ) $progress->note( "warning: {$undeleted} stale file(s) could not be deleted (check ownership under wp-content)" );
 		if ( $partial ) { foreach ( $plan['files']['delete'] as $rel ) $bl->delete_file( $rel ); }
 		$bl->write_files( $plan['files']['remote'] );
 		$state->clear();
@@ -173,7 +183,6 @@ class IXES_Pull {
 		IXES_Transfer::offset_auto_increment( $done );
 		if ( $partial ) { $bl->meta( 'partial_at', time() ); $bl->meta( 'partial_scope', $scope->label() ); }
 		else $bl->commit();
-		$log( 'done' );
 		return true;
 	}
 }

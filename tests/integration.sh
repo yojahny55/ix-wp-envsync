@@ -52,6 +52,10 @@ B envsync push prod --yes
 A post term list "$NEW" category --field=name | grep -qx ixcat || die "term relationship (no-PK set_insert) not pushed"
 grep -q v2 "$IXES_A/wp-content/themes/ixtest/style.css" || die "theme file not pushed"
 [ -f "$IXES_A/.maintenance" ] && die "maintenance file left behind"
+SD=$(ls -d "$IXES_B/wp-content/envsync-"*)
+php -r '$j=json_decode(file_get_contents($argv[1]),true); exit(($j["schema"]??0)===1 && isset($j["summary"]["files"],$j["plugins"],$j["themes"],$j["other"])?0:1);' "$SD/plans/push-prod-latest.json" || die "push manifest missing or malformed"
+php -r '$j=json_decode(file_get_contents($argv[1]),true); exit(($j["ok"]??false)===true && !empty($j["job"])?0:1);' "$SD/runs/push-prod-latest.json" || die "push result file missing or not ok"
+B envsync diff prod --format=json | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit(($j["kind"]??"")==="diff"?0:1);' || die "diff --format=json is not the manifest"
 
 # 5. conflict: both edit X after a fresh pull
 B envsync pull prod --yes

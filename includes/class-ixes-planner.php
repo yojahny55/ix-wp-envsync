@@ -117,11 +117,6 @@ class IXES_Planner {
 		return implode( "\n", $o ) . "\n";
 	}
 
-	public static function render_json( array $plan ) {
-		$p = $plan; unset( $p['remote_hashes'], $p['remote_file_hashes'] );
-		return wp_json_encode( $p, JSON_PRETTY_PRINT );
-	}
-
 	public static function save( array $plan, $kind = 'diff' ) {
 		$dir = ixes_storage_dir() . '/plans'; wp_mkdir_p( $dir );
 		$stamp = date( 'Ymd-His', $plan['created'] ?? time() );

@@ -299,8 +299,9 @@ class IXES_Applier {
 
 	// ---------- hub side ----------
 
-	public static function apply( array $env, IXES_Client $c, array $plan, callable $log ) {
+	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, IXES_Progress $progress = null ) {
 		global $wpdb;
+		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
 
@@ -327,19 +328,22 @@ class IXES_Applier {
 		$job = $start['job'];
 
 		$stale = [];
-		$fail = function ( $err ) use ( $c, $job ) { $c->post( '/job/abort', [ 'job' => $job ] ); return $err; };
+		$fail = function ( $err ) use ( $c, $job, $progress ) { $progress->end(); $c->post( '/job/abort', [ 'job' => $job ] ); return $err; };
 
 		// files first
 		$file_hashes = (array) ( $plan['remote_file_hashes'] ?? [] );
-		foreach ( $plan['files']['push'] as $rel ) {
+		$present = array_values( array_filter( $plan['files']['push'], function ( $rel ) { return is_file( WP_CONTENT_DIR . '/' . $rel ); } ) );
+		$progress->stage( 'Files', array_sum( array_map( function ( $rel ) { return (int) filesize( WP_CONTENT_DIR . '/' . $rel ); }, $present ) ), count( $present ) );
+		$on_bytes = function ( $b ) use ( $progress ) { $progress->bytes( $b ); };
+		foreach ( $present as $rel ) {
 			$abs = WP_CONTENT_DIR . '/' . $rel;
-			if ( ! is_file( $abs ) ) continue;
 			$meta = array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : [];
-			$r = $c->send_file( $job, $rel, $abs, $meta );
+			$r = $c->send_file( $job, $rel, $abs, $meta, $on_bytes );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			if ( $r['refused'] ) { $stale[] = "file: {$rel}"; continue; }
-			$log( "file {$rel}" );
+			$progress->item( $rel );
 		}
+		$progress->end();
 		if ( $plan['files']['delete'] ) {
 			$expect = array_intersect_key( $file_hashes, array_flip( $plan['files']['delete'] ) );
 			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ] );
@@ -353,6 +357,7 @@ class IXES_Applier {
 		foreach ( array_keys( $plan['tables'] ) as $n ) if ( ! in_array( $n, $ordered, true ) && $n !== $wpdb->options ) $ordered[] = $n;
 		if ( isset( $plan['tables'][ $wpdb->options ] ) ) $ordered[] = $wpdb->options;
 
+		$progress->stage( 'Database', null, count( $ordered ) + ( $plan['active_plugins'] !== null ? 1 : 0 ) );
 		foreach ( $ordered as $name ) {
 			$t = $plan['tables'][ $name ]; $pk = $t['pk'];
 			$ids = array_merge( (array) $t['push'], (array) $t['insert'] );
@@ -366,7 +371,6 @@ class IXES_Applier {
 					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
-				$log( "{$name} rows " . count( $ids ) );
 			}
 			if ( $t['set_insert'] ) {
 				// no-pk table: send full rows whose hash is in set_insert
@@ -377,7 +381,6 @@ class IXES_Applier {
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
-				$log( "{$name} set_insert " . count( $rows ) );
 			}
 			if ( $t['delete'] ) {
 				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['delete'] ) );
@@ -386,13 +389,15 @@ class IXES_Applier {
 				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
 				foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 			}
+			$progress->item( $name );
 		}
 
 		if ( $plan['active_plugins'] !== null ) {
 			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ] );
 			if ( is_wp_error( $r ) ) return $fail( $r );
-			$log( 'active_plugins' );
+			$progress->item( 'active_plugins' );
 		}
+		$progress->end();
 
 		$r = $c->post( '/job/finish', [ 'job' => $job ] );
 		if ( is_wp_error( $r ) ) return $fail( $r );

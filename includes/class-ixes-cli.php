@@ -12,6 +12,27 @@ class IXES_CLI {
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
 	private function logger() { return function ( $m ) { WP_CLI::log( $m ); }; }
+	private function wants_json( $assoc ) { return ! empty( $assoc['json'] ) || ( $assoc['format'] ?? 'text' ) === 'json'; }
+	private function show_report( array $report, $assoc ) {
+		$path = IXES_Report::save( $report );
+		if ( $this->wants_json( $assoc ) ) { WP_CLI::line( wp_json_encode( $report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) ); return $path; }
+		WP_CLI::line( IXES_Report::render_text( $report ) );
+		foreach ( $report['warnings'] as $w ) WP_CLI::warning( $w );
+		return $path;
+	}
+	/** Run a push/pull and record its outcome in runs/<kind>-<env>-latest.json whatever happens. */
+	private function run_recorded( $kind, $env, array $report, callable $run ) {
+		$t0 = time();
+		$base = [ 'started' => $t0, 'files' => $report['summary']['files'], 'bytes' => $report['summary']['bytes'], 'rows' => $report['summary']['rows'] ];
+		$r = $run();
+		$end = [ 'finished' => time(), 'seconds' => time() - $t0 ];
+		if ( is_wp_error( $r ) ) {
+			IXES_Report::save_run( $kind, $env, [ 'ok' => false, 'job' => null ] + $base + $end + [ 'stale' => [], 'error' => $r->get_error_message() ] );
+			WP_CLI::error( $r->get_error_message() );
+		}
+		IXES_Report::save_run( $kind, $env, [ 'ok' => true, 'job' => $r['job'] ?? null ] + $base + $end + [ 'stale' => $r['stale'] ?? [], 'error' => null ] );
+		return $r;
+	}
 	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
 	private function forget_status() { delete_transient( 'ixes_status_report' ); }
 	private function scope( $assoc ) {
@@ -138,6 +159,18 @@ class IXES_CLI {
 	 * [--details]
 	 * : Break the file counts down by directory.
 	 *
+	 * [--verbose]
+	 * : One line per file and table instead of progress bars.
+	 *
+	 * [--format=<format>]
+	 * : text (tables) or json (the manifest agents read; also saved under plans/).
+	 * ---
+	 * default: text
+	 * options:
+	 *   - text
+	 *   - json
+	 * ---
+	 *
 	 * [--fresh]
 	 * : Discard an interrupted pull and start over.
 	 *
@@ -170,21 +203,20 @@ class IXES_CLI {
 			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
-			$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger(), $state ) );
+			$progress = IXES_Progress::for_cli( $assoc );
+			$this->run_recorded( 'pull', $env['name'], IXES_Report::from_pull_plan( $plan ), function () use ( $env, $c, $plan, $state, $progress ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), $state, $progress ); $progress->end(); return $r; } );
 			$this->forget_status();
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
 		}
 		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc ) ) );
-		// ... existing plan printing (rows, files, rewrite, excludes, --details) unchanged ...
-		$rows = array_sum( array_column( $plan['tables'], 'rows' ) );
-		WP_CLI::log( sprintf( "PULL %s → local\n  tables: %d (%d rows)\n  files: %d to transfer, %d to delete\n  rewrite:", $env['name'], count( $plan['tables'] ), $rows, count( $plan['files']['transfer'] ), count( $plan['files']['delete'] ) ) );
-		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "    {$p[0]}  →  {$p[1]}" );
-		WP_CLI::log( '  excludes: ' . implode( ', ', $plan['excludes'] ) );
-		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
-		$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
-		if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
-		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
+		$report = IXES_Report::from_pull_plan( $plan );
+		$manifest = $this->show_report( $report, $assoc );
+		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
+		WP_CLI::log( 'REWRITE' );
+		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "  {$p[0]}  →  {$p[1]}" );
+		WP_CLI::log( 'EXCLUDED  ' . implode( ', ', $plan['excludes'] ) );
+		if ( ! empty( $assoc['details'] ) ) {
 			foreach ( [ 'transfer', 'delete' ] as $k ) {
 				$by = [];
 				foreach ( $plan['files'][ $k ] as $rel ) {
@@ -195,9 +227,11 @@ class IXES_CLI {
 				foreach ( $by as $dir => $count ) WP_CLI::log( sprintf( '  %-8s %6d  %s', $k, $count, $dir ) );
 			}
 		}
+		WP_CLI::log( "manifest: {$manifest}" );
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
-		$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger() ) );
+		$progress = IXES_Progress::for_cli( $assoc );
+		$this->run_recorded( 'pull', $env['name'], $report, function () use ( $env, $c, $plan, $progress ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), null, $progress ); $progress->end(); return $r; } );
 		$this->forget_status();
 		WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 	}
@@ -210,7 +244,16 @@ class IXES_CLI {
 	 * : Environment name.
 	 *
 	 * [--json]
-	 * : Output the plan as JSON.
+	 * : Same as --format=json.
+	 *
+	 * [--format=<format>]
+	 * : text (tables) or json (the manifest agents read; also saved under plans/).
+	 * ---
+	 * default: text
+	 * options:
+	 *   - text
+	 *   - json
+	 * ---
 	 *
 	 * [--details]
 	 * : List every affected id and file.
@@ -239,14 +282,14 @@ class IXES_CLI {
 		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc ) ) );
 		$path = IXES_Planner::save( $plan );
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
-		if ( ! empty( $assoc['json'] ) ) { WP_CLI::line( IXES_Planner::render_json( $plan ) ); return; }
-		WP_CLI::line( IXES_Planner::render_text( $plan ) );
-		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
-		if ( ! empty( $assoc['details'] ) || ! empty( $assoc['verbose'] ) ) {
+		$manifest = $this->show_report( IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'diff' ), $assoc );
+		if ( $this->wants_json( $assoc ) ) return;
+		if ( ! empty( $assoc['details'] ) ) {
 			foreach ( $plan['tables'] as $name => $t ) foreach ( [ 'push', 'insert', 'delete', 'conflict' ] as $k ) if ( $t[ $k ] ) WP_CLI::log( "  {$name} {$k}: " . implode( ', ', $t[ $k ] ) );
 			foreach ( [ 'push', 'delete', 'conflict' ] as $k ) foreach ( $plan['files'][ $k ] as $rel ) WP_CLI::log( "  file {$k}: {$rel}" );
 		}
 		WP_CLI::log( "plan saved: {$path}" );
+		WP_CLI::log( "manifest: {$manifest}" );
 	}
 
 	private function field_diff( IXES_Client $c, $table, $id, array $plan ) {
@@ -285,6 +328,18 @@ class IXES_CLI {
 	 * [--plan=<file>]
 	 * : Apply a previously saved plan file.
 	 *
+	 * [--verbose]
+	 * : One line per file and table instead of progress bars.
+	 *
+	 * [--format=<format>]
+	 * : text (tables) or json (the manifest agents read; also saved under plans/).
+	 * ---
+	 * default: text
+	 * options:
+	 *   - text
+	 *   - json
+	 * ---
+	 *
 	 * [--only=<parts>]
 	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 	 *
@@ -309,12 +364,15 @@ class IXES_CLI {
 			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
 		}
-		WP_CLI::line( IXES_Planner::render_text( $plan ) );
-		foreach ( (array) ( $plan['warnings'] ?? [] ) as $w ) WP_CLI::warning( $w );
+		$report = IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'push' );
+		$manifest = $this->show_report( $report, $assoc );
+		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
+		WP_CLI::log( "manifest: {$manifest}" );
 		if ( IXES_Planner::is_empty( $plan ) ) { WP_CLI::success( 'nothing to push' ); return; }
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
-		$r = $this->fail_if_error( IXES_Applier::apply( $env, $c, $plan, $this->logger() ) );
+		$progress = IXES_Progress::for_cli( $assoc );
+		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress ); $progress->end(); return $r; } );
 		if ( $r['stale'] ) WP_CLI::warning( 'skipped (changed on prod during push): ' . implode( ', ', $r['stale'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
 		$this->forget_status();
