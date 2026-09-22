@@ -19,6 +19,7 @@ class IXES_Rest {
 			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
 		}
 		$r( '/rollback', 'POST', function ( $req ) { return self::applier( 'rollback', $req->get_json_params() ); } );
+		add_filter( 'rest_pre_serve_request', [ __CLASS__, 'serve_binary' ], 10, 4 );
 	}
 
 	public static function auth( WP_REST_Request $req ) {
@@ -61,15 +62,29 @@ class IXES_Rest {
 		$bin = self::wants_binary( $req );
 		$r   = IXES_Transfer::file_chunk( $p['path'] ?? '', (int) ( $p['offset'] ?? 0 ), (int) ( $p['size'] ?? 2097152 ), $bin );
 		if ( is_wp_error( $r ) || ! $bin ) return $r;
-		// Raw bytes: bypass the JSON encoder entirely so a 4 MB chunk costs 4 MB, not 3x that.
-		nocache_headers();
-		header( 'Content-Type: application/octet-stream' );
-		header( 'Content-Length: ' . $r['size'] );
-		header( 'X-Envsync-Total: ' . $r['total'] );
-		header( 'X-Envsync-Size: ' . $r['size'] );
-		header( 'X-Envsync-Sha256: ' . $r['sha256'] );
-		echo $r['bin']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary file body, not HTML
-		exit;
+		// Raw bytes must bypass the JSON encoder, but still go through the normal REST response
+		// pipeline (rest_post_dispatch, CORS/security plugins, etc.) instead of exiting early.
+		// rest_pre_serve_request is the hook WordPress provides for emitting a body itself; see
+		// serve_binary(). WP_REST_Server::serve_request() sends $result->get_headers() (including
+		// ours below) via PHP's header() before that filter runs, and header() replaces the
+		// earlier default 'Content-Type: application/json' with the last value set for that name.
+		$res = new WP_REST_Response( null, 200 );
+		$res->header( 'Content-Type', 'application/octet-stream' );
+		$res->header( 'Content-Length', (string) $r['size'] );
+		$res->header( 'X-Envsync-Total', (string) $r['total'] );
+		$res->header( 'X-Envsync-Size', (string) $r['size'] );
+		$res->header( 'X-Envsync-Sha256', $r['sha256'] );
+		$res->header( 'Cache-Control', 'no-cache' );
+		$res->set_data( $r['bin'] );
+		$res->ixes_binary = true; // marker read by serve_binary()
+		return $res;
+	}
+
+	/** Emit a binary file_get response as raw bytes instead of JSON; headers were already sent by the server. */
+	public static function serve_binary( $served, $result, $request, $server ) {
+		if ( $served || ! ( $result instanceof WP_REST_Response ) || empty( $result->ixes_binary ) ) return $served;
+		echo $result->get_data(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary file body, not HTML
+		return true;
 	}
 
 	/** Step params: JSON body, or X-Envsync-Step header plus raw body when the hub sends octet-stream. */
