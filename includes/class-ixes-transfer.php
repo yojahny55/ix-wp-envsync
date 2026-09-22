@@ -297,8 +297,11 @@ class IXES_Transfer {
 		$tmp  = $dest . '.ixes-tmp';
 		$dir  = dirname( $dest );
 		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return new WP_Error( 'io', self::io_hint( "cannot create directory {$dir}", $dir ) );
-		$fh = @fopen( $tmp, $offset === 0 ? 'wb' : 'ab' );
+		// a retried chunk (after a 502/503/504/408) must overwrite at $offset, not append,
+		// or the bytes land twice and the final sha256 check fails
+		$fh = @fopen( $tmp, $offset === 0 ? 'wb' : 'c+b' );
 		if ( ! $fh ) return new WP_Error( 'io', self::io_hint( "cannot write {$rel}", $dir ) );
+		if ( $offset > 0 ) { fseek( $fh, $offset ); ftruncate( $fh, $offset ); }
 		$w = fwrite( $fh, $data );
 		fclose( $fh );
 		if ( $w === false || $w < strlen( $data ) ) { @unlink( $tmp ); return new WP_Error( 'io', self::io_hint( "short write on {$rel} (disk full?)", $dir ) ); }

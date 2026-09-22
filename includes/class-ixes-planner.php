@@ -18,8 +18,10 @@ class IXES_Planner {
 		$ex = IXES_Pull::excludes( $env );
 		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array() ];
 
+		$in_scope = [];
 		foreach ( $info['tables'] as $t ) {
 			if ( ! $scope->table_in( $t['name'] ) ) continue;
+			$in_scope[] = $t['name']; // every in-scope table, not just ones that ended up with diffs, so family_warnings() sees the real --tables list
 			$name = $t['name'];
 			if ( ! IXES_Transfer::valid_table( $name ) ) continue;
 			// the remote names the pk column; only trust it if it is a real local column (it goes into SQL in apply())
@@ -55,7 +57,7 @@ class IXES_Planner {
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] ) $plan['tables'][ $name ] = $d;
 		}
-		$plan['warnings'] = $scope->family_warnings( array_keys( $plan['tables'] ) );
+		$plan['warnings'] = $scope->family_warnings( $in_scope );
 
 		$plan['files'] = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
 		$plan['remote_file_hashes'] = [];

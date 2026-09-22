@@ -154,6 +154,8 @@ class IXES_CLI {
 			);
 			if ( $why ) WP_CLI::error( "cannot resume: {$why}. Run again with --fresh to start over." );
 			WP_CLI::log( $state->describe( count( $plan['files']['transfer'] ) ) );
+			$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
+			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
 			$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger(), $state ) );

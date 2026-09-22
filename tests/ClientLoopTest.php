@@ -87,6 +87,19 @@ class ClientLoopTest extends TestCase {
 		$this->assertFalse( $called, 'writer must not be called for an unrecognized response' );
 	}
 
+	public function test_fetch_file_errors_when_binary_response_is_missing_total_header() {
+		$c = $this->client();
+		$c->set_caps( [ 'binary' ] );
+		$c->script = [ function () {
+			return [ 'response' => [ 'code' => 200 ], 'headers' => [], 'body' => 'hello' ];
+		} ];
+		$called = false;
+		$r = $c->fetch_file( 'a.txt', function () use ( &$called ) { $called = true; return true; } );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertStringContainsString( 'X-Envsync-Total', $r->get_error_message() );
+		$this->assertFalse( $called, 'writer must not be called when the total header is missing' );
+	}
+
 	public function test_send_file_puts_metadata_in_step_header_and_bytes_in_body() {
 		$c = $this->client();
 		$c->set_caps( [ 'binary' ] );

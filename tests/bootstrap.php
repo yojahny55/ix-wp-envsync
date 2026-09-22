@@ -28,6 +28,7 @@ if ( ! function_exists( 'ixes_storage_dir' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_date' ) ) { function wp_date( $f, $t = null ) { return date( $f, $t === null ? time() : $t ); } }
 if ( ! function_exists( 'wp_json_encode' ) ) { function wp_json_encode( $v, $f = 0 ) { return json_encode( $v, $f ); } }
 if ( ! function_exists( 'untrailingslashit' ) ) { function untrailingslashit( $s ) { return rtrim( $s, '/\\' ); } }
 if ( ! function_exists( 'is_wp_error' ) ) { function is_wp_error( $v ) { return $v instanceof WP_Error; } }

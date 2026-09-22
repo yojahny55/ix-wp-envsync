@@ -117,7 +117,9 @@ class IXES_Client {
 				return new WP_Error( 'transfer', "{$rel}: gave up at offset {$offset} after {$ch->attempts()} attempts: " . $res->get_error_message() );
 			}
 			if ( isset( $res['headers'] ) ) { // binary
-				$data = (string) $res['body']; $total = (int) $res['headers']['x-envsync-total']; $sha = (string) $res['headers']['x-envsync-sha256'];
+				$data = (string) $res['body'];
+				if ( ! isset( $res['headers']['x-envsync-total'] ) ) return new WP_Error( 'transfer', "{$rel}: binary response missing X-Envsync-Total header" );
+				$total = (int) ( $res['headers']['x-envsync-total'] ?? 0 ); $sha = (string) ( $res['headers']['x-envsync-sha256'] ?? '' );
 			} elseif ( isset( $res['data'] ) ) { // legacy base64 JSON
 				$data = base64_decode( (string) $res['data'] ); $total = (int) ( $res['total'] ?? 0 ); $sha = (string) ( $res['sha256'] ?? '' );
 			} else {

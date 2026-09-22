@@ -52,8 +52,8 @@ class IXES_Baseline {
 	public function baseline_label() {
 		$c = $this->meta( 'created_at' ); $p = $this->meta( 'partial_at' );
 		if ( ! $c && ! $p ) return '-';
-		$out = $c ? date( 'Y-m-d H:i', (int) $c ) : 'none';
-		if ( $p && ( ! $c || $p > $c ) ) $out .= ' · partial ' . date( 'Y-m-d H:i', (int) $p ) . ' (' . $this->meta( 'partial_scope' ) . ')';
+		$out = $c ? wp_date( 'Y-m-d H:i', (int) $c ) : 'none';
+		if ( $p && ( ! $c || $p > $c ) ) $out .= ' · partial ' . wp_date( 'Y-m-d H:i', (int) $p ) . ' (' . $this->meta( 'partial_scope' ) . ')';
 		return $out;
 	}
 

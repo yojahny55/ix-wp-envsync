@@ -73,10 +73,11 @@ B envsync rollback prod --yes
 
 # 7. a pull killed mid-way resumes and completes
 dd if=/dev/urandom of="$IXES_A/wp-content/uploads/big.bin" bs=1M count=40 status=none
-B envsync pull prod --fresh --yes >/dev/null   # clean start with the big file in the plan
+# clean start with the big file in the plan; this is the run that gets killed mid-transfer
 timeout 8 env WP_CLI_STRICT_ARGS_MODE=1 wp --path="$IXES_B" --url="$IXES_B_URL" envsync pull prod --fresh --yes >/dev/null 2>&1 || true
 ls "$IXES_B/wp-content/envsync-"*/pull-prod.json >/dev/null 2>&1 || die "no resume state after an interrupted pull"
-B envsync pull prod --yes | grep -q "interrupted pull" || die "resume prompt not shown"
+OUT=$(B envsync pull prod --yes)
+echo "$OUT" | grep -q "interrupted pull" || die "resume prompt not shown"
 cmp "$IXES_A/wp-content/uploads/big.bin" "$IXES_B/wp-content/uploads/big.bin" || die "big file differs after resume"
 ls "$IXES_B/wp-content/envsync-"*/pull-prod.json 2>/dev/null && die "state file left behind after a completed pull"
 

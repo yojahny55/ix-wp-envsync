@@ -102,7 +102,11 @@ class IXES_Pull {
 			$name = $t['name'];
 			if ( in_array( $name, $done, true ) ) continue;
 			$from = null;
-			if ( $resume === $name ) { $from = $state->get( 'cursor' ); $log( "table {$name} (resuming at " . ( $from === null ? 'start' : $from ) . ")" ); }
+			// a null cursor for the resume table means the last page was written but table_done()
+			// never got to save (killed in between): the tmp table already holds every row, and for
+			// a no-PK table (plain INSERT, no REPLACE) re-running from "start" would duplicate them all.
+			// Fall through to the fresh-table branch below so import_begin()/delete_table() restart it clean.
+			if ( $resume === $name && $state->get( 'cursor' ) !== null ) { $from = $state->get( 'cursor' ); $log( "table {$name} (resuming at {$from})" ); }
 			else {
 				$log( "table {$name} ({$t['rows']} rows)" );
 				$b = IXES_Transfer::import_begin( $name );
