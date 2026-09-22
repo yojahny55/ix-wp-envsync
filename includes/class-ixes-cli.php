@@ -12,6 +12,8 @@ class IXES_CLI {
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
 	private function logger() { return function ( $m ) { WP_CLI::log( $m ); }; }
+	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
+	private function forget_status() { delete_transient( 'ixes_status_report' ); }
 	private function scope( $assoc ) {
 		global $wpdb;
 		try { return IXES_Scope::from_assoc( $assoc, $wpdb->prefix ); }
@@ -88,6 +90,7 @@ class IXES_CLI {
 			try {
 				IXES_Env::add( $env );
 			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
+			$this->forget_status();
 			WP_CLI::success( $existing ? "env {$args[1]} updated" : "env {$args[1]} saved" );
 			return;
 		}
@@ -102,7 +105,7 @@ class IXES_CLI {
 			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop one of the "this env" rows with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
-		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); WP_CLI::success( 'removed' ); return; }
+		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); $this->forget_status(); WP_CLI::success( 'removed' ); return; }
 		if ( $action === 'ping' ) {
 			$c = $this->client( $args[1] );
 			$r = $this->fail_if_error( $c->get( '/ping' ) );
@@ -168,6 +171,7 @@ class IXES_CLI {
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
 			$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger(), $state ) );
+			$this->forget_status();
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
 		}
@@ -194,6 +198,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
 		$this->fail_if_error( IXES_Pull::run( $env, $c, $plan, $this->logger() ) );
+		$this->forget_status();
 		WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 	}
 
@@ -312,6 +317,7 @@ class IXES_CLI {
 		$r = $this->fail_if_error( IXES_Applier::apply( $env, $c, $plan, $this->logger() ) );
 		if ( $r['stale'] ) WP_CLI::warning( 'skipped (changed on prod during push): ' . implode( ', ', $r['stale'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
+		$this->forget_status();
 		WP_CLI::success( "pushed to {$env['name']} (job {$r['job']}). Pull again before the next round of changes." );
 	}
 
@@ -353,6 +359,7 @@ class IXES_CLI {
 		$age = $lock['started'] ? (int) floor( ( time() - $lock['started'] ) / 60 ) . ' min' : 'unknown age';
 		$this->confirm( $assoc, "Clear the lock from job {$lock['job']} ({$age}) on {$env['name']}? Nothing is rolled back; 'wp envsync rollback {$env['name']}' still restores that job's snapshot." );
 		$r = $this->fail_if_error( $c->post( '/job/unlock', [] ) );
+		$this->forget_status();
 		WP_CLI::success( "unlocked {$env['name']} (job {$r['job']})" );
 	}
 
