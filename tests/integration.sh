@@ -146,5 +146,22 @@ sleep 3   # A runs behind a long-lived php -S process with opcache.revalidate_fr
 B envsync env ping prod | grep -q "auth via X-Envsync-Token" || die "ping did not report the fallback carrier"
 B envsync pull prod --fresh --yes >/dev/null || die "pull failed with Authorization stripped"
 wp --path="$IXES_A" config delete ENVSYNC_TEST_DROP_AUTHORIZATION >/dev/null
+sleep 3
+
+# 13. a plugin's own table exists only on the hub: push creates it, fills it, and rollback drops it; many small files go in batches
+A db query "DROP TABLE IF EXISTS wp_ixdemo_log" >/dev/null; B db query "DROP TABLE IF EXISTS wp_ixdemo_log" >/dev/null
+B db query "CREATE TABLE wp_ixdemo_log ( id bigint(20) unsigned NOT NULL AUTO_INCREMENT, msg varchar(50) NOT NULL, PRIMARY KEY (id) ) ENGINE=InnoDB" >/dev/null
+B db query "INSERT INTO wp_ixdemo_log (msg) VALUES ('one'),('two'),('three')" >/dev/null
+mkdir -p "$IXES_B/wp-content/themes/ixtest/parts"
+for i in $(seq 1 150); do echo "/* part $i */" > "$IXES_B/wp-content/themes/ixtest/parts/p$i.css"; done
+B envsync diff prod | grep -q "wp_ixdemo_log (new)" || die "new table not shown in the plan"
+B envsync push prod --yes >/dev/null || die "push with a new table failed"
+[ "$(A db query "SELECT COUNT(*) FROM wp_ixdemo_log" --skip-column-names)" = "3" ] || die "new table not created and filled on the remote"
+[ "$(ls "$IXES_A/wp-content/themes/ixtest/parts" | wc -l)" = "150" ] || die "batched small files missing on the remote"
+cmp "$IXES_A/wp-content/themes/ixtest/parts/p77.css" "$IXES_B/wp-content/themes/ixtest/parts/p77.css" || die "batched file content differs"
+B envsync rollback prod --yes >/dev/null
+[ -z "$(A db query "SHOW TABLES LIKE 'wp_ixdemo_log'" --skip-column-names)" ] || die "rollback did not drop the created table"
+[ -e "$IXES_A/wp-content/themes/ixtest/parts/p1.css" ] && die "rollback left batched files behind"
+B db query "DROP TABLE wp_ixdemo_log" >/dev/null; rm -rf "$IXES_B/wp-content/themes/ixtest/parts"
 
 echo "ALL OK"

@@ -16,7 +16,7 @@ class IXES_Report {
 			'direction' => $in['direction'], 'baseline_at' => $in['baseline_at'], 'first_deploy' => (bool) $in['first_deploy'],
 			'scope' => $in['scope'], 'scope_full' => (bool) $in['scope_full'],
 			'summary' => [ 'files' => count( $in['files'] ), 'delete' => count( $in['deletes'] ), 'bytes' => null, 'rows' => 0, 'conflicts' => count( $in['conflicts'] ) ],
-			'tables' => [], 'plugins' => [], 'themes' => [], 'other' => [], 'conflicts' => $in['conflicts'], 'warnings' => $in['warnings'],
+			'tables' => [], 'new_tables' => array_values( (array) ( $in['new_tables'] ?? [] ) ), 'plugins' => [], 'themes' => [], 'other' => [], 'conflicts' => $in['conflicts'], 'warnings' => $in['warnings'],
 		];
 
 		foreach ( $in['tables'] as $name => $t ) {
@@ -101,7 +101,7 @@ class IXES_Report {
 		return self::build( [
 			'kind' => $kind, 'env' => $plan['env'], 'url' => (string) ( $info['url'] ?? '' ), 'created' => $plan['created'], 'direction' => 'push',
 			'baseline_at' => $plan['baseline_at'], 'first_deploy' => (bool) $plan['two_way'], 'scope' => $sc->label(), 'scope_full' => $sc->is_full(),
-			'tables' => $tables, 'rows' => null,
+			'tables' => $tables, 'new_tables' => array_keys( (array) ( $plan['new_tables'] ?? [] ) ), 'rows' => null,
 			'files' => $plan['files']['push'], 'deletes' => $plan['files']['delete'], 'sizes' => $sizes,
 			'before' => $before, 'source' => IXES_Transfer::inventory(),
 			'active_before' => $remote_active, 'active_after' => $plan['active_plugins'] !== null ? $plan['active_plugins'] : $remote_active,
@@ -177,7 +177,7 @@ class IXES_Report {
 		if ( $r['tables'] ) {
 			$o[] = ''; $o[] = 'DATABASE';
 			$o[] = $push
-				? self::table( [ 'table', 'push', 'insert', 'delete', 'prod-wins', 'kept-prod' ], array_map( function ( $t ) { return [ $t['name'], $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'] ]; }, $r['tables'] ) )
+				? self::table( [ 'table', 'push', 'insert', 'delete', 'prod-wins', 'kept-prod' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'] ]; }, $r['tables'] ) )
 				: self::table( [ 'table', 'rows' ], array_map( function ( $t ) { return [ $t['name'], $t['rows'] ]; }, $r['tables'] ) );
 		}
 		$has_del = $s['delete'] > 0;

@@ -16,10 +16,21 @@ class IXES_Planner {
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
 		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 		$ex = IXES_Pull::excludes( $env );
-		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array() ];
+		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [] ];
+
+		// tables only this site has (a plugin's own tables on a first deploy): the push creates them, then fills them
+		$candidates = $info['tables'];
+		$remote_names = array_column( $info['tables'], 'name' );
+		foreach ( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) as $name ) {
+			if ( strpos( $name, $wpdb->prefix . 'ixes_' ) === 0 || in_array( $name, $remote_names, true ) || ! $scope->table_in( $name ) ) continue;
+			$create = $wpdb->get_row( "SHOW CREATE TABLE `{$name}`", ARRAY_N );
+			if ( ! $create ) continue;
+			$plan['new_tables'][ $name ] = $create[1];
+			$candidates[] = [ 'name' => $name, 'pk' => IXES_Transfer::pk_of( $name ), 'new' => true ];
+		}
 
 		$in_scope = [];
-		foreach ( $info['tables'] as $t ) {
+		foreach ( $candidates as $t ) {
 			if ( ! $scope->table_in( $t['name'] ) ) continue;
 			$in_scope[] = $t['name']; // every in-scope table, not just ones that ended up with diffs, so family_warnings() sees the real --tables list
 			$name = $t['name'];
@@ -28,8 +39,10 @@ class IXES_Planner {
 			$pk = $t['pk'] === null ? null : IXES_Transfer::safe_pk( $name, $t['pk'] );
 			if ( $t['pk'] !== null && ! $pk ) return new WP_Error( 'bad_pk', "remote reports unknown pk column '{$t['pk']}' for {$name}" );
 			$remote = [];
-			$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
-			if ( is_wp_error( $r ) ) return $r;
+			if ( empty( $t['new'] ) ) {
+				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
+				if ( is_wp_error( $r ) ) return $r;
+			}
 			$local = []; $next = null;
 			do {
 				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo );

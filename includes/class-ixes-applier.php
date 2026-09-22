@@ -116,6 +116,30 @@ class IXES_Applier {
 		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
 	}
 
+	private static function record_meta( $job, $key, $value ) {
+		$dir = self::job_dir( $job );
+		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return;
+		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
+		if ( ! is_array( $meta ) ) return;
+		$meta[ $key ][] = $value;
+		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
+	}
+
+	/**
+	 * A push may create a table the remote lacks (a plugin's own tables on a first deploy).
+	 * Only one plain CREATE TABLE for exactly that name, under this site's prefix, for a table that does not exist yet.
+	 * @return string|null why it is refused
+	 */
+	public static function create_table_refusal( $table, $sql, $prefix, $exists ) {
+		if ( ! preg_match( '/^[A-Za-z0-9_]+$/', $table ) || strpos( $table, $prefix ) !== 0 ) return 'table name refused';
+		if ( strpos( $table, $prefix . 'ixes_' ) === 0 ) return 'table name refused';
+		if ( $exists ) return 'table already exists';
+		if ( ! preg_match( '/^CREATE TABLE `' . preg_quote( $table, '/' ) . '` \(/', $sql ) ) return 'not a CREATE TABLE for that table';
+		if ( strpos( $sql, ';' ) !== false ) return 'one statement only';
+		if ( preg_match( '/\b(SELECT|DATA\s+DIRECTORY|INDEX\s+DIRECTORY|UNION)\b/i', $sql ) ) return 'unsupported table option';
+		return null;
+	}
+
 	// same read-modify-write as record_set_inserted: keep the value the option had before this job touched it
 	private static function record_option_before( $job, $name ) {
 		$dir = self::job_dir( $job );
@@ -193,6 +217,31 @@ class IXES_Applier {
 			$bytes = array_key_exists( 'bin', $p ) ? (string) $p['bin'] : base64_decode( (string) ( $p['data'] ?? '' ) );
 			$r = IXES_Transfer::write_file_chunk( $rel, (int) ( $p['offset'] ?? 0 ), $bytes, ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
 			if ( is_wp_error( $r ) ) return $r;
+			return [ 'ok' => true ];
+		}
+
+		if ( $kind === 'files' ) {
+			$items = IXES_Batch::decode( (string) ( $p['bin'] ?? '' ) );
+			if ( is_wp_error( $items ) ) return $items;
+			$refused = [];
+			foreach ( $items as $it ) {
+				list( $m, $bytes ) = $it;
+				$rel = (string) $m['path'];
+				// a retried batch finds files it already wrote: identical content is done, not a conflict
+				if ( self::file_matches( $rel, (string) ( $m['sha256'] ?? '' ), 'sha256' ) ) continue;
+				if ( array_key_exists( 'expect', $m ) && ! self::file_matches( $rel, $m['expect'], $m['algo'] ?? 'sha1' ) ) { $refused[] = $rel; continue; }
+				$r = IXES_Transfer::write_file_chunk( $rel, 0, $bytes, true, (string) ( $m['sha256'] ?? '' ) );
+				if ( is_wp_error( $r ) ) return $r;
+			}
+			return [ 'ok' => true, 'refused' => $refused ];
+		}
+
+		if ( $kind === 'create_table' ) {
+			$table = (string) ( $p['table'] ?? '' ); $sql = (string) ( $p['sql'] ?? '' );
+			$why = self::create_table_refusal( $table, $sql, $wpdb->prefix, IXES_Transfer::valid_table( $table ) );
+			if ( $why ) return new WP_Error( 'bad_create', $why, [ 'status' => 400 ] );
+			self::record_meta( $p['job'], 'created_tables', $table );
+			if ( $wpdb->query( $sql ) === false ) return new WP_Error( 'create_failed', "cannot create {$table}: {$wpdb->last_error}", [ 'status' => 500 ] );
 			return [ 'ok' => true ];
 		}
 
@@ -286,6 +335,9 @@ class IXES_Applier {
 			}
 		}
 		foreach ( (array) ( $meta['created_files'] ?? [] ) as $rel ) IXES_Transfer::delete_file( $rel );
+		foreach ( (array) ( $meta['created_tables'] ?? [] ) as $table ) {
+			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
+		}
 		wp_cache_flush();
 		return [ 'restored' => $n, 'job' => $job ];
 	}
@@ -323,6 +375,10 @@ class IXES_Applier {
 		}
 		$plan_meta = [ 'env' => $env['name'], 'created' => $plan['created'], 'tables' => $touch, 'files' => [ 'push' => $plan['files']['push'], 'delete' => $plan['files']['delete'] ] ];
 
+		$caps = $c->caps();
+		if ( ! empty( $plan['new_tables'] ) && ! in_array( 'create_table', $caps, true ) ) {
+			return new WP_Error( 'old_remote', 'this push creates ' . count( $plan['new_tables'] ) . ' table(s) the remote lacks (' . implode( ', ', array_keys( $plan['new_tables'] ) ) . "); upload plugin 0.5.0 or newer to {$env['url']} first" );
+		}
 		$start = $c->post( '/job/start', [ 'plan_meta' => $plan_meta ] );
 		if ( is_wp_error( $start ) ) return $start;
 		$job = $start['job'];
@@ -335,10 +391,27 @@ class IXES_Applier {
 		$present = array_values( array_filter( $plan['files']['push'], function ( $rel ) { return is_file( WP_CONTENT_DIR . '/' . $rel ); } ) );
 		$progress->stage( 'Files', array_sum( array_map( function ( $rel ) { return (int) filesize( WP_CONTENT_DIR . '/' . $rel ); }, $present ) ), count( $present ) );
 		$on_bytes = function ( $b ) use ( $progress ) { $progress->bytes( $b ); };
-		foreach ( $present as $rel ) {
-			$abs = WP_CONTENT_DIR . '/' . $rel;
-			$meta = array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : [];
-			$r = $c->send_file( $job, $rel, $abs, $meta, $on_bytes );
+		$meta_for = function ( $rel ) use ( $file_hashes, $plan ) { return array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : []; };
+		$sizes = [];
+		foreach ( $present as $rel ) $sizes[ $rel ] = (int) filesize( WP_CONTENT_DIR . '/' . $rel );
+		$packed = in_array( 'batch', $caps, true ) ? IXES_Batch::pack( $sizes ) : [ 'batches' => [], 'large' => $present ];
+		foreach ( $packed['batches'] as $batch ) {
+			$items = [];
+			foreach ( $batch as $rel ) {
+				$data = (string) file_get_contents( WP_CONTENT_DIR . '/' . $rel );
+				$items[] = [ [ 'path' => $rel, 'sha256' => hash( 'sha256', $data ) ] + $meta_for( $rel ), $data ];
+			}
+			$r = $c->send_batch( $job, $items );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+			$refused = array_flip( (array) ( $r['refused'] ?? [] ) );
+			foreach ( $batch as $rel ) {
+				$progress->bytes( $sizes[ $rel ] );
+				if ( isset( $refused[ $rel ] ) ) { $stale[] = "file: {$rel}"; continue; }
+				$progress->item( $rel );
+			}
+		}
+		foreach ( $packed['large'] as $rel ) {
+			$r = $c->send_file( $job, $rel, WP_CONTENT_DIR . '/' . $rel, $meta_for( $rel ), $on_bytes );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			if ( $r['refused'] ) { $stale[] = "file: {$rel}"; continue; }
 			$progress->item( $rel );
@@ -358,9 +431,16 @@ class IXES_Applier {
 		if ( isset( $plan['tables'][ $wpdb->options ] ) ) $ordered[] = $wpdb->options;
 
 		$progress->stage( 'Database', null, count( $ordered ) + ( $plan['active_plugins'] !== null ? 1 : 0 ) );
+		foreach ( (array) ( $plan['new_tables'] ?? [] ) as $name => $sql ) {
+			$r = $c->post( '/job/step', [ 'job' => $job, 'kind' => 'create_table', 'table' => $name, 'sql' => $sql ] );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+		}
+		// plugins switch on last, after their tables and rows exist: never through the options rows
+		$ap_id = isset( $plan['tables'][ $wpdb->options ] ) ? (string) $wpdb->get_var( "SELECT option_id FROM {$wpdb->options} WHERE option_name = 'active_plugins'" ) : '';
 		foreach ( $ordered as $name ) {
 			$t = $plan['tables'][ $name ]; $pk = $t['pk'];
 			$ids = array_merge( (array) $t['push'], (array) $t['insert'] );
+			if ( $name === $wpdb->options && $ap_id !== '' ) $ids = array_values( array_filter( $ids, function ( $id ) use ( $ap_id ) { return (string) $id !== $ap_id; } ) );
 			if ( $ids ) {
 				foreach ( array_chunk( $ids, 500 ) as $chunk ) {
 					$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $chunk ) );

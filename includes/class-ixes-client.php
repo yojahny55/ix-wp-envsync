@@ -141,6 +141,23 @@ class IXES_Client {
 	}
 
 	/**
+	 * Push many small files in one /job/step. Safe to retry: the remote skips files that already hold these bytes.
+	 * @param array $items list of [ meta (path, sha256, expect?, algo?), bytes ]
+	 */
+	public function send_batch( $job, array $items ) {
+		$body = IXES_Batch::encode( $items );
+		$ch = new IXES_Chunker();
+		while ( true ) {
+			$r = $this->post( '/job/step', null, [ 'raw_body' => $body, 'step' => wp_json_encode( [ 'job' => $job, 'kind' => 'files' ] ) ] );
+			if ( ! is_wp_error( $r ) ) return $r;
+			if ( ! $ch->fail( self::err_code( $r ) ) ) {
+				return new WP_Error( 'transfer', 'batch of ' . count( $items ) . " files starting at {$items[0][0]['path']}: gave up after {$ch->attempts()} attempts: " . $r->get_error_message() );
+			}
+			$this->sleep_s( $ch->backoff() );
+		}
+	}
+
+	/**
 	 * Push one file chunk by chunk through /job/step. $first_meta (expect, algo) is merged into the offset-0 step.
 	 * @return array{ok:bool,refused:bool}|WP_Error
 	 */
