@@ -50,7 +50,10 @@ class IXES_Client {
 		$is_bin    = ( $opts['accept'] ?? 'json' ) === 'binary' && ( $ctype_res === '' || stripos( $ctype_res, 'application/octet-stream' ) === 0 );
 		if ( $is_bin ) {
 			$h = [];
-			foreach ( (array) wp_remote_retrieve_headers( $res ) as $k => $v ) $h[ strtolower( $k ) ] = is_array( $v ) ? end( $v ) : $v;
+			// WordPress returns a CaseInsensitiveDictionary object; an (array) cast yields its mangled private property, not the headers
+			$raw_h = wp_remote_retrieve_headers( $res );
+			if ( is_object( $raw_h ) && method_exists( $raw_h, 'getAll' ) ) $raw_h = $raw_h->getAll();
+			foreach ( (array) $raw_h as $k => $v ) $h[ strtolower( $k ) ] = is_array( $v ) ? end( $v ) : $v;
 			return [ 'body' => $body_s, 'headers' => $h ];
 		}
 		$json = json_decode( $body_s, true );

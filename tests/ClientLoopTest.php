@@ -16,6 +16,18 @@ class FakeClient extends IXES_Client {
 
 class ClientLoopTest extends TestCase {
 	private function client() { return new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ) ] ); }
+	/** Mimics WpOrg\Requests\Utility\CaseInsensitiveDictionary: headers live in a private property, exposed via getAll(). */
+	private static function dict( array $h ) {
+		return new class( $h ) implements ArrayAccess {
+			private $data = [];
+			public function __construct( $d ) { foreach ( $d as $k => $v ) $this->data[ strtolower( $k ) ] = $v; }
+			public function getAll() { return $this->data; }
+			#[\ReturnTypeWillChange] public function offsetExists( $k ) { return isset( $this->data[ strtolower( $k ) ] ); }
+			#[\ReturnTypeWillChange] public function offsetGet( $k ) { return $this->data[ strtolower( $k ) ] ?? null; }
+			#[\ReturnTypeWillChange] public function offsetSet( $k, $v ) { $this->data[ strtolower( $k ) ] = $v; }
+			#[\ReturnTypeWillChange] public function offsetUnset( $k ) { unset( $this->data[ strtolower( $k ) ] ); }
+		};
+	}
 	private static function bin( $body, $total, $sha ) {
 		return [ 'response' => [ 'code' => 200 ], 'body' => $body, 'headers' => [ 'x-envsync-total' => (string) $total, 'x-envsync-size' => (string) strlen( $body ), 'x-envsync-sha256' => $sha ] ];
 	}
@@ -35,6 +47,16 @@ class ClientLoopTest extends TestCase {
 		$this->assertSame( 'application/octet-stream', $c->calls[0]['headers']['Accept'] );
 		$body = json_decode( $c->calls[1]['body'], true );
 		$this->assertSame( 5, $body['offset'] );
+	}
+
+	public function test_fetch_file_reads_headers_from_a_dictionary_object_like_wordpress_returns() {
+		$c = $this->client();
+		$c->set_caps( [ 'binary' ] );
+		$sha = hash( 'sha256', 'ab' );
+		$c->script = [ function () use ( $sha ) { return [ 'response' => [ 'code' => 200 ], 'body' => 'ab', 'headers' => self::dict( [ 'Content-Type' => 'application/octet-stream', 'X-Envsync-Total' => '2', 'X-Envsync-Size' => '2', 'X-Envsync-Sha256' => $sha ] ) ]; } ];
+		$got = [];
+		$this->assertTrue( $c->fetch_file( 'a.txt', function ( $o, $d, $f, $s ) use ( &$got ) { $got[] = [ $o, $d, $f, $s ]; return true; } ) );
+		$this->assertSame( [ [ 0, 'ab', true, $sha ] ], $got );
 	}
 
 	public function test_fetch_file_retries_same_offset_with_smaller_chunk_on_413() {
