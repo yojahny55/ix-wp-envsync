@@ -46,6 +46,11 @@ if ( ! function_exists( 'wp_remote_retrieve_body' ) ) { function wp_remote_retri
 if ( ! function_exists( 'wp_remote_retrieve_header' ) ) { function wp_remote_retrieve_header( $r, $h ) { return $r['headers'][ strtolower( $h ) ] ?? ''; } }
 if ( ! function_exists( 'wp_remote_retrieve_headers' ) ) { function wp_remote_retrieve_headers( $r ) { return $r['headers'] ?? []; } }
 
+if ( ! function_exists( 'get_option' ) ) { function get_option( $k, $d = false ) { return $GLOBALS['ixes_test_options'][ $k ] ?? $d; } }
+if ( ! function_exists( 'get_transient' ) ) { function get_transient( $k ) { return $GLOBALS['ixes_test_transients'][ $k ] ?? false; } }
+if ( ! defined( 'IXES_VERSION' ) ) define( 'IXES_VERSION', '0.4.0' );
+if ( ! function_exists( 'home_url' ) ) { function home_url() { return 'http://hub.test'; } }
+
 spl_autoload_register( function ( $class ) {
 	if ( strpos( $class, 'IXES_' ) !== 0 ) return;
 	$file = __DIR__ . '/../includes/class-' . strtolower( str_replace( '_', '-', $class ) ) . '.php';
