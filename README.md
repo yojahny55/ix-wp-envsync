@@ -273,6 +273,8 @@ wp envsync rescue prod --plugins-off   # keep the push, switch every plugin exce
 
 Rescue needs 0.5.1 or newer on the remote. It also won't work where the host or a security plugin blocks PHP files under `wp-content/plugins` (All-In-One Security has such an option). For a remote on an older version, use the host's file manager and rename the crashing plugin's folder under `wp-content/plugins`. WordPress then switches it off.
 
+**`503 no available server` on Coolify or Docker.** The proxy stopped routing to the container, usually because its health check requests a WordPress page, and that page crashed. Nothing reaches the site then, not even `rescue`. Point the health check at a static file such as `/license.txt`, restart the container, then run `wp envsync rescue <env>`. A static file is served without PHP, so a crashing plugin no longer takes the whole container out.
+
 **A push died and left a lock.** `status` shows the job id and how long it has been stuck:
 
 ```
@@ -427,7 +429,7 @@ wp envsync env excludes prod
 
 `env excludes` shows the whole effective list and marks each entry as `always`, `default`, or `this env`. Only `this env` rows can be removed.
 
-Paths are relative to wp-content. A trailing slash means the folder and everything under it, and nested paths work, such as `uploads/rank-math/`.
+Paths are relative to wp-content. A trailing slash means the folder and everything under it, and nested paths work, such as `uploads/rank-math/`. A folder exclude matches only at that path: `cache/` is `wp-content/cache/`, not a plugin's own `src/cache/` folder. The exceptions are `.git/` and `node_modules/`, which are skipped wherever they appear.
 
 Some things are always excluded and cannot be synced: `wp-config.php`, `.htaccess`, `.env`, `debug.log`, drop-ins, `.git`, `node_modules`, this plugin's own folder, and its storage folder.
 

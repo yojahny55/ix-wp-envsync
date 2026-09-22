@@ -206,6 +206,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 
 **`old_remote` / "creates N table(s) the remote lacks"**: the push has to create plugin tables, and the remote plugin is older than 0.5.1. Tell the user to upload the current zip to that site first. Nothing was changed.
 
+**`503 … no available server`, including from `rescue`**: the host's proxy (Traefik on Coolify) has no healthy container, usually because the health check requests a PHP page that now crashes. Nothing you run can reach the site. Tell the user to point the Coolify health check at a static file (`/license.txt`), or disable it, and restart the container. Then use `rescue`. Also ask for the container log's `PHP Fatal error` line; it names the plugin and file that crash.
+
 **`500 … critical error`, or `status` says `wp envsync rescue <env>`**: the remote crashes on every request, usually because of a plugin. Normal commands cannot reach it, so use the rescue endpoint, which loads no plugins:
 1. Run `wp envsync rescue <env>` and report the active plugins, the lock and the last job.
 2. Then offer the user two options:

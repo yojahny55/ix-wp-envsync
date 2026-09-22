@@ -107,11 +107,18 @@ class IXES_Transfer {
 		if ( $own !== '' && strpos( $rel, $own ) === 0 ) return true;
 		foreach ( $excludes as $ex ) {
 			$ex = ltrim( $ex, '/' );
-			if ( substr( $ex, -1 ) === '/' ) { if ( strpos( $rel, $ex ) === 0 || strpos( $rel, '/' . $ex ) !== false ) return true; }
+			if ( substr( $ex, -1 ) === '/' ) {
+				// folders are anchored at wp-content: 'cache/' must not swallow plugins/polylang/src/integrations/cache/
+				if ( strpos( $rel, $ex ) === 0 ) return true;
+				if ( in_array( $ex, self::ANY_DEPTH, true ) && strpos( $rel, '/' . $ex ) !== false ) return true;
+			}
 			elseif ( $rel === $ex || basename( $rel ) === $ex ) return true;
 		}
 		return false;
 	}
+
+	/** Dev artifacts that are never deployable wherever they sit (a theme's node_modules, a plugin's .git). */
+	const ANY_DEPTH = [ '.git/', 'node_modules/' ];
 
 	public static function all_files( array $excludes ) {
 		$root = untrailingslashit( WP_CONTENT_DIR );

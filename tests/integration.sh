@@ -164,6 +164,12 @@ B envsync rollback prod --yes >/dev/null
 [ -e "$IXES_A/wp-content/themes/ixtest/parts/p1.css" ] && die "rollback left batched files behind"
 B db query "DROP TABLE wp_ixdemo_log" >/dev/null; rm -rf "$IXES_B/wp-content/themes/ixtest/parts"
 
+# 13b. a plugin's own folder named like a default exclude (cache/) still syncs
+mkdir -p "$IXES_B/wp-content/plugins/ixnest/src/cache"; echo "<?php // nested" > "$IXES_B/wp-content/plugins/ixnest/src/cache/load.php"
+B envsync push prod --yes >/dev/null || die "push of a nested cache/ folder failed"
+[ -f "$IXES_A/wp-content/plugins/ixnest/src/cache/load.php" ] || die "nested cache/ folder inside a plugin was excluded"
+rm -rf "$IXES_B/wp-content/plugins/ixnest" "$IXES_A/wp-content/plugins/ixnest"
+
 # 14. a plugin that fatals on every web request (not under WP-CLI)
 BOOM='<?php
 /*

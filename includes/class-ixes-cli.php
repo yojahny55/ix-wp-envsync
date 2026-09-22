@@ -17,6 +17,10 @@ class IXES_CLI {
 		if ( ! empty( $assoc['yes'] ) || IXES_Progress::piped() || ! ( function_exists( 'stream_isatty' ) && stream_isatty( STDIN ) ) ) return null;
 		return function ( WP_Error $e ) {
 			WP_CLI::warning( $e->get_error_message() );
+			if ( strpos( $e->get_error_message(), 'no available server' ) !== false ) {
+				WP_CLI::log( '  The host proxy has no healthy container, so no request (not even rescue) reaches the site.' );
+				WP_CLI::log( '  Point its health check at a static file such as /license.txt and restart the container, then choose [r] or [b].' );
+			}
 			WP_CLI::log( '  [r] retry this step' );
 			WP_CLI::log( '  [b] roll back the push (through the rescue endpoint if the remote is down)' );
 			WP_CLI::log( '  [p] switch the remote\'s plugins off, then retry' );
