@@ -34,4 +34,20 @@ class PlannerRenderTest extends TestCase {
 		$plan_list = [ 'tables' => [], 'files' => $files, 'active_plugins' => [ 'foo/foo.php' ] ];
 		$this->assertFalse( IXES_Planner::is_empty( $plan_list ) );
 	}
+
+	private function plan() {
+		return [
+			'env' => 'prod', 'baseline_at' => 1, 'two_way' => false, 'tables' => [],
+			'files' => [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ],
+			'active_plugins' => null, 'conflict_detail' => [],
+		];
+	}
+
+	public function test_render_shows_scope_when_not_full() {
+		$plan = $this->plan();
+		$plan['scope'] = [ 'only' => [ 'themes' ], 'tables' => [], 'paths' => [ 'themes/mk/' ] ];
+		$this->assertStringContainsString( 'scope: themes, paths themes/mk/', IXES_Planner::render_text( $plan ) );
+		unset( $plan['scope'] );
+		$this->assertStringNotContainsString( 'scope:', IXES_Planner::render_text( $plan ) );
+	}
 }

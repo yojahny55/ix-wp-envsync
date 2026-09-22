@@ -37,27 +37,34 @@ class IXES_Pull {
 		return $manifest;
 	}
 
-	public static function plan( array $env, IXES_Client $c ) {
+	public static function plan( array $env, IXES_Client $c, IXES_Scope $scope = null ) {
 		global $wpdb;
+		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
 		if ( $info['prefix'] !== $wpdb->prefix ) return new WP_Error( 'prefix_mismatch', "remote prefix '{$info['prefix']}' differs from local '{$wpdb->prefix}'; v0.1 requires identical prefixes" );
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );
-		$remote = [];
-		$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000 ], function ( $res ) use ( &$remote ) { $remote += $res['files']; }, 'cursor' );
-		if ( is_wp_error( $r ) ) return $r;
-		$remote = self::drop_excluded( $remote, $ex );
-		$local = IXES_Transfer::local_manifest( $ex, $algo );
-		$transfer = array_keys( array_diff_assoc( $remote, $local ) );
-		sort( $transfer, SORT_STRING ); // stable order so a resumed pull's file index still points at the same path
-		$delete   = array_keys( array_diff_key( $local, $remote ) );
+		$remote = []; $local = []; $transfer = []; $delete = [];
+		if ( $scope->files_wanted() ) {
+			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000 ], function ( $res ) use ( &$remote ) { $remote += $res['files']; }, 'cursor' );
+			if ( is_wp_error( $r ) ) return $r;
+			$remote = self::drop_excluded( $remote, $ex );
+			foreach ( array_keys( $remote ) as $rel ) if ( ! $scope->path_in( $rel ) ) unset( $remote[ $rel ] );
+			$local = IXES_Transfer::local_manifest( $ex, $algo );
+			foreach ( array_keys( $local ) as $rel ) if ( ! $scope->path_in( $rel ) ) unset( $local[ $rel ] );
+			$transfer = array_keys( array_diff_assoc( $remote, $local ) ); sort( $transfer, SORT_STRING );
+			$delete   = array_keys( array_diff_key( $local, $remote ) );
+		}
+		$tables_in_scope = array_values( array_filter( $info['tables'], function ( $t ) use ( $scope ) { return $scope->table_in( $t['name'] ); } ) );
 		return [
 			'created' => time(),
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
-			'tables' => $info['tables'],
+			'tables' => $tables_in_scope,
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
+			'scope' => $scope->to_array(),
+			'warnings' => $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ),
 		];
 	}
 
@@ -77,9 +84,11 @@ class IXES_Pull {
 	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null ) {
 		global $wpdb;
 		$pairs = $plan['pairs'];
+		$scope = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), $wpdb->prefix );
+		$partial = ! $scope->is_full();
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		if ( $state === null ) {
-			$bl->reset();
+			if ( ! $partial ) $bl->reset();
 			$path  = IXES_Planner::save( $plan, 'pull' );
 			$state = IXES_PullState::start( $env['name'], $path, (string) ( $plan['info']['plugin'] ?? '' ), (array) ( $plan['scope'] ?? [] ) );
 		}
@@ -119,14 +128,17 @@ class IXES_Pull {
 			$state->table_done( $name );
 			$done[] = $name;
 		}
-		if ( ! $done ) return new WP_Error( 'nothing_imported', 'no tables were imported' );
+		if ( ! $done && $scope->db_wanted() ) return new WP_Error( 'nothing_imported', 'no tables were imported' );
+		// a missing tmp table after a finished table phase can only mean the RENAME already ran (crash before committed() was written)
+		if ( $done && ! $state->get( 'committed' ) && ! IXES_Transfer::tmp_exists( $done[0] ) ) $state->committed();
+		$options_in = in_array( $wpdb->options, $done, true );
 		if ( $done && ! $state->get( 'committed' ) ) {
 			IXES_Transfer::preserve_local_options( $done );
 			$commit = IXES_Transfer::import_commit( $done );
 			if ( is_wp_error( $commit ) ) return $commit;
 			$state->committed();
-			wp_cache_flush(); // the imported options table is live now; the bootstrapped alloptions cache is not
-			$bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
+			// the imported options table is live now; the bootstrapped alloptions cache is not
+			if ( $options_in ) { wp_cache_flush(); $bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) ); }
 		}
 
 		$n = count( $plan['files']['transfer'] );
@@ -148,12 +160,14 @@ class IXES_Pull {
 		$undeleted = 0;
 		foreach ( $plan['files']['delete'] as $rel ) if ( ! IXES_Transfer::delete_file( $rel ) ) $undeleted++;
 		if ( $undeleted ) $log( "warning: {$undeleted} stale file(s) could not be deleted (check ownership under wp-content)" );
+		if ( $partial ) { foreach ( $plan['files']['delete'] as $rel ) $bl->delete_file( $rel ); }
 		$bl->write_files( $plan['files']['remote'] );
 		$state->clear();
 
-		IXES_Transfer::after_import( IXES_Env::local_url(), IXES_Env::local_abspath() );
-		IXES_Transfer::offset_auto_increment();
-		$bl->commit();
+		if ( $options_in ) IXES_Transfer::after_import( IXES_Env::local_url(), IXES_Env::local_abspath() );
+		IXES_Transfer::offset_auto_increment( $done );
+		if ( $partial ) { $bl->meta( 'partial_at', time() ); $bl->meta( 'partial_scope', $scope->label() ); }
+		else $bl->commit();
 		$log( 'done' );
 		return true;
 	}

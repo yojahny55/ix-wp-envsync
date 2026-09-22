@@ -382,10 +382,11 @@ class IXES_Transfer {
 		return [ $files, $bytes ];
 	}
 
-	public static function offset_auto_increment() {
+	public static function offset_auto_increment( array $imported = null ) {
 		global $wpdb;
 		$map = [ $wpdb->posts => 'ID', $wpdb->postmeta => 'meta_id', $wpdb->terms => 'term_id', $wpdb->term_taxonomy => 'term_taxonomy_id', $wpdb->comments => 'comment_ID', $wpdb->users => 'ID' ];
 		foreach ( $map as $t => $pk ) {
+			if ( $imported !== null && ! in_array( $t, $imported, true ) ) continue;
 			$max = (int) $wpdb->get_var( "SELECT MAX(`{$pk}`) FROM `{$t}`" );
 			$wpdb->query( "ALTER TABLE `{$t}` AUTO_INCREMENT = " . ( $max + 1000000 ) );
 		}

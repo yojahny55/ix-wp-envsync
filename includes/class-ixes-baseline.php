@@ -43,6 +43,20 @@ class IXES_Baseline {
 		}
 	}
 
+	public function delete_file( $path ) {
+		if ( $this->pdo ) { $st = $this->pdo->prepare( 'DELETE FROM files WHERE path = ?' ); $st->execute( [ $path ] ); }
+		else { unset( $this->json['files'][ $path ] ); $this->save_json(); }
+	}
+
+	/** "2026-09-12", "2026-09-12 · partial 2026-09-22 (themes)" or "-" for CLI and admin tables. */
+	public function baseline_label() {
+		$c = $this->meta( 'created_at' ); $p = $this->meta( 'partial_at' );
+		if ( ! $c && ! $p ) return '-';
+		$out = $c ? date( 'Y-m-d H:i', (int) $c ) : 'none';
+		if ( $p && ( ! $c || $p > $c ) ) $out .= ' · partial ' . date( 'Y-m-d H:i', (int) $p ) . ' (' . $this->meta( 'partial_scope' ) . ')';
+		return $out;
+	}
+
 	public function write_rows( $table, array $map ) {
 		if ( $this->pdo ) {
 			$this->pdo->beginTransaction();
