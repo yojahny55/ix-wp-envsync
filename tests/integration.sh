@@ -71,4 +71,35 @@ B envsync rollback prod --yes
 [ "$(A post get "$PY" --field=post_content)" = "x-prod" ] && die "rollback restored wrong row"
 [ "$(A post get "$PY" --field=post_content)" = "y2" ] || die "rollback did not restore Y (got $(A post get "$PY" --field=post_content))"
 
+# 7. a pull killed mid-way resumes and completes
+dd if=/dev/urandom of="$IXES_A/wp-content/uploads/big.bin" bs=1M count=40 status=none
+B envsync pull prod --fresh --yes >/dev/null   # clean start with the big file in the plan
+timeout 8 env WP_CLI_STRICT_ARGS_MODE=1 wp --path="$IXES_B" --url="$IXES_B_URL" envsync pull prod --fresh --yes >/dev/null 2>&1 || true
+ls "$IXES_B/wp-content/envsync-"*/pull-prod.json >/dev/null 2>&1 || die "no resume state after an interrupted pull"
+B envsync pull prod --yes | grep -q "interrupted pull" || die "resume prompt not shown"
+cmp "$IXES_A/wp-content/uploads/big.bin" "$IXES_B/wp-content/uploads/big.bin" || die "big file differs after resume"
+ls "$IXES_B/wp-content/envsync-"*/pull-prod.json 2>/dev/null && die "state file left behind after a completed pull"
+
+# 8. --only=themes push: theme file goes up, prod-edited post untouched
+B envsync pull prod --yes >/dev/null
+echo "/* v3 */" > "$IXES_B/wp-content/themes/ixtest/style.css"
+B post update "$PX" --post_content="x-local-only" >/dev/null
+A post update "$PY" --post_content="y-prod-edit" >/dev/null
+B envsync diff prod --only=themes | grep -q "scope: themes" || die "scope not shown in diff"
+B envsync push prod --only=themes --yes >/dev/null
+grep -q v3 "$IXES_A/wp-content/themes/ixtest/style.css" || die "theme not pushed with --only=themes"
+[ "$(A post get "$PX" --field=post_content)" != "x-local-only" ] || die "db row pushed despite --only=themes"
+[ "$(A post get "$PY" --field=post_content)" = "y-prod-edit" ] || die "prod edit lost"
+B envsync env list | grep -q "partial" && die "a scoped push must not mark the baseline partial"
+B envsync pull prod --only=uploads --yes >/dev/null
+B envsync env list | grep -q "partial .*(uploads)" || die "partial pull not reflected in env list"
+
+# 9. a 0.2 hub asks for JSON: the remote must still answer base64
+TS=$(date +%s); BODY='{"path":"themes/ixtest/style.css","offset":0,"size":1024}'
+MSG=$(printf 'POST\n/envsync/v1/file/get\n%s\n%s' "$TS" "$(printf '%s' "$BODY" | sha256sum | cut -d' ' -f1)")
+SIG=$(printf '%s' "$MSG" | openssl dgst -sha256 -hmac "$TOKEN" | sed 's/^.* //')
+OUT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "X-Envsync-Ts: $TS" -H "X-Envsync-Sig: $SIG" -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$BODY" "$IXES_A_URL/?rest_route=/envsync/v1/file/get")
+echo "$OUT" | grep -q '"data":"' || die "JSON file/get no longer served: $OUT"
+echo "$OUT" | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit(hash("sha256",base64_decode($j["data"]))===$j["sha256"]?0:1);' || die "JSON chunk hash mismatch"
+
 echo "ALL OK"
