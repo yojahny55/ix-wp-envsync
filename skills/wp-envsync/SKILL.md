@@ -133,8 +133,8 @@ Shows the row field by field, on both sides.
 ## Reading a diff
 
 ```
-prod  ←  local          baseline: 2026-09-08 02:06
-  wp_posts   push 12   insert 3   delete 1   prod-wins 2   kept-prod 41
+| table    | push | insert | delete | prod-wins | kept-prod |
+| wp_posts |   12 |      3 |      1 |         2 |        41 |
 ```
 
 - `push`: the user's changes going up.
@@ -143,9 +143,23 @@ prod  ←  local          baseline: 2026-09-08 02:06
 - `prod-wins`: both sides changed it, and the remote's version stays. Report these.
 - `kept-prod`: the remote changed it and the user did not. This is normal.
 
-`baseline: NONE (2-way)` means no pull has been done. Pull first, unless this is a first deploy.
+`baseline: none` (in JSON, `baseline_at: null`) means no pull has been done. Pull first, unless this is a first deploy (`first_deploy: true` in the manifest).
 
-Use `diff <env> --json` when you need to reason about a plan in code rather than show it.
+Show the user the table output. For your own reasoning, read the manifest instead (next section).
+
+## Files agents read
+
+Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>` as its last line and writes two files under `wp-content/envsync-*/`:
+
+- `plans/<kind>-<env>-latest.json`: the plan (`schema: 1`). `summary` has `{files, delete, bytes, rows, conflicts}`, followed by `tables[]`, `plugins[]`, `themes[]`, `other[]`, `conflicts[]` and `warnings[]`.
+  - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
+  - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.0.
+  - `--format=json` prints the same object.
+- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
+
+What to report to the user from the manifest: plugins with `change` `turns on` or `turns off`, version changes on plugins and themes, `summary.delete` when it is not zero, and every entry in `conflicts`.
+
+When you run commands, output is piped, so there is no progress bar, only one summary line per stage. Do not add `--verbose` unless the user wants per-file lines.
 
 ## Commands
 
@@ -157,9 +171,9 @@ All commands take `--path=<site>`.
 | `envsync env add <name> [<url>] [--token=] [--label=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
-| `envsync diff <env> [--json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
