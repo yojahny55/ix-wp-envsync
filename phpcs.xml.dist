@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<ruleset name="ix-wp-envsync">
+	<description>Security, PHP-compatibility and i18n gates. Formatting and the DB sniffs are deliberately not enforced: this plugin's job is raw SQL over whitelisted identifiers, which those sniffs cannot see.</description>
+
+	<file>ix-wp-envsync.php</file>
+	<file>includes</file>
+	<file>admin</file>
+
+	<arg name="extensions" value="php"/>
+	<arg name="colors"/>
+	<arg value="sp"/>
+
+	<!-- Requires PHP: 7.4 in the plugin header -->
+	<config name="testVersion" value="7.4-"/>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress.Security"/>
+	<rule ref="WordPress.PHP.DevelopmentFunctions"/>
+	<rule ref="WordPress.PHP.DiscouragedPHPFunctions">
+		<!-- base64 is the wire encoding for file chunks; unserialize is the audited normalize() path -->
+		<exclude name="WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode"/>
+		<exclude name="WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode"/>
+		<exclude name="WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize"/>
+	</rule>
+	<rule ref="WordPress.WP.DeprecatedFunctions"/>
+	<rule ref="WordPress.WP.Capabilities"/>
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="ix-wp-envsync"/>
+			</property>
+		</properties>
+	</rule>
+</ruleset>

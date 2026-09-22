@@ -77,7 +77,7 @@ class IXES_Admin {
 		$defaults = IXES_Env::default_excludes();
 		$picked   = [];
 		// is_string first: a crafted POST can nest arrays, which would fatal in sanitize_text_field
-		foreach ( array_filter( (array) wp_unslash( $_POST['ixes_exclude'] ?? [] ), 'is_string' ) as $f ) {
+		foreach ( array_filter( (array) wp_unslash( $_POST['ixes_exclude'] ?? [] ), 'is_string' ) as $f ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- each element is sanitized on the next line
 			$f = trim( sanitize_text_field( $f ) );
 			// only top-level "name/" forms come from this screen
 			if ( preg_match( '#^[^/]+/$#', $f ) && ! in_array( $f, $defaults, true ) ) $picked[] = $f;
@@ -180,11 +180,11 @@ class IXES_Admin {
 				printf(
 					'<tr><td><code>%s</code>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
 					esc_html( $row['path'] ),
-					$badge,
+					$badge, // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from literals only
 					$row['local'] ? esc_html( size_format( $row['local']['bytes'] ) ) : '&mdash;',
 					$row['remote'] ? esc_html( size_format( $row['remote']['bytes'] ) ) : ( $err ? '<em>?</em>' : '&mdash;' ),
 					esc_html( (string) max( (int) ( $row['local']['files'] ?? 0 ), (int) ( $row['remote']['files'] ?? 0 ) ) ),
-					$box
+					$box // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- literals plus esc_attr()
 				);
 			}
 			echo '</tbody></table>';

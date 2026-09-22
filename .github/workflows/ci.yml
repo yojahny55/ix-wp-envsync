@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PHP ${{ matrix.php }} lint + unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: json, mbstring, pdo_sqlite
+          coverage: none
+      - name: Syntax check every shipped PHP file
+        run: git ls-files '*.php' | grep -v '^tests/' | xargs -n1 -P4 php -l
+      - uses: ramsey/composer-install@v3
+      - run: vendor/bin/phpunit
+
+  phpcs:
+    name: Security / compatibility sniffs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          tools: cs2pr
+      - uses: ramsey/composer-install@v3
+      # cs2pr turns checkstyle output into inline PR annotations
+      - run: vendor/bin/phpcs --report=checkstyle | cs2pr
+
+  plugin-check:
+    name: WordPress Plugin Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the exact archive a release would ship
+        run: |
+          git archive --format=tar --prefix=ix-wp-envsync/ HEAD | tar -x -C "$RUNNER_TEMP"
+      - uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: ${{ runner.temp }}/ix-wp-envsync
+          # PHPCS-based checks are covered by the phpcs job with our own ruleset;
+          # the plugin is not distributed on wordpress.org so repo-listing rules do not apply.
+          exclude-checks: |
+            plugin_review_phpcs
+            plugin_readme
+            plugin_updater
+          ignore-warnings: true
+
+  version:
+    name: Version header matches constant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          H=$(sed -n 's/^ \* Version: *//p' ix-wp-envsync.php)
+          C=$(sed -n "s/^define( 'IXES_VERSION', '\([^']*\)' );/\1/p" ix-wp-envsync.php)
+          echo "header=$H constant=$C"
+          [ -n "$H" ] && [ "$H" = "$C" ]
