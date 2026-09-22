@@ -110,4 +110,36 @@ OUT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "X-Envsync-Ts: $TS" -H "X-Env
 echo "$OUT" | grep -q '"data":"' || die "JSON file/get no longer served: $OUT"
 echo "$OUT" | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit(hash("sha256",base64_decode($j["data"]))===$j["sha256"]?0:1);' || die "JSON chunk hash mismatch"
 
+# 10. status reports an interrupted pull and recommends resuming
+dd if=/dev/urandom of="$IXES_A/wp-content/uploads/big2.bin" bs=1M count=200 status=none
+rm -f "$IXES_B/wp-content/uploads/big2.bin" "$IXES_B/wp-content/uploads/big2.bin.ixes-tmp"
+wp --path="$IXES_B" --url="$IXES_B_URL" envsync pull prod --fresh --yes >/dev/null 2>&1 &
+PULL_PID=$!
+for _ in $(seq 1 600); do [ -f "$IXES_B/wp-content/uploads/big2.bin.ixes-tmp" ] && break; sleep 0.1; done
+kill -9 $PULL_PID 2>/dev/null || true; wait $PULL_PID 2>/dev/null || true
+OUT=$(B envsync status prod)
+echo "$OUT" | grep -q "interrupted pull" || die "status did not report the interrupted pull:\n$OUT"
+echo "$OUT" | grep -q "Next: wp envsync pull prod" || die "status did not recommend resuming"
+B envsync status --json | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit($j["next"]["command"]==="wp envsync pull prod"?0:1);' || die "status --json next mismatch"
+B envsync pull prod --yes >/dev/null
+cmp "$IXES_A/wp-content/uploads/big2.bin" "$IXES_B/wp-content/uploads/big2.bin" || die "resume after status failed"
+
+# 11. a dead push left a lock; status reports it; unlock clears it; the next push works
+wp --path="$IXES_A" eval 'set_transient( IXES_Applier::LOCK, IXES_Applier::lock_value( "20260101-000000-abcdef", time() - 700 ), HOUR_IN_SECONDS );' >/dev/null   # 700s clears both UNLOCK_MIN_AGE (120s) and status's LOCK_STALE_MIN (10min); no .maintenance file — a real one blocks our own REST calls (503)
+OUT=$(B envsync status prod)
+echo "$OUT" | grep -q "lock: job 20260101-000000-abcdef" || die "status did not report the remote lock:\n$OUT"
+echo "$OUT" | grep -q "Next: wp envsync unlock prod" || die "status did not recommend unlock:\n$OUT"
+B envsync unlock prod --yes >/dev/null || die "unlock failed"
+[ -f "$IXES_A/.maintenance" ] && die "unlock left .maintenance behind"
+B post update "$PX" --post_content="x-lock-test" >/dev/null
+B envsync push prod --yes >/dev/null || die "push after unlock failed"
+[ "$(A post get "$PX" --field=post_content)" = "x-lock-test" ] || die "push after unlock did not apply"
+
+# 12. Authorization header stripped: the X-Envsync-Token fallback carries the request
+wp --path="$IXES_A" config set ENVSYNC_TEST_DROP_AUTHORIZATION true --raw >/dev/null
+sleep 3   # A runs behind a long-lived php -S process with opcache.revalidate_freq=2s; give it time to notice the wp-config.php edit
+B envsync env ping prod | grep -q "auth via X-Envsync-Token" || die "ping did not report the fallback carrier"
+B envsync pull prod --fresh --yes >/dev/null || die "pull failed with Authorization stripped"
+wp --path="$IXES_A" config delete ENVSYNC_TEST_DROP_AUTHORIZATION >/dev/null
+
 echo "ALL OK"

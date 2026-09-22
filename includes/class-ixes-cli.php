@@ -370,12 +370,18 @@ class IXES_CLI {
 	 * [<env>]
 	 * : Only this environment.
 	 *
-	 * [--json]
-	 * : Machine-readable report (what agents should read).
+	 * [--format=<format>]
+	 * : Machine-readable report (what agents should read). WP-CLI rewrites --json to --format=json itself.
+	 * ---
+	 * default: text
+	 * options:
+	 *   - text
+	 *   - json
+	 * ---
 	 */
 	public function status( $args, $assoc ) {
 		$r = IXES_Status::build( $args[0] ?? null );
-		if ( ! empty( $assoc['json'] ) ) { WP_CLI::line( wp_json_encode( $r, JSON_PRETTY_PRINT ) ); return; }
+		if ( ( $assoc['format'] ?? 'text' ) === 'json' ) { WP_CLI::line( wp_json_encode( $r, JSON_PRETTY_PRINT ) ); return; }
 		WP_CLI::line( IXES_Status::render_text( $r ) );
 	}
 

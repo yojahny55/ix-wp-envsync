@@ -28,7 +28,10 @@ class IXES_Rest {
 
 	public static function auth( WP_REST_Request $req ) {
 		if ( ! is_ssl() && ! ( defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP ) ) return new WP_Error( 'https', 'https required', [ 'status' => 403 ] );
-		list( $token, $via ) = IXES_Auth::token_from_headers( $req->get_header( 'authorization' ), $req->get_header( 'x-envsync-token' ) );
+		$authorization = $req->get_header( 'authorization' );
+		// Test-only: simulates a host that strips the Authorization header, forcing the X-Envsync-Token fallback.
+		if ( defined( 'ENVSYNC_TEST_DROP_AUTHORIZATION' ) && ENVSYNC_TEST_DROP_AUTHORIZATION ) $authorization = '';
+		list( $token, $via ) = IXES_Auth::token_from_headers( $authorization, $req->get_header( 'x-envsync-token' ) );
 		if ( $token === '' ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
 		self::$auth_via = $via;
 		$ok = IXES_Auth::verify(
