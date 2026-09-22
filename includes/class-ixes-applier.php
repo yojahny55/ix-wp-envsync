@@ -6,6 +6,20 @@ class IXES_Applier {
 	const LOCK = 'ixes_lock';
 	const ORDER = [ 'users', 'usermeta', 'terms', 'term_taxonomy', 'posts', 'postmeta', 'term_relationships', 'termmeta', 'comments', 'commentmeta' ];
 
+	// Lock transient value is "job|started". 0.3 wrote the bare job id; parse_lock() accepts both.
+	public static function lock_value( $job, $started ) { return $job . '|' . (int) $started; }
+	public static function parse_lock( $value ) {
+		if ( ! is_string( $value ) || $value === '' ) return [ 'job' => '', 'started' => null ];
+		$parts = explode( '|', $value, 2 );
+		return [ 'job' => $parts[0], 'started' => isset( $parts[1] ) ? (int) $parts[1] : null ];
+	}
+	public static function current_job() { return self::parse_lock( get_transient( self::LOCK ) )['job']; }
+	/** @return array{job:string,started:int|null}|null */
+	public static function lock_info() {
+		$l = self::parse_lock( get_transient( self::LOCK ) );
+		return $l['job'] === '' ? null : $l;
+	}
+
 	private static function jobs_dir() { $d = ixes_storage_dir() . '/jobs'; wp_mkdir_p( $d ); return $d; }
 	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
 	private static function maintenance( $on ) {
@@ -24,9 +38,9 @@ class IXES_Applier {
 
 	public static function job_start( array $p ) {
 		global $wpdb;
-		if ( get_transient( self::LOCK ) ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
+		if ( self::current_job() !== '' ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
 		$job = date( 'Ymd-His' ) . '-' . substr( md5( uniqid() ), 0, 6 );
-		set_transient( self::LOCK, $job, HOUR_IN_SECONDS );
+		set_transient( self::LOCK, self::lock_value( $job, time() ), HOUR_IN_SECONDS );
 		$dir = self::job_dir( $job );
 		wp_mkdir_p( $dir . '/files' );
 		$meta = [ 'job' => $job, 'started' => time(), 'plan' => $p['plan_meta'], 'inserted' => [], 'created_files' => [] ];
@@ -107,7 +121,7 @@ class IXES_Applier {
 
 	public static function job_step( array $p ) {
 		global $wpdb;
-		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		$kind = $p['kind'] ?? '';
 
 		if ( $kind === 'rows' || $kind === 'delete_rows' ) {
@@ -186,7 +200,7 @@ class IXES_Applier {
 	}
 
 	public static function job_finish( array $p ) {
-		if ( get_transient( self::LOCK ) !== ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		wp_cache_flush(); flush_rewrite_rules();
 		self::maintenance( false );
 		delete_transient( self::LOCK );
