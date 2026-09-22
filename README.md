@@ -94,6 +94,29 @@ Read it as: 12 rows go up, 3 are new, 41 rows production changed are left alone,
 
 ---
 
+## Sync only part of a site
+
+You don't always need the whole thing. `--only=`, `--tables=` and `--paths=` narrow a `pull`, `diff` or `push` down to just the part you're working on.
+
+| Situation | Command |
+|---|---|
+| First pull of a big site | `wp envsync pull prod`. If it drops, run the same command again and answer `y` to resume. `--fresh` starts over. |
+| Working on the theme, want prod's latest theme files | `wp envsync pull prod --only=themes --paths=themes/<slug>/` |
+| Client edited content, want it locally without touching your theme | `wp envsync pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
+| Fresh media only | `wp envsync pull prod --only=uploads` |
+| Ship theme work | `wp envsync diff prod --only=themes`, then `wp envsync push prod --only=themes` |
+| After any `--tables` pull that split a family (the plan prints a warning) | run a full `wp envsync pull prod` before the next push |
+
+A `push` never syncs more than the `diff` you last checked with the same flags. Always `diff` with the flags you're about to `push` with.
+
+### If a pull is interrupted
+
+If `pull` drops partway through, just run the same command again. It picks up where it left off; answer `y` when it asks to resume. `--fresh` throws that progress away and starts the pull over instead.
+
+The resume state lives at `wp-content/envsync-*/pull-<env>.json`. It's written automatically while the pull runs and removed once it finishes.
+
+---
+
 ## Commands
 
 ### `wp envsync env <action>`
@@ -123,6 +146,10 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--details` — break the file counts down by directory, so you can see what would be deleted.
 - `--yes` — skip the confirmation.
 - `--flush-cache` — discard the file hash cache and rehash everything.
+- `--fresh` — Discard an interrupted pull and start over.
+- `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+- `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
+- `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
 
@@ -134,6 +161,9 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 - `--json` — machine-readable output.
 - `--table=<table> --id=<pk>` — field-by-field diff of a single row, useful for understanding one conflict.
 - `--flush-cache` — rehash all files.
+- `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+- `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
+- `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
 ### `wp envsync push <env>`
 
@@ -142,6 +172,9 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--dry-run`, `--yes` — as above.
 - `--plan=<file>` — apply a plan saved earlier. Refuses if anything it covers has changed on the remote since.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Avoid it; pull first instead.
+- `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+- `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
+- `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
 

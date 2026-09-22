@@ -78,6 +78,22 @@ wp envsync diff prod --table=wp_posts --id=2231
 
 Shows a field-by-field comparison of that row on both sides.
 
+## Which flags for which job
+
+| Situation | Command |
+|---|---|
+| First pull of a big site | `wp envsync pull prod`. If it drops, run the same command again and answer `y` to resume. `--fresh` starts over. |
+| Working on the theme, want prod's latest theme files | `wp envsync pull prod --only=themes --paths=themes/<slug>/` |
+| Client edited content, want it locally without touching your theme | `wp envsync pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
+| Fresh media only | `wp envsync pull prod --only=uploads` |
+| Ship theme work | `wp envsync diff prod --only=themes`, then `wp envsync push prod --only=themes` |
+| After any `--tables` pull that split a family (the plan prints a warning) | run a full `wp envsync pull prod` before the next push |
+
+Rules the agent must follow:
+- Scope on `push` never widens beyond what `diff` showed with the same flags. Run `diff` first with the flags you intend to push with.
+- A partial pull refreshes only the parts of the baseline it touched. `env list` shows `partial <date> (<scope>)` next to the full baseline date.
+- Resume refuses when the remote plugin version or the env's excludes/replace pairs changed since the pull started; use `--fresh`.
+
 ## Reading a diff
 
 ```
