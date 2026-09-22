@@ -40,7 +40,7 @@ jobs:
           tools: cs2pr
       - uses: ramsey/composer-install@v3
       # cs2pr turns checkstyle output into inline PR annotations
-      - run: vendor/bin/phpcs --report=checkstyle | cs2pr
+      - run: vendor/bin/phpcs -q --no-colors --report=checkstyle | cs2pr
 
   plugin-check:
     name: WordPress Plugin Check
