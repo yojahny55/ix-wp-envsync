@@ -86,7 +86,7 @@ wp --path=<site> envsync diff prod             # show this
 wp --path=<site> envsync push prod --yes       # after approval
 ```
 
-Point out `prod-wins` and `CONFLICTS`. Those are the user's edits that will **not** be applied, because the remote changed the same thing. That is correct behaviour, but the user needs to know which of their changes are dropped. After the push, tell the user to pull again before their next round of work.
+Point out `remote-wins` and `CONFLICTS`. Those are the user's edits that will **not** be applied, because the remote changed the same thing. That is correct behaviour, but the user needs to know which of their changes are dropped. After the push, tell the user to pull again before their next round of work.
 
 The usual release path is to push to staging first, then to production.
 
@@ -136,17 +136,19 @@ Shows the row field by field, on both sides.
 ## Reading a diff
 
 ```
-| table    | push | insert | delete | prod-wins | kept-prod |
-| wp_posts |   12 |      3 |      1 |         2 |        41 |
+| table    | push | insert | delete | remote-wins | kept-remote |
+| wp_posts |   12 |      3 |      1 |           2 |          41 |
 ```
 
 - `push`: the user's changes going up.
 - `insert`: rows they created.
 - `delete`: rows they deleted, which the remote has not touched.
-- `prod-wins`: both sides changed it, and the remote's version stays. Report these.
-- `kept-prod`: the remote changed it and the user did not. This is normal.
+- `remote-wins`: both sides changed it, and the remote's version stays. Report these.
+- `kept-remote`: the remote changed it and the user did not. This is normal.
 
 `baseline: none` (in JSON, `baseline_at: null`) means no pull has been done. Pull first, unless this is a first deploy (`first_deploy: true` in the manifest).
+
+The wording names the environment: a push to staging prints `CONFLICTS (staging wins)` and `skipped (changed on staging during push)`. In JSON the keys stay `prod_wins` and `kept_prod` for every environment.
 
 Show the user the table output. For your own reasoning, read the manifest instead (next section).
 

@@ -15,8 +15,8 @@ class PlannerRenderTest extends TestCase {
 		$this->assertStringContainsString( 'wp_posts', $txt );
 		$this->assertStringContainsString( 'push 2', $txt );
 		$this->assertStringContainsString( 'insert 1', $txt );
-		$this->assertStringContainsString( 'prod-wins 1', $txt );
-		$this->assertStringContainsString( 'kept-prod 2', $txt );
+		$this->assertStringContainsString( 'remote-wins 1', $txt );
+		$this->assertStringContainsString( 'kept-remote 2', $txt );
 		$this->assertStringContainsString( 'themes/k/', $txt );
 		$this->assertStringContainsString( 'CONFLICTS', $txt );
 		$this->assertStringContainsString( '#9', $txt );

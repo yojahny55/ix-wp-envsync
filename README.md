@@ -105,12 +105,12 @@ prod  ←  local
   512 files · 38.4 MB · 131 rows
 
 DATABASE
-+-------------+------+--------+--------+-----------+-----------+
-| table       | push | insert | delete | prod-wins | kept-prod |
-+-------------+------+--------+--------+-----------+-----------+
-| wp_posts    |   12 |      3 |      1 |         2 |        41 |
-| wp_postmeta |   87 |     19 |      4 |         0 |       310 |
-+-------------+------+--------+--------+-----------+-----------+
++-------------+------+--------+--------+-------------+-------------+
+| table       | push | insert | delete | remote-wins | kept-remote |
++-------------+------+--------+--------+-------------+-------------+
+| wp_posts    |   12 |      3 |      1 |           2 |          41 |
+| wp_postmeta |   87 |     19 |      4 |           0 |         310 |
++-------------+------+--------+--------+-------------+-------------+
 
 PLUGINS
 +-----------------------+-------+--------+-----------------+----------+
@@ -148,10 +148,10 @@ Every DB and FILES row uses the same counts:
 | `push` | your changes going up |
 | `insert` | rows or files you created |
 | `delete` | rows or files you deleted, that production hasn't touched |
-| `prod-wins` | both sides changed it; production's version stays |
-| `kept-prod` | production changed it, you did not; left alone |
+| `remote-wins` | both sides changed it; the remote's version stays |
+| `kept-remote` | the remote changed it, you did not; left alone |
 
-`CONFLICTS (prod wins)` lists every `prod-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
+`CONFLICTS (prod wins)` (named after the environment: `CONFLICTS (staging wins)` when you push to staging) lists every `remote-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
 
 In **PLUGINS** and **THEMES**, `version` reads *before → after* for the site being changed. `—` means not installed, and `?` means the other site runs a plugin older than 0.5.1 that doesn't report versions. `active` says whether the plugin turns on, turns off or stays on, and which theme becomes active. A plugin appears even with no files moving if only its on/off state changes.
 

@@ -177,7 +177,7 @@ CID=$(B db query "SELECT option_id FROM wp_options WHERE option_name='ixcollide'
 A db query "DELETE FROM wp_options WHERE option_id=$CID" >/dev/null
 A db query "INSERT INTO wp_options (option_id, option_name, option_value, autoload) VALUES ($CID, '_transient_ixcollide_probe', 'remote-transient', 'no')" >/dev/null
 OUT=$(B envsync push prod --yes 2>&1) || die "push with an option-id collision failed:\n$OUT"
-echo "$OUT" | grep -q "changed on prod during push" && die "colliding option reported as changed on prod:\n$OUT"
+echo "$OUT" | grep -q "during push" && die "colliding option reported as changed on prod:\n$OUT"
 [ "$(A option get ixcollide)" = "hub-value" ] || die "option whose id a remote transient held did not arrive"
 [ "$(A db query "SELECT option_value FROM wp_options WHERE option_name='_transient_ixcollide_probe'" --skip-column-names)" = "remote-transient" ] || die "the remote transient was overwritten"
 B envsync rollback prod --yes >/dev/null

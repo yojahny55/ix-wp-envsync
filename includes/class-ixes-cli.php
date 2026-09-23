@@ -321,13 +321,13 @@ class IXES_CLI {
 			$l = IXES_Hasher::normalize( $local[ $col ] ?? null, $lp ); $r = IXES_Hasher::normalize( $remote[ $col ] ?? null, $rp );
 			if ( $l === $r ) continue;
 			WP_CLI::line( WP_CLI::colorize( "%Y{$col}%n" ) );
-			WP_CLI::line( WP_CLI::colorize( '%R- prod:  %n' ) . mb_strimwidth( (string) $r, 0, 300, '…' ) );
-			WP_CLI::line( WP_CLI::colorize( '%G+ local: %n' ) . mb_strimwidth( (string) $l, 0, 300, '…' ) );
+			WP_CLI::line( WP_CLI::colorize( '%R- remote: %n' ) . mb_strimwidth( (string) $r, 0, 300, '…' ) );
+			WP_CLI::line( WP_CLI::colorize( '%G+ local:  %n' ) . mb_strimwidth( (string) $l, 0, 300, '…' ) );
 		}
 	}
 
 	/**
-	 * Push local changes to <env>. Prod-changed rows always win.
+	 * Push local changes to <env>. Rows the remote changed always win.
 	 * ## OPTIONS
 	 *
 	 * <env>
@@ -340,7 +340,7 @@ class IXES_CLI {
 	 * : Show the plan and stop.
 	 *
 	 * [--force]
-	 * : Overwrite prod-changed rows when there is no baseline.
+	 * : Overwrite rows the remote changed, when there is no baseline (first deploy).
 	 *
 	 * [--plan=<file>]
 	 * : Apply a previously saved plan file.
@@ -373,11 +373,11 @@ class IXES_CLI {
 		if ( ! empty( $assoc['plan'] ) ) {
 			$saved = json_decode( file_get_contents( $assoc['plan'] ), true );
 			if ( ! $saved ) WP_CLI::error( 'cannot read plan file' );
-			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "prod changed {$t}#{$pk} since that plan; run diff again" );
+			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" );
 			$plan = $saved;
 		}
 		if ( $plan['two_way'] ) {
-			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); WP_CLI::error( 'no baseline for this env: pull first, or pass --force to overwrite the rows listed as prod-wins' ); }
+			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); WP_CLI::error( "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ); }
 			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
 		}
@@ -390,7 +390,7 @@ class IXES_CLI {
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
 		$progress = IXES_Progress::for_cli( $assoc );
 		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ) ); $progress->end(); return $r; } );
-		if ( $r['stale'] ) WP_CLI::warning( 'skipped (changed on prod during push): ' . implode( ', ', $r['stale'] ) );
+		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
 		$this->forget_status();
 		WP_CLI::success( "pushed to {$env['name']} (job {$r['job']}). Pull again before the next round of changes." );

@@ -74,7 +74,7 @@ class ReportTest extends TestCase {
 		$in = $this->input( [ 'scope' => 'themes', 'scope_full' => false, 'conflicts' => [ [ 'type' => 'row', 'table' => 'wp_posts', 'id' => '7', 'title' => 'Home' ] ] ] );
 		$t = IXES_Report::render_text( IXES_Report::build( $in ) );
 		$this->assertStringContainsString( 'scope: themes', $t );
-		$this->assertStringContainsString( 'CONFLICTS (prod wins)', $t );
+		$this->assertStringContainsString( 'CONFLICTS (staging wins)', $t );
 		$this->assertStringContainsString( 'first deploy', $t );
 		$this->assertStringContainsString( '3.6.1 → 3.7.0', $t );
 		$lines = array_values( array_filter( explode( "\n", $t ), function ( $l ) { return strpos( $l, '| all-in-one' ) === 0 || strpos( $l, '| polylang' ) === 0; } ) );
