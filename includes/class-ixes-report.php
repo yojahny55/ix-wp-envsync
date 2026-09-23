@@ -177,7 +177,7 @@ class IXES_Report {
 		if ( $r['tables'] ) {
 			$o[] = ''; $o[] = 'DATABASE';
 			$o[] = $push
-				? self::table( [ 'table', 'push', 'insert', 'delete', 'prod-wins', 'kept-prod' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'] ]; }, $r['tables'] ) )
+				? self::table( [ 'table', 'push', 'insert', 'delete', 'remote-wins', 'kept-remote' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'] ]; }, $r['tables'] ) )
 				: self::table( [ 'table', 'rows' ], array_map( function ( $t ) { return [ $t['name'], $t['rows'] ]; }, $r['tables'] ) );
 		}
 		$has_del = $s['delete'] > 0;
@@ -195,7 +195,7 @@ class IXES_Report {
 			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del ) { return array_merge( [ $x['group'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—' ] ); }, $r['other'] ) );
 		}
 		if ( $r['conflicts'] ) {
-			$o[] = ''; $o[] = 'CONFLICTS (prod wins)';
+			$o[] = ''; $o[] = "CONFLICTS ({$r['env']} wins)";
 			foreach ( $r['conflicts'] as $c ) $o[] = $c['type'] === 'file' ? "  file                 {$c['path']}" : sprintf( '  %-20s #%s  %s', $c['table'], $c['id'], $c['title'] );
 		}
 		if ( ! $s['files'] && ! $s['delete'] && ! $r['tables'] && ! $r['plugins'] && ! $r['themes'] ) { $o[] = ''; $o[] = 'Nothing to ' . ( $push ? 'push' : 'pull' ) . '.'; }

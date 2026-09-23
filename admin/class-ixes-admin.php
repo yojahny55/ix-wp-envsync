@@ -186,7 +186,7 @@ class IXES_Admin {
 
 			printf( '<h3>%s <span style="font-weight:400">(%s)</span></h3>', esc_html( $e['name'] ), esc_html( $e['url'] ) );
 			if ( $err ) echo '<div class="notice notice-warning inline"><p>' . esc_html( 'Remote sizes unavailable: ' . $err ) . '</p></div>';
-			echo '<form method="post"><table class="widefat striped" style="max-width:900px"><thead><tr><th>Folder</th><th>Local</th><th>Prod</th><th>Files</th><th>Excluded</th></tr></thead><tbody>';
+			echo '<form method="post"><table class="widefat striped" style="max-width:900px"><thead><tr><th>Folder</th><th>Local</th><th>Remote</th><th>Files</th><th>Excluded</th></tr></thead><tbody>';
 			foreach ( $rows as $row ) {
 				if ( $row['default'] ) $badge = '';
 				elseif ( $row['rec'] ) $badge = ' <span class="dashicons dashicons-warning" style="color:#b32d2e"></span> <em>Recommended</em>';

@@ -106,26 +106,26 @@ class IXES_Planner {
 
 	public static function render_text( array $plan ) {
 		$o = [];
-		$o[] = sprintf( '%s  ←  local          baseline: %s%s', $plan['env'], $plan['baseline_at'] ? date( 'Y-m-d H:i', $plan['baseline_at'] ) : 'NONE (2-way)', $plan['two_way'] ? '   !! everything different would OVERWRITE prod' : '' );
+		$o[] = sprintf( '%s  ←  local          baseline: %s%s', $plan['env'], $plan['baseline_at'] ? date( 'Y-m-d H:i', $plan['baseline_at'] ) : 'NONE (2-way)', $plan['two_way'] ? "   !! everything different would OVERWRITE {$plan['env']}" : '' );
 		if ( ! empty( $plan['scope'] ) ) {
 			$sc = IXES_Scope::from_array( (array) $plan['scope'], '' );
 			if ( ! $sc->is_full() ) $o[] = '  scope: ' . $sc->label();
 		}
 		$o[] = 'DB';
 		foreach ( $plan['tables'] as $name => $t ) {
-			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d prod-wins %-5d kept-prod %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ), count( $t['conflict'] ), count( $t['kept'] ) );
+			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ), count( $t['conflict'] ), count( $t['kept'] ) );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
 		$o[] = 'FILES';
 		foreach ( [ 'push', 'delete', 'conflict', 'kept' ] as $k ) {
 			$by = [];
 			foreach ( $plan['files'][ $k ] as $rel ) { $dir = implode( '/', array_slice( explode( '/', $rel ), 0, 2 ) ) . '/'; $by[ $dir ] = ( $by[ $dir ] ?? 0 ) + 1; }
-			foreach ( $by as $dir => $n ) $o[] = sprintf( '  %-40s %s %d', $dir, $k === 'kept' ? 'kept-prod' : ( $k === 'conflict' ? 'prod-wins' : $k ), $n );
+			foreach ( $by as $dir => $n ) $o[] = sprintf( '  %-40s %s %d', $dir, $k === 'kept' ? 'kept-remote' : ( $k === 'conflict' ? 'remote-wins' : $k ), $n );
 		}
 		$conf = [];
 		foreach ( $plan['tables'] as $name => $t ) foreach ( $t['conflict'] as $pk ) $conf[] = sprintf( '  %-20s #%s  %s', $name, $pk, $plan['conflict_detail'][ $name ][ $pk ] ?? '' );
 		foreach ( $plan['files']['conflict'] as $rel ) $conf[] = '  file                 ' . $rel;
-		if ( $conf ) { $o[] = 'CONFLICTS (prod wins)'; $o = array_merge( $o, $conf ); }
+		if ( $conf ) { $o[] = "CONFLICTS ({$plan['env']} wins)"; $o = array_merge( $o, $conf ); }
 		if ( self::is_empty( $plan ) ) $o[] = 'Nothing to push.';
 		return implode( "\n", $o ) . "\n";
 	}
