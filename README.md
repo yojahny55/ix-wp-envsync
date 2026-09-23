@@ -381,6 +381,8 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
 
+Database steps go up deflated as binary, the same way as files. Host firewalls such as Hostinger's score the serialized PHP objects inside plugin rows (Action Scheduler jobs, many options) as an attack, and block a plain JSON batch with `403 Forbidden`. Compressed bytes are not pattern-matched. Both sides need 0.5.5 or newer for this; against an older remote the hub sends plain JSON.
+
 Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks.
 
 Options are matched by row ID, but on a fresh remote those IDs are often taken by WordPress's own transients. A pushed option whose ID is held by a transient or other excluded option there is placed by its name instead. It is not reported as "changed on prod". Upgrade both sides to 0.5.3 before a first deploy.
