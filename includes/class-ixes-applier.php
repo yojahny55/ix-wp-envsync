@@ -100,10 +100,28 @@ class IXES_Applier {
 		$pairs = self::remote_pairs( $extra );
 		foreach ( $expect as $id => $h ) {
 			$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` = %s", $id ), ARRAY_A );
+			// an excluded option (transient, cron, siteurl...) is invisible to the planner, so it is "no row" here too
+			if ( $row && self::excluded_option_row( $table, $row ) ) $row = null;
 			$cur = $row ? IXES_Hasher::hash_row( $row, $pairs, $algo ) : null;
 			if ( $cur !== $h ) $stale[] = $id;
 		}
 		return $stale;
+	}
+
+	private static function excluded_option_row( $table, array $row ) {
+		global $wpdb;
+		return $table === $wpdb->options && isset( $row['option_name'] ) && IXES_Env::option_excluded( $row['option_name'] );
+	}
+
+	/**
+	 * Option ids are per-site counters: a fresh remote hands the ids a hub row uses to its own transients.
+	 * When the incoming id belongs to an excluded option there, drop the id and let option_name (UNIQUE) place the row.
+	 * @return bool true when the row was re-keyed by name
+	 */
+	public static function rekey_option( array &$row, $holder_name ) {
+		if ( $holder_name === null || $holder_name === ( $row['option_name'] ?? null ) || ! IXES_Env::option_excluded( $holder_name ) ) return false;
+		unset( $row['option_id'] );
+		return true;
 	}
 
 	// read-modify-write meta.json once per step (not per row) to record no-PK rows this step inserted, so rollback can delete them
@@ -187,6 +205,13 @@ class IXES_Applier {
 					if ( ! $pk ) {
 						if ( $wpdb->insert( $table, $row ) ) $inserted_rows[] = $row;
 						continue;
+					}
+					if ( $is_options && isset( $row['option_id'] ) ) {
+						$holder = $wpdb->get_var( $wpdb->prepare( "SELECT option_name FROM `{$table}` WHERE option_id = %d", $row['option_id'] ) );
+						if ( self::rekey_option( $row, $holder ) ) {
+							$had = $wpdb->get_var( $wpdb->prepare( "SELECT option_id FROM `{$table}` WHERE option_name = %s", $row['option_name'] ) );
+							if ( ! $had ) self::record_meta( $p['job'], 'inserted_option_names', $row['option_name'] );
+						}
 					}
 					$wpdb->replace( $table, $row );
 				}
@@ -389,6 +414,7 @@ class IXES_Applier {
 			}
 		}
 		foreach ( (array) ( $meta['created_files'] ?? [] ) as $rel ) IXES_Transfer::delete_file( $rel );
+		foreach ( (array) ( $meta['inserted_option_names'] ?? [] ) as $name ) { $wpdb->delete( $wpdb->options, [ 'option_name' => (string) $name ] ); $n++; }
 		foreach ( (array) ( $meta['created_tables'] ?? [] ) as $table ) {
 			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
 		}

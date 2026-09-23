@@ -383,6 +383,8 @@ Before applying, the remote snapshots every row and file the plan touches, and g
 
 Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks.
 
+Options are matched by row ID, but on a fresh remote those IDs are often taken by WordPress's own transients. A pushed option whose ID is held by a transient or other excluded option there is placed by its name instead. It is not reported as "changed on prod". Upgrade both sides to 0.5.3 before a first deploy.
+
 Tables that exist only on your site, typically ones a plugin creates for itself (Action Scheduler, security logs, SEO indexes), are created on the remote first and marked `(new)` in the plan. Plugins switch on as the last step, after their tables and data are in place. `rollback` drops any table the push created. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
 
 ### `wp envsync unlock <env>`

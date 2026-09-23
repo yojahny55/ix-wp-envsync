@@ -170,6 +170,20 @@ B envsync push prod --yes >/dev/null || die "push of a nested cache/ folder fail
 [ -f "$IXES_A/wp-content/plugins/ixnest/src/cache/load.php" ] || die "nested cache/ folder inside a plugin was excluded"
 rm -rf "$IXES_B/wp-content/plugins/ixnest" "$IXES_A/wp-content/plugins/ixnest"
 
+# 13c. the remote holds a transient at the option_id of a new hub option: the option must still arrive (not "changed on prod")
+B option delete ixcollide >/dev/null 2>&1 || true; A option delete ixcollide >/dev/null 2>&1 || true
+B option add ixcollide "hub-value" >/dev/null
+CID=$(B db query "SELECT option_id FROM wp_options WHERE option_name='ixcollide'" --skip-column-names)
+A db query "DELETE FROM wp_options WHERE option_id=$CID" >/dev/null
+A db query "INSERT INTO wp_options (option_id, option_name, option_value, autoload) VALUES ($CID, '_transient_ixcollide_probe', 'remote-transient', 'no')" >/dev/null
+OUT=$(B envsync push prod --yes 2>&1) || die "push with an option-id collision failed:\n$OUT"
+echo "$OUT" | grep -q "changed on prod during push" && die "colliding option reported as changed on prod:\n$OUT"
+[ "$(A option get ixcollide)" = "hub-value" ] || die "option whose id a remote transient held did not arrive"
+[ "$(A db query "SELECT option_value FROM wp_options WHERE option_name='_transient_ixcollide_probe'" --skip-column-names)" = "remote-transient" ] || die "the remote transient was overwritten"
+B envsync rollback prod --yes >/dev/null
+[ -z "$(A db query "SELECT option_id FROM wp_options WHERE option_name='ixcollide'" --skip-column-names)" ] || die "rollback left the re-keyed option behind"
+A db query "DELETE FROM wp_options WHERE option_name='_transient_ixcollide_probe'" >/dev/null; B option delete ixcollide >/dev/null
+
 # 14. a plugin that fatals on every web request (not under WP-CLI)
 BOOM='<?php
 /*

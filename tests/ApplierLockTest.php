@@ -46,4 +46,14 @@ class ApplierLockTest extends TestCase {
 		$this->assertSame( 'one statement only', IXES_Applier::create_table_refusal( 'wp_aiowps_events', $ok . '; DROP TABLE wp_users', 'wp_', false ) );
 		$this->assertSame( 'unsupported table option', IXES_Applier::create_table_refusal( 'wp_aiowps_events', 'CREATE TABLE `wp_aiowps_events` ( `id` int ) SELECT * FROM wp_users', 'wp_', false ) );
 	}
+	public function test_rekey_option_only_when_an_excluded_option_holds_the_id() {
+		$row = [ 'option_id' => 131, 'option_name' => 'rank-math-options-titles', 'option_value' => 'x' ];
+		$r = $row; $this->assertTrue( IXES_Applier::rekey_option( $r, '_transient_update_themes' ) );
+		$this->assertArrayNotHasKey( 'option_id', $r );
+		$r = $row; $this->assertTrue( IXES_Applier::rekey_option( $r, 'cron' ) );
+		$r = $row; $this->assertFalse( IXES_Applier::rekey_option( $r, null ), 'free id: keep it' );
+		$r = $row; $this->assertFalse( IXES_Applier::rekey_option( $r, 'rank-math-options-titles' ), 'same option: plain update' );
+		$r = $row; $this->assertFalse( IXES_Applier::rekey_option( $r, 'blogname' ), 'a synced option at that id is a real conflict the planner saw' );
+		$this->assertSame( 131, $r['option_id'] );
+	}
 }
