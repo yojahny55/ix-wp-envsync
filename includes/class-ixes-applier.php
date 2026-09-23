@@ -515,7 +515,7 @@ class IXES_Applier {
 		if ( $plan['files']['delete'] ) {
 			$expect = array_intersect_key( $file_hashes, array_flip( $plan['files']['delete'] ) );
 			$step = [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ];
-			$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "file: {$ref}";
 		}
@@ -529,7 +529,7 @@ class IXES_Applier {
 		$progress->stage( 'Database', null, count( $ordered ) + ( $plan['active_plugins'] !== null ? 1 : 0 ) );
 		foreach ( (array) ( $plan['new_tables'] ?? [] ) as $name => $sql ) {
 			$step = [ 'job' => $job, 'kind' => 'create_table', 'table' => $name, 'sql' => $sql ];
-			$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 		}
 		// plugins switch on last, after their tables and rows exist: never through the options rows
@@ -544,7 +544,7 @@ class IXES_Applier {
 					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $chunk ) );
 					$rows = $wpdb->get_results( "SELECT * FROM `{$name}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
 					$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
-					$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+					$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
@@ -556,7 +556,7 @@ class IXES_Applier {
 				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'] ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
 				foreach ( array_chunk( $rows, 500 ) as $chunk ) {
 					$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
-					$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+					$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 					if ( is_wp_error( $r ) ) return $fail( $r );
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
@@ -564,7 +564,7 @@ class IXES_Applier {
 			if ( $t['delete'] ) {
 				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['delete'] ) );
 				$step = [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
-				$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+				$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
 				foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
@@ -574,7 +574,7 @@ class IXES_Applier {
 
 		if ( $plan['active_plugins'] !== null ) {
 			$step = [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ];
-			$r = $call( function () use ( $c, $step ) { return $c->post( '/job/step', $step ); } );
+			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			$progress->item( 'active_plugins' );
 		}

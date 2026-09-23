@@ -221,6 +221,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 
 A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
 
+**`403 Forbidden` on `/job/step`** (plain text, not a WordPress error): the host's firewall blocked a database batch, usually because of serialized PHP objects in plugin rows. Retry and plugins-off will not help. Tell the user to upload plugin 0.5.5 or newer to the remote, which sends steps compressed. Then run `unlock <env>` and push again.
+
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 
 **423 / "another job is running"**: a push is running or died on the remote. `status` shows the lock's age. `unlock <env> --yes` clears a lock older than two minutes. Nothing is rolled back; `rollback` still restores that job.

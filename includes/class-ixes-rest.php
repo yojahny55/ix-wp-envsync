@@ -99,11 +99,25 @@ class IXES_Rest {
 		if ( stripos( (string) $req->get_header( 'content-type' ), 'application/octet-stream' ) === 0 ) {
 			$p = json_decode( (string) $req->get_header( 'x-envsync-step' ), true );
 			if ( ! is_array( $p ) ) return [];
-			$p['bin'] = (string) $req->get_body();
-			return $p;
+			return self::unpack_step( $p, (string) $req->get_body() );
 		}
 		$p = $req->get_json_params();
 		return is_array( $p ) ? $p : [];
+	}
+
+	const PACKED_MAX = 67108864; // inflated size cap for one packed step
+
+	/**
+	 * Header params + raw body -> step params. kind 'packed' carries a whole JSON step deflated: host firewalls
+	 * (Hostinger's, ModSecurity CRS) score serialized PHP objects in plain bodies and block a batch of option or
+	 * Action Scheduler rows as "object injection"; compressed bytes are not pattern-matched. The body is signed like any other.
+	 */
+	public static function unpack_step( array $p, $body ) {
+		if ( ( $p['kind'] ?? '' ) !== 'packed' ) { $p['bin'] = $body; return $p; }
+		$json = function_exists( 'gzinflate' ) ? @gzinflate( $body, self::PACKED_MAX ) : false;
+		$inner = $json === false ? null : json_decode( $json, true );
+		if ( ! is_array( $inner ) || ( $inner['kind'] ?? '' ) === 'packed' ) return [];
+		return $inner;
 	}
 
 	private static function applier( $method, $params ) {
