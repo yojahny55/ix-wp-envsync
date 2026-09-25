@@ -175,4 +175,33 @@ class ClientLoopTest extends TestCase {
 		$this->assertSame( 'file', $b['kind'] );
 		unlink( $tmp );
 	}
+
+	private static function ok_json() { return [ 'response' => [ 'code' => 200 ], 'body' => '{"ok":true}', 'headers' => [ 'content-type' => 'application/json' ] ]; }
+	private static function proxy_401() { return [ 'response' => [ 'code' => 401 ], 'body' => '<html><h1>401 Authorization Required</h1>nginx</html>', 'headers' => [ 'www-authenticate' => 'Basic realm="x"' ] ]; }
+
+	public function test_token_goes_in_authorization_without_basic_auth() {
+		$c = $this->client(); $c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$this->assertSame( 'Bearer ' . str_repeat( 'a', 64 ), $c->calls[0]['headers']['Authorization'] );
+	}
+	public function test_basic_auth_takes_authorization_and_token_moves_to_x_header() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'basic_auth' => 'user:p:ss' ] );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$h = $c->calls[0]['headers'];
+		$this->assertSame( 'Basic ' . base64_encode( 'user:p:ss' ), $h['Authorization'] );
+		$this->assertSame( str_repeat( 'a', 64 ), $h['X-Envsync-Token'] );
+		$this->assertSame( [ str_repeat( 'a', 64 ), 'x-envsync-token' ], IXES_Auth::token_from_headers( $h['Authorization'], $h['X-Envsync-Token'] ), 'the remote reads the token from the fallback header' );
+	}
+	public function test_proxy_basic_auth_401_names_the_option() {
+		$c = $this->client(); $c->script = [ function () { return self::proxy_401(); } ];
+		$r = $c->get( '/info' );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertStringContainsString( '--basic-auth=<user:pass>', $r->get_error_message() );
+	}
+	public function test_proxy_basic_auth_401_with_credentials_says_they_were_rejected() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'basic_auth' => 'u:wrong' ] );
+		$c->script = [ function () { return self::proxy_401(); } ];
+		$this->assertStringContainsString( 'rejected the --basic-auth credentials', $c->get( '/info' )->get_error_message() );
+	}
 }

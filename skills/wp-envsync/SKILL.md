@@ -173,7 +173,7 @@ All commands take `--path=<site>`.
 | Command | Purpose |
 |---|---|
 | `envsync status [<env>] [--json]` | Role, each environment's state, and the one next command |
-| `envsync env add <name> [<url>] [--token=] [--label=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
+| `envsync env add <name> [<url>] [--token=] [--label=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
@@ -231,6 +231,8 @@ A push that breaks the remote mid-way already rolls back through rescue by itsel
 - The one exception is `wp_options#…` rows skipped on a first deploy by a hub older than 0.5.3. That was a bug (option-id collision with the remote's transients), not a real change. Before anyone pulls, tell the user to upgrade both sides and push again. A pull after such a push copies the missing options back over the hub's own copy.
 
 **401 / "missing token"**: the token is wrong or was rotated. Ask the user for the current one from the remote's Tools → EnvSync page, then run `env add <name> --token=<new>`. You do not need the URL again.
+
+**401 with "behind HTTP Basic Auth"**: the web server itself asks for a password before WordPress loads. The token is fine. Ask the user for that user and password, then run `env add <name> --basic-auth=<user:pass>`. Both sides need 0.5.6 or newer.
 
 ## Excludes
 
