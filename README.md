@@ -514,6 +514,8 @@ Both sides need 0.6.0 or newer. Against an older remote the hub stops before any
 remote prefix 'ab12cd_' differs from local 'wp_'; upload 0.6.0 or newer to the remote to sync across prefixes
 ```
 
+A plugin's own usermeta key that happens to start with the prefix (with a `wp_` hub, a key named `wp_foo_setting`) is renamed like the real prefixed keys, because WordPress stores both the same way. At worst a dismissed notice or a per-user preference reappears on the other site.
+
 A database shared by several installs whose prefixes overlap (`wp_` and `wp_2_`) is not supported: the remote's table listing can pick up the other install's tables.
 
 ---
