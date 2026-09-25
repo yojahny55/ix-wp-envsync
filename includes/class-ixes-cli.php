@@ -52,9 +52,11 @@ class IXES_CLI {
 	}
 	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
 	private function forget_status() { delete_transient( 'ixes_status_report' ); }
-	private function scope( $assoc ) {
+	private function scope( $assoc, array $env ) {
 		global $wpdb;
-		try { return IXES_Scope::from_assoc( $assoc, $wpdb->prefix ); }
+		$d = IXES_Scope::with_default( $assoc, $env );
+		if ( $d['note'] !== null && ! $this->wants_json( $assoc ) ) WP_CLI::log( $d['note'] );
+		try { return IXES_Scope::from_assoc( $d['assoc'], $wpdb->prefix ); }
 		catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 	}
 
@@ -77,6 +79,9 @@ class IXES_CLI {
 	 * [--label=<label>]
 	 * : prod or staging.
 	 *
+	 * [--only=<parts>]
+	 * : Default scope for this environment's pull, diff and push, e.g. db,uploads when code travels by git (for add). An empty value or "all" removes it.
+	 *
 	 * [--basic-auth=<credentials>]
 	 * : HTTP Basic Auth credentials as user:pass, for a remote behind a password-protected proxy (for add). Pass an empty value to remove them.
 	 *
@@ -98,9 +103,9 @@ class IXES_CLI {
 			$rows = [];
 			foreach ( IXES_Env::all() as $e ) {
 				$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $e['name'] . '.sqlite' );
-				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'baseline' => $bl->baseline_label() ];
+				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'only' => ( $e['default_only'] ?? '' ) !== '' ? $e['default_only'] : 'everything', 'baseline' => $bl->baseline_label() ];
 			}
-			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'baseline' ] );
+			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'only', 'baseline' ] );
 			return;
 		}
 		if ( $action === 'add' ) {
@@ -113,6 +118,11 @@ class IXES_CLI {
 			if ( ! empty( $args[2] ) )           $env['url']   = $args[2];
 			if ( ! empty( $assoc['token'] ) )    $env['token'] = $assoc['token'];
 			if ( ! empty( $assoc['label'] ) )    $env['label'] = $assoc['label'];
+			if ( isset( $assoc['only'] ) ) {
+				try { $only = IXES_Scope::default_only( $assoc['only'] === true ? '' : $assoc['only'] ); }
+				catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
+				if ( $only === '' ) unset( $env['default_only'] ); else $env['default_only'] = $only;
+			}
 			if ( isset( $assoc['basic-auth'] ) ) {
 				if ( $assoc['basic-auth'] === '' || $assoc['basic-auth'] === true ) unset( $env['basic_auth'] );
 				else $env['basic_auth'] = (string) $assoc['basic-auth'];
@@ -199,7 +209,7 @@ class IXES_CLI {
 	 * : Discard an interrupted pull and start over.
 	 *
 	 * [--only=<parts>]
-	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins, or all. Default: the environment's --only from env add, else everything.
 	 *
 	 * [--tables=<tables>]
 	 * : Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
@@ -233,7 +243,7 @@ class IXES_CLI {
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
 		}
-		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc ) ) );
+		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc, $env ) ) );
 		$report = IXES_Report::from_pull_plan( $plan );
 		$manifest = $this->show_report( $report, $assoc );
 		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
@@ -292,7 +302,7 @@ class IXES_CLI {
 	 * : Discard the file hash cache and rehash everything.
 	 *
 	 * [--only=<parts>]
-	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins, or all. Default: the environment's --only from env add, else everything.
 	 *
 	 * [--tables=<tables>]
 	 * : Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
@@ -303,7 +313,7 @@ class IXES_CLI {
 	public function diff( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc ) ) );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
 		$path = IXES_Planner::save( $plan );
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
 		$manifest = $this->show_report( IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'diff' ), $assoc );
@@ -365,7 +375,7 @@ class IXES_CLI {
 	 * ---
 	 *
 	 * [--only=<parts>]
-	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
+	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins, or all. Default: the environment's --only from env add, else everything.
 	 *
 	 * [--tables=<tables>]
 	 * : Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
@@ -376,7 +386,7 @@ class IXES_CLI {
 	public function push( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
 		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc ) ) );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
 		if ( ! empty( $assoc['plan'] ) ) {
 			$saved = json_decode( file_get_contents( $assoc['plan'] ), true );
 			if ( ! $saved ) WP_CLI::error( 'cannot read plan file' );

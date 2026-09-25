@@ -33,6 +33,28 @@ class IXES_Scope {
 		return new self( $only, $tables, $paths, $prefix );
 	}
 
+	/**
+	 * An environment may store a default --only (env add --only=db,uploads), for sites whose code travels by git.
+	 * It applies when no scope flag is given; --only=all syncs everything for that one command.
+	 * @return array{assoc: array, note: string|null}
+	 */
+	public static function with_default( array $assoc, array $env ) {
+		if ( ( $assoc['only'] ?? null ) === 'all' ) { unset( $assoc['only'] ); return [ 'assoc' => $assoc, 'note' => null ]; }
+		$default = (string) ( $env['default_only'] ?? '' );
+		if ( $default === '' || isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) return [ 'assoc' => $assoc, 'note' => null ];
+		$assoc['only'] = $default;
+		$name = (string) ( $env['name'] ?? '' );
+		return [ 'assoc' => $assoc, 'note' => "scope: {$default} (default for {$name}; --only=all syncs everything)" ];
+	}
+
+	/** Normalise an env add --only value; '' and 'all' mean no default. Throws on an unknown part. */
+	public static function default_only( $value ) {
+		$parts = self::list( $value );
+		if ( $parts === [ 'all' ] ) return '';
+		self::from_assoc( [ 'only' => implode( ',', $parts ) ], '' );
+		return implode( ',', $parts );
+	}
+
 	public static function from_array( array $a, $prefix ) {
 		return new self( (array) ( $a['only'] ?? [] ), (array) ( $a['tables'] ?? [] ), (array) ( $a['paths'] ?? [] ), $prefix );
 	}

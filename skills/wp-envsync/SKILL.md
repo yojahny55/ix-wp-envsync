@@ -99,6 +99,8 @@ The usual release path is to push to staging first, then to production.
 | Client's content, keep your theme | `pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
 | Media only | `pull prod --only=uploads` |
 
+An environment can carry a default scope (`env add <env> --only=db,uploads`, shown in `env list`), typically when code travels by git. With no scope flag the command prints `scope: … (default for <env>; --only=all syncs everything)` first. Respect it: do not add `--only=all` unless the user asks to sync code too.
+
 Rules:
 - `push` never syncs more than the `diff` you ran with the same flags. Run `diff` with exactly the flags you will push with.
 - If a `--tables` pull prints a warning about splitting a family (for example posts without postmeta), run a full pull before the next push.
@@ -173,7 +175,7 @@ All commands take `--path=<site>`.
 | Command | Purpose |
 |---|---|
 | `envsync status [<env>] [--json]` | Role, each environment's state, and the one next command |
-| `envsync env add <name> [<url>] [--token=] [--label=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
+| `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |

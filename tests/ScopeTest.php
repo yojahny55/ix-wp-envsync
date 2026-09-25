@@ -64,4 +64,37 @@ class ScopeTest extends TestCase {
 		$this->assertSame( [], $this->s( [ 'tables' => 'posts,postmeta' ] )->family_warnings( [ 'wp_posts', 'wp_postmeta' ] ) );
 		$this->assertSame( [], $this->s( [] )->family_warnings( [ 'wp_posts' ] ), 'no warning without --tables' );
 	}
+
+	public function test_env_default_applies_only_when_no_scope_flag_is_given() {
+		$env = [ 'name' => 'staging', 'default_only' => 'db,uploads' ];
+		$r = IXES_Scope::with_default( [], $env );
+		$this->assertSame( 'db,uploads', $r['assoc']['only'] );
+		$this->assertStringContainsString( 'default for staging', $r['note'] );
+		$this->assertStringContainsString( '--only=all', $r['note'] );
+		$this->assertSame( [ 'db', 'uploads' ], IXES_Scope::from_assoc( $r['assoc'], 'wp_' )->to_array()['only'] );
+
+		foreach ( [ [ 'only' => 'themes' ], [ 'tables' => 'posts' ], [ 'paths' => 'themes/x/' ] ] as $explicit ) {
+			$r = IXES_Scope::with_default( $explicit, $env );
+			$this->assertSame( $explicit, $r['assoc'], 'an explicit flag wins' );
+			$this->assertNull( $r['note'] );
+		}
+	}
+	public function test_only_all_syncs_everything_even_with_a_default() {
+		$r = IXES_Scope::with_default( [ 'only' => 'all' ], [ 'name' => 'staging', 'default_only' => 'db,uploads' ] );
+		$this->assertArrayNotHasKey( 'only', $r['assoc'] );
+		$this->assertTrue( IXES_Scope::from_assoc( $r['assoc'], 'wp_' )->is_full() );
+		$r = IXES_Scope::with_default( [ 'only' => 'all', 'tables' => 'posts' ], [ 'name' => 'p' ] );
+		$this->assertSame( [ 'tables' => 'posts' ], $r['assoc'] );
+	}
+	public function test_no_default_changes_nothing() {
+		$this->assertSame( [ 'assoc' => [], 'note' => null ], IXES_Scope::with_default( [], [ 'name' => 'prod' ] ) );
+		$this->assertSame( [ 'assoc' => [], 'note' => null ], IXES_Scope::with_default( [], [ 'name' => 'prod', 'default_only' => '' ] ) );
+	}
+	public function test_default_only_is_validated() {
+		$this->assertSame( 'db,uploads', IXES_Scope::default_only( ' db, uploads ' ) );
+		$this->assertSame( '', IXES_Scope::default_only( '' ) );
+		$this->assertSame( '', IXES_Scope::default_only( 'all' ), 'all means no default' );
+		$this->expectException( InvalidArgumentException::class );
+		IXES_Scope::default_only( 'db,media' );
+	}
 }
