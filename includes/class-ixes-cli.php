@@ -77,8 +77,8 @@ class IXES_CLI {
 	 * [--label=<label>]
 	 * : prod or staging.
 	 *
-	 * [--basic-auth=<user:pass>]
-	 * : HTTP Basic Auth credentials for a remote behind a password-protected proxy (for add). Pass an empty value to remove them.
+	 * [--basic-auth=<credentials>]
+	 * : HTTP Basic Auth credentials as user:pass, for a remote behind a password-protected proxy (for add). Pass an empty value to remove them.
 	 *
 	 * [--replace=<pairs>]
 	 * : Comma-separated extra search:replace pairs.
