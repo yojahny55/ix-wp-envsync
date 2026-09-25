@@ -273,6 +273,45 @@ class IXES_Applier {
 			return [ 'ok' => true ];
 		}
 
+		if ( $kind === 'delete_set' ) {
+			// push --mirror on a table without a primary key: delete the rows whose hash the hub listed, keep them for rollback
+			$table = sanitize_text_field( $p['table'] ?? '' );
+			if ( ! IXES_Transfer::valid_table( $table ) || $table === $wpdb->options ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
+			$want  = array_flip( array_map( 'strval', (array) ( $p['hashes'] ?? [] ) ) );
+			$pairs = self::remote_pairs( array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) ) );
+			$algo  = $p['algo'] ?? 'sha1';
+			$map   = IXES_Prefix::current();
+			$gone  = []; $off = 0;
+			do {
+				$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` LIMIT %d OFFSET %d", 5000, $off ), ARRAY_A );
+				foreach ( $rows as $row ) {
+					// hash the row as the hub saw it: in the hub's prefix
+					$seen = $map ? $map->row_out( $map->bare( $table ), $row ) : $row;
+					if ( $seen !== null && isset( $want[ IXES_Hasher::hash_row( $seen, $pairs, $algo ) ] ) ) $gone[] = $row;
+				}
+				$off += 5000;
+			} while ( count( $rows ) === 5000 );
+			if ( ! $gone ) return [ 'ok' => true, 'deleted' => 0 ];
+			// rollback reads this file; if the rows cannot be kept (bad encoding, disk), delete nothing
+			$dir  = self::job_dir( $p['job'] );
+			$file = $dir ? $dir . '/setdel-' . $table . '.json' : null;
+			$keep = function ( array $rows ) use ( $file ) { $j = json_encode( $rows ); return $j !== false && $file && file_put_contents( $file, $j ) !== false; };
+			if ( ! $keep( $gone ) ) return new WP_Error( 'snapshot_failed', "cannot keep the {$table} rows for rollback; nothing deleted", [ 'status' => 500 ] );
+			$done = [];
+			foreach ( $gone as $row ) {
+				// exact bytes and one row per match: the table's collation would also match rows that differ in case or trailing spaces
+				$where = []; $vals = [];
+				foreach ( $row as $col => $v ) {
+					if ( $v === null ) { $where[] = "`{$col}` IS NULL"; continue; }
+					$where[] = "BINARY `{$col}` = %s"; $vals[] = $v;
+				}
+				$sql = "DELETE FROM `{$table}` WHERE " . implode( ' AND ', $where ) . ' LIMIT 1';
+				if ( $wpdb->query( $vals ? $wpdb->prepare( $sql, $vals ) : $sql ) ) $done[] = $row;
+			}
+			$keep( $done );
+			return [ 'ok' => true, 'deleted' => count( $done ) ];
+		}
+
 		if ( $kind === 'delete_files' ) {
 			$expect  = (array) ( $p['expect'] ?? [] );
 			$algo    = $p['algo'] ?? 'sha1';
@@ -405,6 +444,11 @@ class IXES_Applier {
 		foreach ( (array) ( $meta['set_inserted'] ?? [] ) as $table => $rows ) {
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
 			foreach ( (array) $rows as $row ) { $wpdb->delete( $table, $row ); $n++; }
+		}
+		foreach ( glob( $dir . '/setdel-*.json' ) ?: [] as $f ) {
+			$table = substr( basename( $f, '.json' ), 7 );
+			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
+			foreach ( (array) json_decode( (string) file_get_contents( $f ), true ) as $row ) if ( is_array( $row ) ) { $wpdb->insert( $table, $row ); $n++; }
 		}
 
 		$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/files', FilesystemIterator::SKIP_DOTS ) );
@@ -552,6 +596,12 @@ class IXES_Applier {
 					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
 					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
 				}
+			}
+			// before set_insert, so a pushed row can never be what gets deleted
+			if ( ! empty( $t['set_delete'] ) ) {
+				$step = [ 'job' => $job, 'kind' => 'delete_set', 'table' => $name, 'hashes' => $t['set_delete'], 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
+				$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
+				if ( is_wp_error( $r ) ) return $fail( $r );
 			}
 			if ( $t['set_insert'] ) {
 				// no-pk table: send full rows whose hash is in set_insert

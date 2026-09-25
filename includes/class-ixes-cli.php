@@ -359,6 +359,9 @@ class IXES_CLI {
 	 * [--force]
 	 * : Overwrite rows the remote changed, when there is no baseline (first deploy).
 	 *
+	 * [--mirror]
+	 * : With --force on a first deploy: also delete, within the scope, the rows and files only the remote has. The pre-push snapshot keeps them for rollback.
+	 *
 	 * [--plan=<file>]
 	 * : Apply a previously saved plan file.
 	 *
@@ -394,7 +397,10 @@ class IXES_CLI {
 		global $wpdb;
 		// replaying a saved plan re-checks it in the scope it was made with, not the environment's current default
 		$scope = $saved ? IXES_Scope::from_array( (array) ( $saved['scope'] ?? [] ), $wpdb->prefix ) : $this->scope( $assoc, $env );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope ) );
+		$mirror = $saved ? ! empty( $saved['mirror'] ) : ! empty( $assoc['mirror'] );
+		if ( $saved && ! empty( $assoc['mirror'] ) && empty( $saved['mirror'] ) ) WP_CLI::error( 'that plan was made without --mirror; run push --force --mirror without --plan' );
+		if ( $mirror && empty( $assoc['force'] ) ) WP_CLI::error( '--mirror only goes with --force, on a first deploy' );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror ) );
 		if ( $saved ) {
 			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" );
 			$plan = $saved;

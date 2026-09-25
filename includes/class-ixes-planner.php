@@ -3,7 +3,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class IXES_Planner {
 
-	public static function build( array $env, IXES_Client $c, IXES_Scope $scope = null ) {
+	/** $mirror (push --mirror, first deploy only): rows and files only the remote has, within the scope, are deleted there */
+	public static function build( array $env, IXES_Client $c, IXES_Scope $scope = null, $mirror = false ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
@@ -14,11 +15,14 @@ class IXES_Planner {
 		$bl   = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		$two_way = ! $bl->exists();
 		if ( ! $two_way && $bl->meta( 'algo' ) !== $algo ) return new WP_Error( 'algo', 'baseline hash algo differs; pull again' );
+		// with a baseline, what only the remote has is the remote's own work, and the remote wins
+		if ( $mirror && ! $two_way ) return new WP_Error( 'mirror_baseline', "--mirror is only for a first deploy: {$env['name']} has a baseline, so what only it has is its own work and stays" );
 
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
 		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 		$ex = IXES_Pull::excludes( $env );
-		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [] ];
+		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror ];
+		$mirror_warn = [];
 
 		// tables only this site has (a plugin's own tables on a first deploy): the push creates them, then fills them
 		$candidates = $info['tables'];
@@ -54,6 +58,7 @@ class IXES_Planner {
 
 			if ( $pk ) {
 				$d = IXES_Differ::diff( $two_way ? [] : $bl->rows( $name ), $local, $remote );
+				if ( $mirror ) $d = IXES_Differ::mirror( $d, $local, $remote );
 				$d['pk'] = $pk; $d['set_insert'] = [];
 				$plan['remote_hashes'][ $name ] = array_intersect_key( $remote, array_flip( array_merge( $d['push'], $d['delete'] ) ) );
 				// inserts must exist nowhere on prod: a null expectation means "no row", and stale() flags one that appeared
@@ -63,6 +68,12 @@ class IXES_Planner {
 				}
 			} else {
 				$d = [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'set_insert' => IXES_Differ::diff_set( $local, $remote )['insert'] ];
+				// no primary key: --mirror deletes by row hash, which needs a remote that knows the delete_set step
+				if ( $mirror ) {
+					$gone = array_values( array_unique( array_diff( $remote, $local ) ) );
+					if ( $gone && in_array( 'delete_set', (array) ( $info['caps'] ?? [] ), true ) ) $d['set_delete'] = $gone;
+					elseif ( $gone ) $mirror_warn[] = "{$name} has no primary key and {$env['name']} runs a plugin older than 0.6.2: --mirror keeps the " . count( $gone ) . ' row(s) only it has';
+				}
 			}
 			if ( $name === $wpdb->options ) {
 				$base_ap = $two_way ? [] : self::option_from_baseline_or_local( 'active_plugins', $bl );
@@ -70,9 +81,9 @@ class IXES_Planner {
 				$merged = IXES_Differ::merge_active_plugins( $base_ap, (array) get_option( 'active_plugins', [] ), $remote_ap );
 				if ( array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
 			}
-			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] ) $plan['tables'][ $name ] = $d;
+			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] || ! empty( $d['set_delete'] ) ) $plan['tables'][ $name ] = $d;
 		}
-		$plan['warnings'] = $scope->family_warnings( $in_scope );
+		$plan['warnings'] = array_merge( $scope->family_warnings( $in_scope ), $mirror_warn );
 
 		$plan['files'] = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
 		$plan['remote_file_hashes'] = [];
@@ -84,6 +95,7 @@ class IXES_Planner {
 			$local_files  = self::in_scope( IXES_Transfer::local_manifest( $ex, $algo ), $scope );
 			$base_files   = $two_way ? [] : self::in_scope( $bl->files(), $scope );
 			$fd = IXES_Differ::diff( $base_files, $local_files, $remote_files );
+			if ( $mirror ) $fd = IXES_Differ::mirror( $fd, $local_files, $remote_files );
 			$plan['files'] = [ 'push' => array_merge( $fd['push'], $fd['insert'] ), 'delete' => $fd['delete'], 'conflict' => $fd['conflict'], 'kept' => $fd['kept'] ];
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
 		}
@@ -102,7 +114,7 @@ class IXES_Planner {
 	}
 
 	public static function is_empty( array $plan ) {
-		foreach ( $plan['tables'] as $t ) if ( $t['push'] || $t['insert'] || $t['delete'] || $t['set_insert'] ) return false;
+		foreach ( $plan['tables'] as $t ) if ( $t['push'] || $t['insert'] || $t['delete'] || $t['set_insert'] || ! empty( $t['set_delete'] ) ) return false;
 		return empty( $plan['files']['push'] ) && empty( $plan['files']['delete'] ) && $plan['active_plugins'] === null;
 	}
 
@@ -115,7 +127,7 @@ class IXES_Planner {
 		}
 		$o[] = 'DB';
 		foreach ( $plan['tables'] as $name => $t ) {
-			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ), count( $t['conflict'] ), count( $t['kept'] ) );
+			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), count( $t['conflict'] ), count( $t['kept'] ) );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
 		$o[] = 'FILES';

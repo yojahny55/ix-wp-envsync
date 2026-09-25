@@ -29,6 +29,15 @@ class IXES_Differ {
 		return $out;
 	}
 
+	/** push --mirror: whatever only the remote has moves from kept to delete, so the remote ends up equal to local */
+	public static function mirror( array $d, array $local, array $remote ) {
+		$only_remote = array_keys( array_diff_key( $remote, $local ) );
+		if ( ! $only_remote ) return $d;
+		$d['kept']   = array_values( array_diff( $d['kept'], $only_remote ) );
+		$d['delete'] = array_values( array_unique( array_merge( $d['delete'], $only_remote ) ) );
+		return $d;
+	}
+
 	public static function diff_set( array $local_hashes, array $remote_hashes ) {
 		$remote = array_flip( $remote_hashes );
 		$insert = [];

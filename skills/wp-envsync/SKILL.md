@@ -114,8 +114,8 @@ The user built the site locally, and the remote is a fresh WordPress install. Pu
 3. Tell the user three things before they approve:
    - Local users replace the remote's users, so they will log in with their **local** credentials.
    - Active local dev plugins go up too.
-   - Nothing on the remote is deleted, so an old site's content stays mixed in.
-4. Run `push <env> --force --yes` after approval.
+   - Nothing on the remote is deleted, so an old site's content stays mixed in. If the user wants the remote to end up equal to local, add `--mirror` to the dry run and the push: rows and files only the remote has, within the scope, are deleted (orders and users included). Report the delete counts per table and folder before approval. `rollback` restores them.
+4. Run `push <env> --force --yes` (plus `--mirror` if used in the dry run) after approval.
 5. Run `pull <env> --yes` to record the baseline. From now on, use the normal loop and never `--force`.
 
 ### Undo a bad push
@@ -180,7 +180,7 @@ All commands take `--path=<site>`.
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
 | `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
@@ -253,7 +253,7 @@ wp --path=<site> envsync env add prod --remove-exclude=cache/              # dro
 - Never run `push` without showing the user a `diff` (or a `--dry-run`) first. A push changes a client's live site.
 - Never pass `--yes` to a plan the user has not approved in this conversation.
 - Do not push to a `prod`-labelled environment without explicit approval in this conversation.
-- Use `--force` only for a first deploy onto a fresh install the user has confirmed.
+- Use `--force` only for a first deploy onto a fresh install the user has confirmed. Use `--mirror` only when the user asked for the remote's extra content to be deleted.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.
 - Never put a token in a file, a commit, or any message that leaves the machine.
 - After a push, tell the user to pull again before their next round of work.

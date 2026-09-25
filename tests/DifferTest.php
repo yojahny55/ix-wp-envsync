@@ -62,4 +62,12 @@ class DifferTest extends TestCase {
 	public function test_active_plugins_no_baseline_keeps_remote_plus_local() {
 		$this->assertSame( [ 'x/x.php', 'y/y.php' ], IXES_Differ::merge_active_plugins( [], [ 'y/y.php' ], [ 'x/x.php' ] ) );
 	}
+	public function test_mirror_deletes_what_only_the_remote_has() {
+		$d = IXES_Differ::mirror( $this->d( [], [ 1 => 'a', 2 => 'b' ], [ 2 => 'x', 9 => 'z' ] ), [ 1 => 'a', 2 => 'b' ], [ 2 => 'x', 9 => 'z' ] );
+		$this->assertSame( [ 9 ], $d['delete'] ); $this->assertSame( [ 2 ], $d['kept'] ); $this->assertSame( [ 1 ], $d['insert'] ); $this->assertSame( [ 2 ], $d['conflict'] );
+	}
+	public function test_mirror_without_remote_only_items_changes_nothing() {
+		$in = $this->d( [], [ 1 => 'a' ], [ 1 => 'b' ] );
+		$this->assertSame( $in, IXES_Differ::mirror( $in, [ 1 => 'a' ], [ 1 => 'b' ] ) );
+	}
 }
