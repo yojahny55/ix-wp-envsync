@@ -300,6 +300,21 @@ wp envsync env add prod --token=<new token>
 wp envsync status prod
 ```
 
+**`401` on a password-protected staging site.** When the web server asks for a user and password before WordPress loads (nginx `auth_basic`, Apache `.htpasswd`, a panel's "password protect directory"), every request stops there. `status` says so:
+
+```
+  unreachable: remote 401 on /info: the site is behind HTTP Basic Auth; register its credentials with --basic-auth=<user:pass>
+```
+
+Register the credentials alongside the token:
+
+```bash
+wp envsync env add staging --basic-auth=USER:PASSWORD
+wp envsync status staging
+```
+
+The hub then sends those credentials in the `Authorization` header, and the EnvSync token travels only in `X-Envsync-Token`. Both sides need 0.5.6 or newer: an older remote lets WordPress try the proxy's user as an application password, and that fails the request with its own 401.
+
 **Hub and remote run different plugin versions.** `status` and `ping` compare versions and flag a remote that's behind:
 
 ```
@@ -326,6 +341,7 @@ Options for `add`:
 
 - `--token=<token>` — required the first time, from the remote's Tools → EnvSync page.
 - `--label=prod|staging|local` — what kind of environment this is.
+- `--basic-auth=<user:pass>` — credentials for a remote whose web server asks for a password (HTTP Basic Auth), common on staging sites. Pass `--basic-auth=` to remove them. Stored in plain text in the hub's database, like the token.
 - `--exclude=<paths>` — comma-separated wp-content paths to leave out of sync entirely, e.g. `--exclude=ai1wm-backups/,cache/`. Replaces the whole list.
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.

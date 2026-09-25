@@ -23,7 +23,8 @@ class IXES_Client {
 		if ( isset( $opts['raw_body'] ) ) { $raw = (string) $opts['raw_body']; $ctype = 'application/octet-stream'; }
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
-			'Authorization' => 'Bearer ' . $this->env['token'],
+			// A remote behind HTTP Basic Auth needs Authorization for the proxy; the token then travels only in X-Envsync-Token
+			'Authorization' => ! empty( $this->env['basic_auth'] ) ? 'Basic ' . base64_encode( $this->env['basic_auth'] ) : 'Bearer ' . $this->env['token'],
 			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
 			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step ),
@@ -44,6 +45,9 @@ class IXES_Client {
 			$json = json_decode( $body_s, true );
 			// an HTML error page (WordPress's critical-error screen, a proxy page) becomes one readable line
 			$msg  = is_array( $json ) && isset( $json['message'] ) ? $json['message'] : mb_strimwidth( trim( preg_replace( '/\s+/', ' ', strip_tags( $body_s ) ) ), 0, 200, '…' );
+			if ( $code === 401 && ! is_array( $json ) && stripos( (string) wp_remote_retrieve_header( $res, 'www-authenticate' ), 'basic' ) === 0 ) {
+				$msg = empty( $this->env['basic_auth'] ) ? 'the site is behind HTTP Basic Auth; register its credentials with --basic-auth=<user:pass>' : 'HTTP Basic Auth rejected the --basic-auth credentials';
+			}
 			return new WP_Error( 'remote_' . $code, "remote {$code} on {$route}: {$msg}", [ 'status' => $code ] );
 		}
 		// Request intent decides what we asked for; the response content-type confirms what we actually got.

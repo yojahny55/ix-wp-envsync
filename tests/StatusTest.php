@@ -38,6 +38,11 @@ class StatusTest extends TestCase {
 		$n = $this->next( $this->ctx(), $info );
 		$this->assertSame( 'wp envsync rescue prod', $n['command'] );
 	}
+	public function test_password_protected_remote_suggests_basic_auth() {
+		$info = function () { return new WP_Error( 'remote_401', 'remote 401 on /info: the site is behind HTTP Basic Auth; register its credentials with --basic-auth=<user:pass>' ); };
+		$n = $this->next( $this->ctx(), $info );
+		$this->assertSame( 'wp envsync env add prod --basic-auth=<user:pass>', $n['command'] );
+	}
 	public function test_old_remote_version() {
 		$n = $this->next( $this->ctx(), $this->info( [ 'plugin' => '0.3.0' ] ) );
 		$this->assertStringContainsString( 'upload the release zip', $n['command'] );

@@ -77,6 +77,9 @@ class IXES_CLI {
 	 * [--label=<label>]
 	 * : prod or staging.
 	 *
+	 * [--basic-auth=<user:pass>]
+	 * : HTTP Basic Auth credentials for a remote behind a password-protected proxy (for add). Pass an empty value to remove them.
+	 *
 	 * [--replace=<pairs>]
 	 * : Comma-separated extra search:replace pairs.
 	 *
@@ -101,7 +104,7 @@ class IXES_CLI {
 			return;
 		}
 		if ( $action === 'add' ) {
-			if ( empty( $args[1] ) ) WP_CLI::error( 'usage: wp envsync env add <name> [<url>] [--token=...]' );
+			if ( empty( $args[1] ) ) WP_CLI::error( 'usage: wp envsync env add <name> [<url>] [--token=...] [--basic-auth=user:pass]' );
 			// Updating an existing environment keeps everything you did not pass, so
 			// rotating a token cannot silently wipe that environment's excludes.
 			$existing = IXES_Env::get( $args[1] );
@@ -110,6 +113,10 @@ class IXES_CLI {
 			if ( ! empty( $args[2] ) )           $env['url']   = $args[2];
 			if ( ! empty( $assoc['token'] ) )    $env['token'] = $assoc['token'];
 			if ( ! empty( $assoc['label'] ) )    $env['label'] = $assoc['label'];
+			if ( isset( $assoc['basic-auth'] ) ) {
+				if ( $assoc['basic-auth'] === '' || $assoc['basic-auth'] === true ) unset( $env['basic_auth'] );
+				else $env['basic_auth'] = (string) $assoc['basic-auth'];
+			}
 			if ( isset( $assoc['exclude'] ) )    $env['excludes'] = array_values( array_filter( explode( ',', $assoc['exclude'] ) ) );
 			if ( isset( $assoc['add-exclude'] ) ) {
 				$add = array_filter( explode( ',', $assoc['add-exclude'] ) );

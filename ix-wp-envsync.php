@@ -2,7 +2,7 @@
 /**
  * Plugin Name: IX WP EnvSync
  * Description: Pull full snapshots from prod/staging, push a 3-way diffed delta back. Prod always wins. Preview before every sync.
- * Version: 0.5.5
+ * Version: 0.5.6
  * Author: Yojahny Chavez
  * License: GPL-2.0-or-later
  * Text Domain: ix-wp-envsync
@@ -11,7 +11,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'IXES_VERSION', '0.5.5' );
+define( 'IXES_VERSION', '0.5.6' );
 define( 'IXES_FILE', __FILE__ );
 define( 'IXES_PATH', plugin_dir_path( __FILE__ ) );
 define( 'IXES_URL', plugin_dir_url( __FILE__ ) );
@@ -48,6 +48,12 @@ register_activation_hook( __FILE__, function () {
 } );
 
 add_action( 'rest_api_init', [ 'IXES_Rest', 'register' ] );
+// A hub request through an HTTP Basic Auth proxy arrives with PHP_AUTH_USER set to the proxy's user.
+// WordPress would try it as an application password and fail the request with 401 before EnvSync
+// checks its token, so application passwords are skipped for requests that carry an EnvSync token.
+add_filter( 'application_password_is_api_request', function ( $is_api ) {
+	return isset( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ) ? false : $is_api;
+} );
 add_action( 'init', function () {
 	if ( defined( 'WP_CLI' ) && WP_CLI ) WP_CLI::add_command( 'envsync', 'IXES_CLI' );
 } );

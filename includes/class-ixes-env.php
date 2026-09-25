@@ -19,6 +19,7 @@ class IXES_Env {
 		if ( ! preg_match( '/^[a-z0-9_-]+$/', $env['name'] ) ) throw new InvalidArgumentException( 'bad name' );
 		if ( ! IXES_Auth::https_ok( $env['url'] ) ) throw new InvalidArgumentException( 'url must be https (or define ENVSYNC_ALLOW_HTTP)' );
 		if ( ! preg_match( '/^[0-9a-f]{64}$/', $env['token'] ) ) throw new InvalidArgumentException( 'token must be 64 hex chars' );
+		if ( isset( $env['basic_auth'] ) && strpos( (string) $env['basic_auth'], ':' ) === false ) throw new InvalidArgumentException( 'basic-auth must be user:pass' );
 		if ( ! in_array( $env['label'], [ 'prod', 'staging', 'local' ], true ) ) throw new InvalidArgumentException( 'label must be prod|staging|local' );
 		$env['url'] = untrailingslashit( $env['url'] );
 		$all = self::all();
