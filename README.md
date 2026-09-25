@@ -224,13 +224,29 @@ What `--force` does when there is no baseline:
 |---|---|
 | Only on local | Inserted on the remote |
 | On both sides, different | **Local overwrites the remote** |
-| Only on the remote | Kept. Nothing is deleted |
+| Only on the remote | Kept. Nothing is deleted, unless you add `--mirror` |
+
+### Replacing what the remote already has: `--mirror`
+
+When the remote is not empty but local must win entirely (a staging site full of old test content and unused uploads, say), add `--mirror` to the first deploy. Within the scope, rows and files that exist only on the remote are deleted, so the remote ends up equal to local:
+
+```bash
+wp envsync push staging --force --mirror --dry-run   # the delete column lists what goes
+wp envsync push staging --force --mirror
+```
+
+- It only works with `--force` and no baseline. Once a baseline exists, what only the remote has is its own work and the remote wins, so `--mirror` is refused.
+- The scope limits it. `--only=db,uploads` deletes rows and uploads, never themes or plugins.
+- Orders, users and posts that only the remote has are deleted too. Read the dry run's delete counts before you push.
+- Tables that exist only on the remote are left alone (never dropped). Rows in tables without a primary key are kept, with a warning.
+- Excluded paths and options (the remote's token, `siteurl`/`home`, cron, transients) are never deleted.
+- The pre-push snapshot holds everything deleted, so `rollback` brings it back.
 
 Check these before you push:
 
 - **Users come from local.** Local user #1 replaces the remote's admin, so afterwards you log in with your **local** username and password.
 - **Dev plugins go too.** Query Monitor, debug tools and the like are copied and activated. Deactivate them locally first, or narrow the push, for example `--only=db,themes,uploads`.
-- **The remote should be empty.** Nothing is deleted, so pushing onto an old live site leaves its old posts and pages next to yours. To replace an existing site, reinstall WordPress on it first.
+- **The remote should be empty.** Nothing is deleted, so pushing onto an old live site leaves its old posts and pages next to yours. To replace an existing site, reinstall WordPress on it first, or add [`--mirror`](#replacing-what-the-remote-already-has---mirror).
 - **What stays on the remote:** its own `siteurl`/`home`, cron, transients and EnvSync token. Local URLs in content are rewritten to the remote's URL. `wp-config.php`, `.htaccess`, caches, `.git/` and `node_modules/` are never sent.
 - **Big uploads are fine.** Files go up in resumable chunks. If the push dies, run `wp envsync status prod`; it tells you what to do next (usually `unlock`, then push again).
 
@@ -408,6 +424,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--dry-run`, `--yes`, `--verbose` — as above. `--format=json` with `--dry-run` prints the manifest.
 - `--plan=<file>` — apply a plan saved earlier. Refuses if anything it covers has changed on the remote since.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
+- `--mirror` — with `--force` only. Also deletes, within the scope, the rows and files only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.

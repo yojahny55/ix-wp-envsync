@@ -85,7 +85,7 @@ class IXES_Report {
 		global $wpdb;
 		$tables = []; $conflicts = [];
 		foreach ( $plan['tables'] as $name => $t ) {
-			$tables[ $name ] = [ 'push' => count( $t['push'] ) + count( $t['set_insert'] ), 'insert' => count( $t['insert'] ), 'delete' => count( $t['delete'] ), 'prod_wins' => count( $t['conflict'] ), 'kept_prod' => count( $t['kept'] ) ];
+			$tables[ $name ] = [ 'push' => count( $t['push'] ) + count( $t['set_insert'] ), 'insert' => count( $t['insert'] ), 'delete' => count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), 'prod_wins' => count( $t['conflict'] ), 'kept_prod' => count( $t['kept'] ) ];
 			foreach ( $t['conflict'] as $id ) $conflicts[] = [ 'type' => 'row', 'table' => $name, 'id' => (string) $id, 'title' => (string) ( $plan['conflict_detail'][ $name ][ $id ] ?? '' ) ];
 		}
 		foreach ( $plan['files']['conflict'] as $rel ) $conflicts[] = [ 'type' => 'file', 'path' => $rel ];
