@@ -386,10 +386,16 @@ class IXES_CLI {
 	public function push( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
 		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
+		$saved = null;
 		if ( ! empty( $assoc['plan'] ) ) {
 			$saved = json_decode( file_get_contents( $assoc['plan'] ), true );
 			if ( ! $saved ) WP_CLI::error( 'cannot read plan file' );
+		}
+		global $wpdb;
+		// replaying a saved plan re-checks it in the scope it was made with, not the environment's current default
+		$scope = $saved ? IXES_Scope::from_array( (array) ( $saved['scope'] ?? [] ), $wpdb->prefix ) : $this->scope( $assoc, $env );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope ) );
+		if ( $saved ) {
 			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" );
 			$plan = $saved;
 		}
