@@ -97,4 +97,22 @@ class ScopeTest extends TestCase {
 		$this->expectException( InvalidArgumentException::class );
 		IXES_Scope::default_only( 'db,media' );
 	}
+	public function test_is_env_default_matches_the_default_only_in_any_order() {
+		$env = [ 'default_only' => 'db,uploads' ];
+		$this->assertTrue( IXES_Scope::from_assoc( [ 'only' => 'uploads,db' ], 'wp_' )->is_env_default( $env ) );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'db' ], 'wp_' )->is_env_default( $env ) );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'db,uploads', 'tables' => 'posts' ], 'wp_' )->is_env_default( $env ) );
+		$this->assertFalse( IXES_Scope::from_assoc( [], 'wp_' )->is_env_default( $env ) );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'db' ], 'wp_' )->is_env_default( [] ) );
+	}
+	public function test_covers() {
+		$base = IXES_Scope::from_array( [ 'only' => [ 'db', 'uploads' ] ], 'wp_' );
+		$this->assertTrue( $base->covers( IXES_Scope::from_assoc( [ 'only' => 'db,uploads' ], 'wp_' ) ) );
+		$this->assertTrue( $base->covers( IXES_Scope::from_assoc( [ 'tables' => 'posts' ], 'wp_' ) ) );
+		$this->assertFalse( $base->covers( IXES_Scope::from_assoc( [ 'only' => 'themes' ], 'wp_' ) ) );
+		$this->assertFalse( $base->covers( IXES_Scope::from_assoc( [ 'paths' => 'uploads/2026/' ], 'wp_' ) ) ); // inferred 'files' reaches beyond uploads
+		$this->assertFalse( $base->covers( IXES_Scope::from_assoc( [], 'wp_' ) ) );
+		$this->assertTrue( IXES_Scope::from_array( [ 'only' => [ 'files' ] ], 'wp_' )->covers( IXES_Scope::from_assoc( [ 'only' => 'plugins' ], 'wp_' ) ) );
+		$this->assertTrue( IXES_Scope::from_array( [], 'wp_' )->covers( IXES_Scope::from_assoc( [], 'wp_' ) ) );
+	}
 }

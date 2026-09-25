@@ -32,7 +32,7 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
       "url": "https://client.com", "label": "prod",
       "reachable": true, "error": null,
       "remote_version": "0.6.2", "version_ok": true, "auth_via": "authorization",
-      "baseline": { "created_at": 1789192836, "partial_at": null, "partial_scope": null, "age_days": 2 },
+      "baseline": { "created_at": 1789192836, "partial_at": null, "partial_scope": null, "scope": null, "age_days": 2 },
       "interrupted_pull": null,
       "remote_lock": null,
       "remote_posts": 218,
@@ -101,7 +101,7 @@ The usual release path is to push to staging first, then to production.
 | Client's content, keep your theme | `pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
 | Media only | `pull prod --only=uploads` |
 
-An environment can carry a default scope (`env add <env> --only=db,uploads`, shown in `env list`), typically when code travels by git. With no scope flag the command prints `scope: … (default for <env>; --only=all syncs everything)` first. Respect it: do not add `--only=all` unless the user asks to sync code too.
+An environment can carry a default scope (`env add <env> --only=db,uploads`, shown in `env list`), typically when code travels by git. With no scope flag the command prints `scope: … (default for <env>; --only=all syncs everything)` first. Respect it: do not add `--only=all` unless the user asks to sync code too. A pull in the default scope records the baseline (`baseline.scope` shows it, e.g. `db,uploads`); a diff or push outside that scope fails with `baseline_scope` until a `pull --only=all`.
 
 Rules:
 - `push` never syncs more than the `diff` you ran with the same flags. Run `diff` with exactly the flags you will push with.

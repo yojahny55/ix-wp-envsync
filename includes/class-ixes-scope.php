@@ -61,6 +61,26 @@ class IXES_Scope {
 	public function to_array() { return [ 'only' => $this->only, 'tables' => $this->tables, 'paths' => $this->paths ]; }
 
 	public function is_full() { return ! $this->only && ! $this->tables && ! $this->paths; }
+	/** True when this is exactly the environment's default --only, with no --tables or --paths: a pull in it records a baseline. */
+	public function is_env_default( array $env ) {
+		$default = self::list( $env['default_only'] ?? '' );
+		if ( ! $default || ! $this->only || $this->tables || $this->paths ) return false;
+		$a = $this->only; $b = $default; sort( $a ); sort( $b );
+		return $a === $b;
+	}
+
+	/** Whether everything $in can touch lies inside this scope ('files' covers uploads, themes, plugins and mu-plugins). */
+	public function covers( IXES_Scope $in ) {
+		if ( $this->is_full() ) return true;
+		if ( $in->is_full() || $this->tables || $this->paths ) return false;
+		foreach ( $in->only as $o ) {
+			if ( in_array( $o, $this->only, true ) ) continue;
+			if ( isset( self::FOLDER[ $o ] ) && in_array( 'files', $this->only, true ) ) continue;
+			return false;
+		}
+		return true;
+	}
+
 	public function db_wanted() { return ! $this->only || in_array( 'db', $this->only, true ); }
 	public function files_wanted() {
 		if ( ! $this->only ) return true;

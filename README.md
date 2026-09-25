@@ -283,6 +283,8 @@ scope: db,uploads (default for staging; --only=all syncs everything)
 
 An explicit flag always wins, and `--only=all` syncs everything for that one command. `env list` shows each environment's default. `wp envsync env add staging --only=` removes it. Environments without one sync everything, as before.
 
+A `pull` in exactly the default scope records the baseline for that scope, so the normal diff and push loop works without `--force`. `status` shows it as `baseline 2026-09-26 (0 days, db,uploads)`. A `diff` or `push` that reaches outside the baseline's scope (`--only=themes`, `--only=all`) is refused until you pull with `--only=all`. If a full baseline already exists (from a pull with `--only=all`), a default-scope pull only refreshes part of it and never narrows it. A pull with any other narrower scope also refreshes only part of the baseline, as before.
+
 ### If a pull is interrupted
 
 If `pull` drops partway through, just run the same command again. It picks up where it left off; answer `y` when it asks to resume. `--fresh` throws that progress away and starts the pull over instead.

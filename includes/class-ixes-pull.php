@@ -100,7 +100,13 @@ class IXES_Pull {
 		$partial = ! $scope->is_full();
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		if ( $state === null ) {
-			if ( ! $partial ) $bl->reset();
+			// a pull in the environment's default scope is that environment's whole sync, so it records a baseline for that
+			// scope, unless a full baseline exists: then it only refreshes part of it, as any narrower pull does
+			$full = $bl->exists() && (string) $bl->meta( 'baseline_scope' ) === '';
+			$as_baseline = ! $partial || ( $scope->is_env_default( $env ) && ! $full );
+			if ( $as_baseline ) $bl->reset();
+			// decided once: a resumed pull finishes the way it started, whatever the environment says by then
+			$bl->meta( 'pull_as_baseline', $as_baseline ? 'yes' : 'no' );
 			$path  = IXES_Planner::save( $plan, 'pull' );
 			$state = IXES_PullState::start( $env['name'], $path, (string) ( $plan['info']['plugin'] ?? '' ), (array) ( $plan['scope'] ?? [] ) );
 		}
@@ -189,8 +195,9 @@ class IXES_Pull {
 
 		if ( $options_in ) IXES_Transfer::after_import( IXES_Env::local_url(), IXES_Env::local_abspath() );
 		IXES_Transfer::offset_auto_increment( $done );
-		if ( $partial ) { $bl->meta( 'partial_at', time() ); $bl->meta( 'partial_scope', $scope->label() ); }
-		else $bl->commit();
+		$as_baseline = $bl->meta( 'pull_as_baseline' ) !== null ? $bl->meta( 'pull_as_baseline' ) === 'yes' : ! $partial;
+		if ( $as_baseline ) { $bl->meta( 'baseline_scope', $partial ? implode( ',', $scope->to_array()['only'] ) : '' ); $bl->commit(); }
+		else { $bl->meta( 'partial_at', time() ); $bl->meta( 'partial_scope', $scope->label() ); }
 		return true;
 	}
 }

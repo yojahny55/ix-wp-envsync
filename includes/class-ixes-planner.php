@@ -15,6 +15,9 @@ class IXES_Planner {
 		$bl   = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		$two_way = ! $bl->exists();
 		if ( ! $two_way && $bl->meta( 'algo' ) !== $algo ) return new WP_Error( 'algo', 'baseline hash algo differs; pull again' );
+		// a baseline recorded in the environment's default scope says nothing about what lies outside it
+		$bs = $two_way ? '' : (string) $bl->meta( 'baseline_scope' );
+		if ( $bs !== '' && ! IXES_Scope::from_array( [ 'only' => explode( ',', $bs ) ], $wpdb->prefix )->covers( $scope ) ) return new WP_Error( 'baseline_scope', "the {$env['name']} baseline covers only {$bs}: keep the scope inside it, or pull with --only=all first" );
 		// with a baseline, what only the remote has is the remote's own work, and the remote wins
 		if ( $mirror && ! $two_way ) return new WP_Error( 'mirror_baseline', "--mirror is only for a first deploy: {$env['name']} has a baseline, so what only it has is its own work and stays" );
 
