@@ -251,6 +251,22 @@ You don't always need the whole thing. `--only=`, `--tables=` and `--paths=` nar
 
 A `push` never syncs more than the `diff` you last checked with the same flags. Always `diff` with the flags you're about to `push` with.
 
+### A default scope per environment (optional)
+
+When a site's themes and plugins travel by git, you can tell an environment to sync only the database and media by default:
+
+```bash
+wp envsync env add staging --only=db,uploads
+```
+
+From then on `pull`, `diff` and `push` for `staging` use that scope when you pass no `--only`, `--tables` or `--paths`, and say so in their first line:
+
+```
+scope: db,uploads (default for staging; --only=all syncs everything)
+```
+
+An explicit flag always wins, and `--only=all` syncs everything for that one command. `env list` shows each environment's default. `wp envsync env add staging --only=` removes it. Environments without one sync everything, as before.
+
 ### If a pull is interrupted
 
 If `pull` drops partway through, just run the same command again. It picks up where it left off; answer `y` when it asks to resume. `--fresh` throws that progress away and starts the pull over instead.
@@ -345,6 +361,7 @@ Options for `add`:
 - `--exclude=<paths>` — comma-separated wp-content paths to leave out of sync entirely, e.g. `--exclude=ai1wm-backups/,cache/`. Replaces the whole list.
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
+- `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
