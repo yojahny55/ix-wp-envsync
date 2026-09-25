@@ -26,16 +26,17 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 ```json
 {
   "role": "both",
-  "hub_version": "0.4.1",
+  "hub_version": "0.6.2",
   "envs": {
     "prod": {
       "url": "https://client.com", "label": "prod",
       "reachable": true, "error": null,
-      "remote_version": "0.4.1", "version_ok": true, "auth_via": "authorization",
+      "remote_version": "0.6.2", "version_ok": true, "auth_via": "authorization",
       "baseline": { "created_at": 1789192836, "partial_at": null, "partial_scope": null, "age_days": 2 },
       "interrupted_pull": null,
       "remote_lock": null,
       "remote_posts": 218,
+      "prefix_map": null,
       "excludes_count": 7
     }
   },
@@ -51,6 +52,7 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `remote_lock`: `{job, started, age_minutes}` means a push is running or died there.
 - `interrupted_pull`: `{started, table, files_done, files_total}` means a pull stopped partway.
 - `remote_posts`: the number of rows in the remote's posts table. 5 or fewer means a fresh install.
+- `prefix_map`: `null` when both sites use the same table prefix. Otherwise a string such as `"ab12cd_ → wp_"` (remote prefix → hub prefix): the remote translates, and table names in plans are the hub's.
 
 In a push plan, `new_tables` lists tables the push will create on the remote (shown as `(new)` in the table). Mention them to the user.
 
@@ -193,6 +195,8 @@ All commands take `--path=<site>`.
 Match the error, then act. Do not retry the same command blindly. When in doubt, run `status --json` again.
 
 **`prefix_mismatch`**: the two sites use different table prefixes and the remote runs a plugin older than 0.6.0. Tell the user to upload the current zip to that site; from 0.6.0 each site keeps its own prefix and the remote translates table names, `<prefix>user_roles` and prefixed usermeta keys. Do not rename tables to work around it. `status` shows `prefix <remote> → <hub>` once both sides can translate.
+
+Known limit across prefixes: a usermeta key that starts with the hub's prefix is renamed to the remote's, even when a plugin chose that name itself (with hub `wp_`, a plugin key `wp_foo_setting` becomes `<remote>foo_setting`). WordPress cannot tell such a key from a real prefixed one. The usual effect is a dismissed notice or per-user preference reappearing on the remote. Mention it only if the user reports a per-user setting that did not carry over.
 
 **`cannot write <path>` / `cannot create directory`**: a filesystem permission problem, usually folders owned by the web-server user because plugins were installed through the browser. The message names the folder, its owner and its mode. The fix needs sudo, so give it to the user to run:
 
