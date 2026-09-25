@@ -190,7 +190,7 @@ All commands take `--path=<site>`.
 
 Match the error, then act. Do not retry the same command blindly. When in doubt, run `status --json` again.
 
-**`prefix_mismatch`**: the two sites use different table prefixes. The plugin cannot bridge that. Report it; the sites must be aligned first.
+**`prefix_mismatch`**: the two sites use different table prefixes and the remote runs a plugin older than 0.6.0. Tell the user to upload the current zip to that site; from 0.6.0 each site keeps its own prefix and the remote translates table names, `<prefix>user_roles` and prefixed usermeta keys. Do not rename tables to work around it. `status` shows `prefix <remote> → <hub>` once both sides can translate.
 
 **`cannot write <path>` / `cannot create directory`**: a filesystem permission problem, usually folders owned by the web-server user because plugins were installed through the browser. The message names the folder, its owner and its mode. The fix needs sudo, so give it to the user to run:
 
