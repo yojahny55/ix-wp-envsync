@@ -23,7 +23,7 @@ class IXES_Status {
 			'envs'          => IXES_Env::all(),
 			'baseline'      => function ( $name ) {
 				$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $name . '.sqlite' );
-				return [ 'created_at' => $bl->meta( 'created_at' ), 'partial_at' => $bl->meta( 'partial_at' ), 'partial_scope' => $bl->meta( 'partial_scope' ) ];
+				return [ 'created_at' => $bl->meta( 'created_at' ), 'partial_at' => $bl->meta( 'partial_at' ), 'partial_scope' => $bl->meta( 'partial_scope' ), 'scope' => $bl->meta( 'baseline_scope' ) ?: null ];
 			},
 			'pull_state'    => function ( $name ) {
 				$s = IXES_PullState::load( $name );
@@ -127,7 +127,7 @@ class IXES_Status {
 				$o[] = "  remote {$e['remote_version']}  hub {$r['hub_version']}  auth via {$via}" . ( $e['version_ok'] === false ? '  (remote is older)' : '' ) . ( ! empty( $e['prefix_map'] ) ? "  prefix {$e['prefix_map']}" : '' );
 			}
 			$b = $e['baseline'];
-			$line = '  baseline ' . ( $b['created_at'] ? $d( $b['created_at'] ) . " ({$b['age_days']} days)" : 'none' );
+			$line = '  baseline ' . ( $b['created_at'] ? $d( $b['created_at'] ) . " ({$b['age_days']} days" . ( ! empty( $b['scope'] ) ? ", {$b['scope']}" : '' ) . ')' : 'none' );
 			if ( $b['partial_at'] ) $line .= ' · partial ' . $d( $b['partial_at'] ) . " ({$b['partial_scope']})";
 			$o[] = $line;
 			if ( $p = $e['interrupted_pull'] ) $o[] = '  interrupted pull: started ' . $d( $p['started'] ) . ( $p['table'] ? ", stopped in {$p['table']}" : ', tables done' ) . ", {$p['files_done']}/" . ( $p['files_total'] ?? '?' ) . ' files';
