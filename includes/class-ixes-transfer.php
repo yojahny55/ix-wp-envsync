@@ -19,7 +19,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
@@ -69,6 +69,13 @@ class IXES_Transfer {
 		// never transfer environment-local options (siteurl/home/cron/transients/ixes_*)
 		if ( $table === $wpdb->options ) {
 			$rows = array_values( array_filter( $rows, function ( $r ) { return ! IXES_Env::option_excluded( $r['option_name'] ); } ) );
+		}
+		// serving a hub with another prefix: rows leave in its names, before hash_rows() hashes them
+		$map = IXES_Prefix::current();
+		if ( $map ) {
+			$bare = $map->bare( $table ); $out = [];
+			foreach ( $rows as $r ) { $t = $map->row_out( $bare, $r ); if ( $t !== null ) $out[] = $t; }
+			$rows = $out;
 		}
 		return [ 'rows' => $rows, 'next' => $next ];
 	}

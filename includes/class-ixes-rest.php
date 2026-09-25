@@ -34,17 +34,30 @@ class IXES_Rest {
 		list( $token, $via ) = IXES_Auth::token_from_headers( $authorization, $req->get_header( 'x-envsync-token' ) );
 		if ( $token === '' ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
 		self::$auth_via = $via;
+		$prefix = (string) $req->get_header( 'x-envsync-prefix' );
+		if ( $prefix !== '' && ! IXES_Prefix::valid( $prefix ) ) return new WP_Error( 'prefix', 'bad prefix', [ 'status' => 400 ] );
 		$ok = IXES_Auth::verify(
 			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
 			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),
 			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ),
-			null, (string) $req->get_header( 'x-envsync-step' )
+			null, (string) $req->get_header( 'x-envsync-step' ), $prefix
 		);
-		return $ok ? true : new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
+		if ( ! $ok ) return new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
+		global $wpdb;
+		// the hub speaks in its own table names; everything below translates through this for the rest of the request
+		IXES_Prefix::set_current( $prefix !== '' && $prefix !== $wpdb->prefix ? new IXES_Prefix( $wpdb->prefix, $prefix ) : null );
+		return true;
 	}
 
 	private static function wants_binary( WP_REST_Request $req ) {
 		return stripos( (string) $req->get_header( 'accept' ), 'application/octet-stream' ) !== false;
+	}
+
+	/** A table name from the hub, in this site's names ('' when it does not carry the hub prefix: unknown table). */
+	private static function table( $name ) {
+		$name = sanitize_text_field( (string) $name );
+		$map  = IXES_Prefix::current();
+		return $map ? (string) $map->table_in( $name ) : $name;
 	}
 
 	private static function pairs( array $p ) {
@@ -54,7 +67,7 @@ class IXES_Rest {
 
 	public static function hash_rows( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		return IXES_Transfer::hash_rows( sanitize_text_field( $p['table'] ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ), self::pairs( $p ), sanitize_key( $p['algo'] ?? 'sha1' ) );
+		return IXES_Transfer::hash_rows( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ), self::pairs( $p ), sanitize_key( $p['algo'] ?? 'sha1' ) );
 	}
 	public static function hash_files( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
@@ -62,7 +75,7 @@ class IXES_Rest {
 	}
 	public static function dump( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		return IXES_Transfer::dump( sanitize_text_field( $p['table'] ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ) );
+		return IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ) );
 	}
 	public static function file_get( WP_REST_Request $req ) {
 		$p   = $req->get_json_params();
@@ -122,6 +135,10 @@ class IXES_Rest {
 
 	private static function applier( $method, $params ) {
 		if ( ! class_exists( 'IXES_Applier' ) ) return new WP_Error( 'unavailable', 'applier missing', [ 'status' => 501 ] );
-		return call_user_func( [ 'IXES_Applier', $method ], is_array( $params ) ? $params : [] );
+		$params = is_array( $params ) ? $params : [];
+		$map = IXES_Prefix::current();
+		if ( $map && $method === 'job_start' ) $params = $map->start_in( $params );
+		if ( $map && $method === 'job_step' ) $params = $map->step_in( $params );
+		return call_user_func( [ 'IXES_Applier', $method ], $params );
 	}
 }

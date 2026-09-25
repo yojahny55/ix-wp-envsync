@@ -17,18 +17,20 @@ class IXES_Auth {
 
 	// $step: raw X-Envsync-Step header or ''. Old clients send none; the message then ends exactly
 	// as it did in 0.2 (no trailing "\n"), so their signatures keep verifying.
-	public static function sign( $token, $method, $path, $ts, $body, $step = '' ) {
+	// $prefix: the hub's table prefix when it differs from the remote's (X-Envsync-Prefix), else ''.
+	public static function sign( $token, $method, $path, $ts, $body, $step = '', $prefix = '' ) {
 		$msg = strtoupper( $method ) . "\n" . $path . "\n" . (int) $ts . "\n" . hash( 'sha256', (string) $body );
 		if ( (string) $step !== '' ) $msg .= "\n" . $step;
+		if ( (string) $prefix !== '' ) $msg .= "\nprefix:" . $prefix;
 		return hash_hmac( 'sha256', $msg, $token );
 	}
 
-	public static function verify( $token_hash, $presented_token, $method, $path, $ts, $body, $sig, $now = null, $step = '' ) {
+	public static function verify( $token_hash, $presented_token, $method, $path, $ts, $body, $sig, $now = null, $step = '', $prefix = '' ) {
 		if ( $now === null ) $now = time();
 		if ( ! is_string( $token_hash ) || ! is_string( $presented_token ) || $presented_token === '' ) return false;
 		if ( ! hash_equals( $token_hash, wp_hash( $presented_token ) ) ) return false;
 		if ( abs( $now - (int) $ts ) > self::SKEW ) return false;
-		$expected = self::sign( $presented_token, $method, $path, $ts, $body, $step );
+		$expected = self::sign( $presented_token, $method, $path, $ts, $body, $step, $prefix );
 		return hash_equals( $expected, (string) $sig );
 	}
 

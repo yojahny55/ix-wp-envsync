@@ -56,4 +56,16 @@ class AuthTest extends TestCase {
 	public function test_no_token_in_either_header() {
 		$this->assertSame( [ '', null ], IXES_Auth::token_from_headers( '', '' ) );
 	}
+
+	public function test_prefix_is_signed() {
+		$sig = IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', 'ab_' );
+		$this->assertTrue( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', 'ab_' ) );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '' ), 'header stripped' );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', 'cd_' ), 'header swapped' );
+	}
+	public function test_no_prefix_keeps_the_old_signature() {
+		$msg = "POST\n/x\n1\n" . hash( 'sha256', 'b' );
+		$this->assertSame( hash_hmac( 'sha256', $msg, $this->tok ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '' ) );
+		$this->assertSame( hash_hmac( 'sha256', $msg . "\nstep", $this->tok ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', 'step' ) );
+	}
 }
