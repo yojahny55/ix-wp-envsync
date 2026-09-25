@@ -313,7 +313,7 @@ wp envsync env add staging --basic-auth=USER:PASSWORD
 wp envsync status staging
 ```
 
-The hub then sends those credentials in the `Authorization` header, and the EnvSync token travels only in `X-Envsync-Token`. Both sides need 0.5.6 or newer: an older remote lets WordPress try the proxy's user as an application password, and that fails the request with its own 401.
+The hub then sends those credentials in the `Authorization` header, and the EnvSync token travels only in `X-Envsync-Token`. Both sides need 0.5.6 or newer (0.5.7 on the hub, where the option first parses): an older remote lets WordPress try the proxy's user as an application password, and that fails the request with its own 401.
 
 **Hub and remote run different plugin versions.** `status` and `ping` compare versions and flag a remote that's behind:
 

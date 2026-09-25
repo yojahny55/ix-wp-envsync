@@ -232,7 +232,7 @@ A push that breaks the remote mid-way already rolls back through rescue by itsel
 
 **401 / "missing token"**: the token is wrong or was rotated. Ask the user for the current one from the remote's Tools → EnvSync page, then run `env add <name> --token=<new>`. You do not need the URL again.
 
-**401 with "behind HTTP Basic Auth"**: the web server itself asks for a password before WordPress loads. The token is fine. Ask the user for that user and password, then run `env add <name> --basic-auth=<user:pass>`. Both sides need 0.5.6 or newer.
+**401 with "behind HTTP Basic Auth"**: the web server itself asks for a password before WordPress loads. The token is fine. Ask the user for that user and password, then run `env add <name> --basic-auth=<user:pass>`. Both sides need 0.5.6 or newer (0.5.7 on the hub, where the option first parses).
 
 ## Excludes
 
