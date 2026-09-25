@@ -17,6 +17,9 @@ TOKEN=$(A envsync token --rotate)
 B envsync env remove prod >/dev/null 2>&1 || true
 B envsync env add prod "$IXES_A_URL" --token="$TOKEN" --label=prod
 B envsync env ping prod
+PA=$(A db prefix); PB=$(B db prefix)   # the two installs may use different table prefixes
+echo "prefixes: remote $PA, hub $PB"
+roles() { "$1" user list --role=administrator --field=user_login | head -1; }
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer 0000' "$IXES_A_URL/?rest_route=/envsync/v1/info")
 [ "$CODE" = "401" ] || die "bad token was not rejected (got $CODE)"
 
@@ -30,6 +33,7 @@ mkdir -p "$IXES_A/wp-content/themes/ixtest"; echo "/* v1 */" > "$IXES_A/wp-conte
 B envsync pull prod --fresh --yes   # --fresh: a leftover resume state from an earlier run must not be auto-resumed here
 [ "$(B post get "$PX" --field=post_content)" = "x1" ] || die "pull did not bring post X"
 [ -f "$IXES_B/wp-content/themes/ixtest/style.css" ] || die "pull did not bring theme file"
+[ -n "$(roles B)" ] || die "no administrator on the hub after the pull (user_roles or capabilities not translated)"
 
 # 2. diverge: B edits X + theme, A edits Y
 B post update "$PX" --post_content="x2" >/dev/null
@@ -149,20 +153,20 @@ wp --path="$IXES_A" config delete ENVSYNC_TEST_DROP_AUTHORIZATION >/dev/null
 sleep 3
 
 # 13. a plugin's own table exists only on the hub: push creates it, fills it, and rollback drops it; many small files go in batches
-A db query "DROP TABLE IF EXISTS wp_ixdemo_log" >/dev/null; B db query "DROP TABLE IF EXISTS wp_ixdemo_log" >/dev/null
-B db query "CREATE TABLE wp_ixdemo_log ( id bigint(20) unsigned NOT NULL AUTO_INCREMENT, msg varchar(50) NOT NULL, PRIMARY KEY (id) ) ENGINE=InnoDB" >/dev/null
-B db query "INSERT INTO wp_ixdemo_log (msg) VALUES ('one'),('two'),('three')" >/dev/null
+A db query "DROP TABLE IF EXISTS ${PA}ixdemo_log" >/dev/null; B db query "DROP TABLE IF EXISTS ${PB}ixdemo_log" >/dev/null
+B db query "CREATE TABLE ${PB}ixdemo_log ( id bigint(20) unsigned NOT NULL AUTO_INCREMENT, msg varchar(50) NOT NULL, PRIMARY KEY (id) ) ENGINE=InnoDB" >/dev/null
+B db query "INSERT INTO ${PB}ixdemo_log (msg) VALUES ('one'),('two'),('three')" >/dev/null
 mkdir -p "$IXES_B/wp-content/themes/ixtest/parts"
 for i in $(seq 1 150); do echo "/* part $i */" > "$IXES_B/wp-content/themes/ixtest/parts/p$i.css"; done
-B envsync diff prod | grep -q "wp_ixdemo_log (new)" || die "new table not shown in the plan"
+B envsync diff prod | grep -q "${PB}ixdemo_log (new)" || die "new table not shown in the plan"
 B envsync push prod --yes >/dev/null || die "push with a new table failed"
-[ "$(A db query "SELECT COUNT(*) FROM wp_ixdemo_log" --skip-column-names)" = "3" ] || die "new table not created and filled on the remote"
+[ "$(A db query "SELECT COUNT(*) FROM ${PA}ixdemo_log" --skip-column-names)" = "3" ] || die "new table not created and filled on the remote"
 [ "$(ls "$IXES_A/wp-content/themes/ixtest/parts" | wc -l)" = "150" ] || die "batched small files missing on the remote"
 cmp "$IXES_A/wp-content/themes/ixtest/parts/p77.css" "$IXES_B/wp-content/themes/ixtest/parts/p77.css" || die "batched file content differs"
 B envsync rollback prod --yes >/dev/null
-[ -z "$(A db query "SHOW TABLES LIKE 'wp_ixdemo_log'" --skip-column-names)" ] || die "rollback did not drop the created table"
+[ -z "$(A db query "SHOW TABLES LIKE '${PA}ixdemo_log'" --skip-column-names)" ] || die "rollback did not drop the created table"
 [ -e "$IXES_A/wp-content/themes/ixtest/parts/p1.css" ] && die "rollback left batched files behind"
-B db query "DROP TABLE wp_ixdemo_log" >/dev/null; rm -rf "$IXES_B/wp-content/themes/ixtest/parts"
+B db query "DROP TABLE ${PB}ixdemo_log" >/dev/null; rm -rf "$IXES_B/wp-content/themes/ixtest/parts"
 
 # 13b. a plugin's own folder named like a default exclude (cache/) still syncs
 mkdir -p "$IXES_B/wp-content/plugins/ixnest/src/cache"; echo "<?php // nested" > "$IXES_B/wp-content/plugins/ixnest/src/cache/load.php"
@@ -173,16 +177,16 @@ rm -rf "$IXES_B/wp-content/plugins/ixnest" "$IXES_A/wp-content/plugins/ixnest"
 # 13c. the remote holds a transient at the option_id of a new hub option: the option must still arrive (not "changed on prod")
 B option delete ixcollide >/dev/null 2>&1 || true; A option delete ixcollide >/dev/null 2>&1 || true
 B option add ixcollide "hub-value" >/dev/null
-CID=$(B db query "SELECT option_id FROM wp_options WHERE option_name='ixcollide'" --skip-column-names)
-A db query "DELETE FROM wp_options WHERE option_id=$CID" >/dev/null
-A db query "INSERT INTO wp_options (option_id, option_name, option_value, autoload) VALUES ($CID, '_transient_ixcollide_probe', 'remote-transient', 'no')" >/dev/null
+CID=$(B db query "SELECT option_id FROM ${PB}options WHERE option_name='ixcollide'" --skip-column-names)
+A db query "DELETE FROM ${PA}options WHERE option_id=$CID" >/dev/null
+A db query "INSERT INTO ${PA}options (option_id, option_name, option_value, autoload) VALUES ($CID, '_transient_ixcollide_probe', 'remote-transient', 'no')" >/dev/null
 OUT=$(B envsync push prod --yes 2>&1) || die "push with an option-id collision failed:\n$OUT"
 echo "$OUT" | grep -q "during push" && die "colliding option reported as changed on prod:\n$OUT"
 [ "$(A option get ixcollide)" = "hub-value" ] || die "option whose id a remote transient held did not arrive"
-[ "$(A db query "SELECT option_value FROM wp_options WHERE option_name='_transient_ixcollide_probe'" --skip-column-names)" = "remote-transient" ] || die "the remote transient was overwritten"
+[ "$(A db query "SELECT option_value FROM ${PA}options WHERE option_name='_transient_ixcollide_probe'" --skip-column-names)" = "remote-transient" ] || die "the remote transient was overwritten"
 B envsync rollback prod --yes >/dev/null
-[ -z "$(A db query "SELECT option_id FROM wp_options WHERE option_name='ixcollide'" --skip-column-names)" ] || die "rollback left the re-keyed option behind"
-A db query "DELETE FROM wp_options WHERE option_name='_transient_ixcollide_probe'" >/dev/null; B option delete ixcollide >/dev/null
+[ -z "$(A db query "SELECT option_id FROM ${PA}options WHERE option_name='ixcollide'" --skip-column-names)" ] || die "rollback left the re-keyed option behind"
+A db query "DELETE FROM ${PA}options WHERE option_name='_transient_ixcollide_probe'" >/dev/null; B option delete ixcollide >/dev/null
 
 # 14. a plugin that fatals on every web request (not under WP-CLI)
 BOOM='<?php
@@ -210,4 +214,6 @@ B envsync rescue prod --plugins-off --yes >/dev/null || die "rescue --plugins-of
 B envsync env ping prod >/dev/null || die "REST not back after --plugins-off"
 rm -rf "$IXES_A/wp-content/plugins/ixboom"; B plugin deactivate ixboom >/dev/null; rm -rf "$IXES_B/wp-content/plugins/ixboom"
 
+[ -n "$(roles A)" ] || die "no administrator left on the remote after the pushes"
+[ -n "$(roles B)" ] || die "no administrator left on the hub"
 echo "ALL OK"

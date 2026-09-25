@@ -98,8 +98,11 @@ class IXES_Applier {
 		global $wpdb;
 		$stale = [];
 		$pairs = self::remote_pairs( $extra );
+		$map = IXES_Prefix::current();
 		foreach ( $expect as $id => $h ) {
 			$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` = %s", $id ), ARRAY_A );
+			// the hub hashed this row in its own prefix; an orphan is invisible to it, so it is "no row"
+			if ( $row && $map ) $row = $map->row_out( $map->bare( $table ), $row );
 			// an excluded option (transient, cron, siteurl...) is invisible to the planner, so it is "no row" here too
 			if ( $row && self::excluded_option_row( $table, $row ) ) $row = null;
 			$cur = $row ? IXES_Hasher::hash_row( $row, $pairs, $algo ) : null;
@@ -193,7 +196,7 @@ class IXES_Applier {
 			$extra = array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) );
 			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo, $extra ) : [];
 			$skip = array_flip( $stale );
-			$refused = [];
+			$refused = array_values( (array) ( $p['prefix_refused'] ?? [] ) );
 			$is_options = ( $table === $wpdb->options );
 
 			if ( $kind === 'rows' ) {

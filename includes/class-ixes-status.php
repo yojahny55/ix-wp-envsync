@@ -67,7 +67,7 @@ class IXES_Status {
 	private static function env_facts( array $env, callable $info_for, array $ctx ) {
 		$now = $ctx['now'];
 		$e = [ 'url' => $env['url'], 'label' => $env['label'] ?? '', 'reachable' => false, 'error' => null, 'remote_version' => null, 'version_ok' => null, 'auth_via' => null,
-			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
+			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
 		$info = $info_for( $env );
 		if ( is_wp_error( $info ) ) { $e['error'] = $info->get_error_message(); }
 		else {
@@ -75,7 +75,10 @@ class IXES_Status {
 			$e['remote_version'] = (string) ( $info['plugin'] ?? '' );
 			$e['version_ok'] = $e['remote_version'] === '' ? null : version_compare( $e['remote_version'], $ctx['hub_version'], '>=' );
 			$e['auth_via'] = $info['auth_via'] ?? null;
-			foreach ( (array) ( $info['tables'] ?? [] ) as $t ) if ( $t['name'] === ( $info['prefix'] ?? '' ) . 'posts' ) $e['remote_posts'] = (int) $t['rows'];
+			// a remote with another prefix reports its tables in the hub's names (IXES_Client::info())
+			$names_prefix = $info['hub_prefix'] ?? ( $info['prefix'] ?? '' );
+			foreach ( (array) ( $info['tables'] ?? [] ) as $t ) if ( $t['name'] === $names_prefix . 'posts' ) $e['remote_posts'] = (int) $t['rows'];
+			if ( ! empty( $info['hub_prefix'] ) ) $e['prefix_map'] = "{$info['prefix']} → {$info['hub_prefix']}";
 			if ( ! empty( $info['lock']['job'] ) ) {
 				$st = $info['lock']['started'] ?? null;
 				$e['remote_lock'] = [ 'job' => $info['lock']['job'], 'started' => $st, 'age_minutes' => $st ? (int) floor( ( $now - $st ) / 60 ) : null ];
@@ -121,7 +124,7 @@ class IXES_Status {
 			if ( ! $e['reachable'] ) { $o[] = "  unreachable: {$e['error']}"; }
 			else {
 				$via = $e['auth_via'] === 'x-envsync-token' ? 'X-Envsync-Token' : 'Authorization';
-				$o[] = "  remote {$e['remote_version']}  hub {$r['hub_version']}  auth via {$via}" . ( $e['version_ok'] === false ? '  (remote is older)' : '' );
+				$o[] = "  remote {$e['remote_version']}  hub {$r['hub_version']}  auth via {$via}" . ( $e['version_ok'] === false ? '  (remote is older)' : '' ) . ( ! empty( $e['prefix_map'] ) ? "  prefix {$e['prefix_map']}" : '' );
 			}
 			$b = $e['baseline'];
 			$line = '  baseline ' . ( $b['created_at'] ? $d( $b['created_at'] ) . " ({$b['age_days']} days)" : 'none' );

@@ -8,6 +8,8 @@ class IXES_Planner {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
+		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix );
+		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$bl   = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		$two_way = ! $bl->exists();

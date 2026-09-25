@@ -5,6 +5,9 @@ class IXES_Client {
 	const CHUNK_JSON_SIZE = 2097152;
 
 	private $env; private $info = null; private $caps = null;
+	private $prefix_header = '';
+	/** This site's table prefix; null reads $wpdb. Set by tests. */
+	public $hub_prefix = null;
 
 	public function __construct( array $env ) { $this->env = $env; }
 
@@ -20,6 +23,8 @@ class IXES_Client {
 		$path = '/' . IXES_Rest::NS . $route;
 		$ts   = time();
 		$step = isset( $opts['step'] ) ? (string) $opts['step'] : '';
+		// rescue.php (a custom 'url') verifies without a prefix
+		$prefix = isset( $opts['url'] ) ? '' : $this->prefix_header;
 		if ( isset( $opts['raw_body'] ) ) { $raw = (string) $opts['raw_body']; $ctype = 'application/octet-stream'; }
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
@@ -27,11 +32,12 @@ class IXES_Client {
 			'Authorization' => ! empty( $this->env['basic_auth'] ) ? 'Basic ' . base64_encode( $this->env['basic_auth'] ) : 'Bearer ' . $this->env['token'],
 			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
-			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step ),
+			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix ),
 			'Content-Type'  => $ctype,
 			'Accept'        => ( $opts['accept'] ?? 'json' ) === 'binary' ? 'application/octet-stream' : 'application/json',
 		];
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
+		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
 		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? 120 ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
@@ -77,7 +83,7 @@ class IXES_Client {
 
 	public function info( $timeout = null ) {
 		if ( $this->info === null ) {
-			$this->info = $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] );
+			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] ) );
 			// remember where rescue.php lives while the remote still answers: it is needed exactly when it no longer does
 			$u = is_array( $this->info ) ? (string) ( $this->info['rescue_url'] ?? '' ) : '';
 			if ( $u !== '' && $u !== ( $this->env['rescue_url'] ?? '' ) && isset( $this->env['name'] ) && function_exists( 'update_option' ) ) {
@@ -86,6 +92,26 @@ class IXES_Client {
 			}
 		}
 		return $this->info;
+	}
+
+	/**
+	 * A remote with another table prefix that can translate: its table names become ours, and every later request
+	 * tells it our prefix. Without the cap the names stay as they are and IXES_Pull::prefix_refusal() stops the sync.
+	 */
+	private function map_prefix( $info ) {
+		$hub = $this->hub_prefix !== null ? (string) $this->hub_prefix : ( isset( $GLOBALS['wpdb']->prefix ) ? (string) $GLOBALS['wpdb']->prefix : '' );
+		if ( ! is_array( $info ) || $hub === '' || ! isset( $info['prefix'] ) || $info['prefix'] === $hub ) return $info;
+		if ( ! in_array( 'prefix_map', (array) ( $info['caps'] ?? [] ), true ) ) return $info;
+		$map = new IXES_Prefix( $hub, (string) $info['prefix'] );
+		$tables = [];
+		foreach ( (array) ( $info['tables'] ?? [] ) as $t ) {
+			$n = $map->table_in( (string) ( $t['name'] ?? '' ) );
+			if ( $n !== null ) { $t['name'] = $n; $tables[] = $t; }
+		}
+		$info['tables'] = $tables;
+		$info['hub_prefix'] = $hub;
+		$this->prefix_header = $hub;
+		return $info;
 	}
 
 	public function rescue_url() {

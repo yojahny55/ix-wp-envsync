@@ -204,4 +204,49 @@ class ClientLoopTest extends TestCase {
 		$c->script = [ function () { return self::proxy_401(); } ];
 		$this->assertStringContainsString( 'rejected the --basic-auth credentials', $c->get( '/info' )->get_error_message() );
 	}
+
+	private static function info_json( $prefix, array $caps ) {
+		return [ 'response' => [ 'code' => 200 ], 'headers' => [ 'content-type' => 'application/json' ], 'body' => json_encode( [
+			'prefix' => $prefix, 'caps' => $caps, 'url' => 'https://p.test', 'abspath' => '/srv/p/',
+			'tables' => [ [ 'name' => $prefix . 'posts', 'pk' => 'ID', 'rows' => 7 ], [ 'name' => $prefix . 'usermeta', 'pk' => 'umeta_id', 'rows' => 3 ] ],
+		] ) ];
+	}
+	private function hub( $remote_prefix, array $caps ) {
+		$c = $this->client(); $c->hub_prefix = 'wp_';
+		$c->script = [ function () use ( $remote_prefix, $caps ) { return self::info_json( $remote_prefix, $caps ); }, function () { return self::ok_json(); }, function () { return self::ok_json(); } ];
+		return $c;
+	}
+
+	public function test_other_prefix_with_cap_maps_tables_and_signs_the_prefix_header() {
+		$c = $this->hub( 'ab_', [ 'prefix_map' ] );
+		$i = $c->info();
+		$this->assertSame( [ 'wp_posts', 'wp_usermeta' ], array_column( $i['tables'], 'name' ) );
+		$this->assertSame( 'wp_', $i['hub_prefix'] );
+		$this->assertSame( 'ab_', $i['prefix'] );
+		$this->assertArrayNotHasKey( 'X-Envsync-Prefix', $c->calls[0]['headers'], '/info itself goes out before the prefix is known' );
+		$c->post( '/hash/rows', [ 'table' => 'wp_posts' ] );
+		$h = $c->calls[1]['headers'];
+		$this->assertSame( 'wp_', $h['X-Envsync-Prefix'] );
+		$body = $c->calls[1]['body'];
+		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'POST', '/envsync/v1/hash/rows', $h['X-Envsync-Ts'], $body, '', 'wp_' ), $h['X-Envsync-Sig'] );
+		$c->rescue( 'status' );
+		$this->assertArrayNotHasKey( 'X-Envsync-Prefix', $c->calls[2]['headers'], 'rescue.php verifies without a prefix' );
+	}
+	public function test_same_prefix_or_no_cap_sends_no_prefix_header() {
+		foreach ( [ [ 'wp_', [ 'prefix_map' ] ], [ 'ab_', [] ] ] as $case ) {
+			$c = $this->hub( $case[0], $case[1] );
+			$i = $c->info();
+			$this->assertArrayNotHasKey( 'hub_prefix', $i );
+			$this->assertSame( $case[0] . 'posts', $i['tables'][0]['name'] );
+			$c->get( '/ping' );
+			$this->assertArrayNotHasKey( 'X-Envsync-Prefix', $c->calls[1]['headers'] );
+		}
+	}
+	public function test_prefix_refusal() {
+		$this->assertNull( IXES_Pull::prefix_refusal( [ 'prefix' => 'wp_' ], 'wp_' ) );
+		$this->assertNull( IXES_Pull::prefix_refusal( [ 'prefix' => 'ab_', 'hub_prefix' => 'wp_' ], 'wp_' ) );
+		$e = IXES_Pull::prefix_refusal( [ 'prefix' => 'ab_' ], 'wp_' );
+		$this->assertInstanceOf( WP_Error::class, $e );
+		$this->assertStringContainsString( 'upload 0.6.0 or newer to the remote', $e->get_error_message() );
+	}
 }

@@ -43,6 +43,13 @@ class StatusTest extends TestCase {
 		$n = $this->next( $this->ctx(), $info );
 		$this->assertSame( 'wp envsync env add prod --basic-auth=<user:pass>', $n['command'] );
 	}
+	public function test_mapped_prefix_counts_posts_and_shows_the_map() {
+		$info = function ( $env ) { return [ 'plugin' => '0.4.0', 'lock' => null, 'auth_via' => 'authorization', 'url' => $env['url'], 'prefix' => 'ab_', 'hub_prefix' => 'wp_', 'tables' => [ [ 'name' => 'wp_posts', 'rows' => 7 ] ] ]; };
+		$r = IXES_Status::build( null, $info, $this->ctx() );
+		$this->assertSame( 7, $r['envs']['prod']['remote_posts'] );
+		$this->assertSame( 'ab_ → wp_', $r['envs']['prod']['prefix_map'] );
+		$this->assertStringContainsString( 'prefix ab_ → wp_', IXES_Status::render_text( $r ) );
+	}
 	public function test_old_remote_version() {
 		$n = $this->next( $this->ctx(), $this->info( [ 'plugin' => '0.3.0' ] ) );
 		$this->assertStringContainsString( 'upload the release zip', $n['command'] );

@@ -188,7 +188,7 @@ You built the site locally and production (or staging) is a fresh WordPress inst
 
 > `status` spots this case. When there is no baseline and the remote has 5 posts or fewer (a fresh install), it recommends `wp envsync push <env> --force --dry-run` instead of `pull`.
 
-1. **On the new site:** install WordPress with the **same table prefix** as your local site (the plugin stops on a mismatch). Upload the plugin zip, activate it, and copy the token from **Tools → EnvSync**.
+1. **On the new site:** install WordPress. Its table prefix may differ from your local site's (see [Different table prefixes](#different-table-prefixes)). Upload the plugin zip, activate it, and copy the token from **Tools → EnvSync**.
 2. **On your local site (the hub):** register it and check the connection:
 
    ```bash
@@ -455,6 +455,35 @@ Some things are always excluded and cannot be synced: `wp-config.php`, `.htacces
 
 ---
 
+## Different table prefixes
+
+Hosts such as Hostinger give every install a random table prefix, so your local `wp_` site and the remote often differ. Each site keeps its own prefix; nothing is renamed.
+
+`status` shows the pair when they differ:
+
+```
+  remote 0.6.0  hub 0.6.0  auth via Authorization  prefix ab12cd_ → wp_
+```
+
+The remote translates at its end. Your hub always works, plans and records its baseline in its own table names. WordPress also stores the prefix inside a few rows, and those are translated too:
+
+- the `<prefix>user_roles` option (the role definitions);
+- every usermeta key that starts with the prefix: `<prefix>capabilities`, `<prefix>user_level`, `<prefix>user-settings`, and what plugins store with `update_user_option()`.
+
+Nothing else is rewritten. If a plugin stores a table name inside one of its own settings, add a pair for it: `wp envsync env add prod --replace=ab12cd_mytable:wp_mytable`.
+
+A usermeta key that carries the *other* site's prefix, typically left over from an earlier prefix change, is left out of the sync on both sides, and a push lists it as refused.
+
+Both sides need 0.6.0 or newer. Against an older remote the hub stops before anything changes:
+
+```
+remote prefix 'ab12cd_' differs from local 'wp_'; upload 0.6.0 or newer to the remote to sync across prefixes
+```
+
+A database shared by several installs whose prefixes overlap (`wp_` and `wp_2_`) is not supported: the remote's table listing can pick up the other install's tables.
+
+---
+
 ## What is never touched
 
 Options that are specific to one environment stay put on both sides: `siteurl`, `home`, `cron`, transients and the plugin's own settings. Everything else in `wp_options`, including theme mods and plugin settings, syncs normally.
@@ -465,7 +494,7 @@ Options that are specific to one environment stay put on both sides: `siteurl`, 
 
 ## Requirements
 
-- Both sites must run the **same table prefix**. The plugin detects a mismatch and stops. Hosts that generate a random prefix need the sites aligned first.
+- Sites may use **different table prefixes** when both run 0.6.0 or newer. With an older remote, the prefixes must match; the hub stops on a mismatch before changing anything.
 - Both sites must have the **same table structure**. This version does not create missing tables.
 - HTTPS on remotes. For local development over plain HTTP, add `define( 'ENVSYNC_ALLOW_HTTP', true );` to `wp-config.php`.
 - PHP 7.4 or newer on remotes, 8.1 or newer on the hub.

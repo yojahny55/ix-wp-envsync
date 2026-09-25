@@ -19,6 +19,13 @@ class IXES_Pull {
 		return preg_replace( '#^https?://#', '', untrailingslashit( $url ) );
 	}
 
+	/** Different prefixes need a remote that translates them (0.6.0+); IXES_Client::info() marks it with hub_prefix. */
+	public static function prefix_refusal( array $info, $local ) {
+		$remote = (string) ( $info['prefix'] ?? '' );
+		if ( $remote === (string) $local || ! empty( $info['hub_prefix'] ) ) return null;
+		return new WP_Error( 'prefix_mismatch', "remote prefix '{$remote}' differs from local '{$local}'; upload 0.6.0 or newer to the remote to sync across prefixes" );
+	}
+
 	public static function excludes( array $env ) {
 		return array_merge( IXES_Env::default_excludes(), (array) $env['excludes'] );
 	}
@@ -42,7 +49,8 @@ class IXES_Pull {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
-		if ( $info['prefix'] !== $wpdb->prefix ) return new WP_Error( 'prefix_mismatch', "remote prefix '{$info['prefix']}' differs from local '{$wpdb->prefix}'; v0.1 requires identical prefixes" );
+		$refused = self::prefix_refusal( $info, $wpdb->prefix );
+		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );
 		$remote = []; $local = []; $transfer = []; $delete = []; $sizes = [];
