@@ -136,7 +136,7 @@ class IXES_Transfer {
 				$base = self::safe_rel( $base );
 				if ( $base === null ) continue;
 				$base = untrailingslashit( $base ) . '/';
-				if ( ! is_dir( $root . '/' . $base ) || self::excluded_path( $base, $excludes ) ) continue;
+				if ( ! is_dir( $root . '/' . $base ) || self::excluded_path( $base, $excludes ) || self::through_link( $root, $base ) ) continue;
 			}
 			$it = new RecursiveIteratorIterator( new RecursiveCallbackFilterIterator(
 				new RecursiveDirectoryIterator( $root . ( $base === '' ? '' : '/' . untrailingslashit( $base ) ), FilesystemIterator::SKIP_DOTS ),
@@ -153,6 +153,16 @@ class IXES_Transfer {
 		$out = array_values( array_unique( $out ) );
 		sort( $out, SORT_STRING );
 		return $out;
+	}
+
+	/** Whether $rel (under $root) passes through a symlinked folder, which a walk of all of wp-content never enters. */
+	private static function through_link( $root, $rel ) {
+		$p = $root;
+		foreach ( explode( '/', untrailingslashit( $rel ) ) as $part ) {
+			$p .= '/' . $part;
+			if ( is_link( $p ) ) return true;
+		}
+		return false;
 	}
 
 	public static function file_manifest( $cursor, $limit, array $excludes, $algo, $with_sizes = false, array $roots = [] ) {

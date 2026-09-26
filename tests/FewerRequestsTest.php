@@ -130,4 +130,16 @@ class FewerRequestsTest extends TestCase {
 		// excludes still apply inside a root, and a root that climbs out of wp-content is ignored
 		$this->assertSame( [ 'uploads/b.jpg' ], IXES_Transfer::all_files( [ 'uploads/2026/' ], [ 'uploads/', '../' ] ) );
 	}
+
+	public function test_a_root_through_a_symlinked_folder_is_walked_as_the_full_walk_would_not() {
+		if ( ! defined( 'WP_CONTENT_DIR' ) ) define( 'WP_CONTENT_DIR', sys_get_temp_dir() . '/ixes-wpc-' . getmypid() );
+		$d = WP_CONTENT_DIR;
+		@mkdir( "$d/real/sub", 0777, true ); file_put_contents( "$d/real/sub/a.php", 'a' );
+		@mkdir( "$d/plugins", 0777, true ); if ( ! is_link( "$d/plugins/linked" ) ) symlink( "$d/real", "$d/plugins/linked" );
+		$full = array_values( array_filter( IXES_Transfer::all_files( [] ), function ( $r ) { return strpos( $r, 'plugins/' ) === 0; } ) );
+		$this->assertNotContains( 'plugins/linked/sub/a.php', $full );
+		$this->assertSame( [], IXES_Transfer::all_files( [], [ 'plugins/linked/' ] ) );
+		$this->assertSame( [], IXES_Transfer::all_files( [], [ 'plugins/linked/sub/' ] ) );
+		$this->assertSame( $full, IXES_Transfer::all_files( [], [ 'plugins/' ] ) );
+	}
 }
