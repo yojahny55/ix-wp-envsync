@@ -238,7 +238,7 @@ wp envsync push staging --force --mirror
 - It only works with `--force` and no baseline. Once a baseline exists, what only the remote has is its own work and the remote wins, so `--mirror` is refused.
 - The scope limits it. `--only=db,uploads` deletes rows and uploads, never themes or plugins.
 - Orders, users and posts that only the remote has are deleted too. Read the dry run's delete counts before you push.
-- Tables that exist only on the remote are left alone (never dropped). Rows in tables without a primary key are kept, with a warning.
+- Tables that exist only on the remote are dropped too, each one checked and copied first (see [Dropped tables](#dropped-tables)). Rows in tables without a primary key are deleted when both sides run 0.6.2 or newer; against an older remote they are kept, with a warning.
 - Excluded paths and options (the remote's token, `siteurl`/`home`, cron, transients) are never deleted.
 - The pre-push snapshot holds everything deleted, so `rollback` brings it back.
 
@@ -404,6 +404,7 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
 
@@ -426,7 +427,9 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--dry-run`, `--yes`, `--verbose` — as above. `--format=json` with `--dry-run` prints the manifest.
 - `--plan=<file>` — apply a plan saved earlier. Refuses if anything it covers has changed on the remote since.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
-- `--mirror` — with `--force` only. Also deletes, within the scope, the rows and files only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
+- `--mirror` — with `--force` only. Also deletes, within the scope, the rows, files and tables only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
+- `--drop-tables=<tables>` — comma list of tables only the remote has (with or without the prefix) to drop there although the baseline does not know them. See [Dropped tables](#dropped-tables).
+- `--backup-dir=<dir>` — where the hub writes its `.sql` copy of every table the push drops.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
@@ -440,6 +443,33 @@ Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a firs
 Options are matched by row ID, but on a fresh remote those IDs are often taken by WordPress's own transients. A pushed option whose ID is held by a transient or other excluded option there is placed by its name instead. It is not reported as "changed on prod". Upgrade both sides to 0.5.3 before a first deploy.
 
 Tables that exist only on your site, typically ones a plugin creates for itself (Action Scheduler, security logs, SEO indexes), are created on the remote first and marked `(new)` in the plan. Plugins switch on as the last step, after their tables and data are in place. `rollback` drops any table the push created. Visitors see the maintenance page. Requests from the server itself (`127.0.0.1`, `::1`) are let through, so a Docker or Coolify health check stays green during a push.
+
+### Dropped tables
+
+A table dropped on one side is dropped on the other at the next sync. From 0.7.0 the baseline records every table a pull saw, empty ones included, so a table that has since gone from one side is recognised:
+
+| Table | Push | Pull |
+|---|---|---|
+| In the baseline, gone locally, unchanged on the remote | Dropped on the remote | — |
+| In the baseline, gone from the remote, unchanged locally | — | Dropped locally |
+| In the baseline, gone from one side, **changed** on the other since the baseline | Kept, with a warning (that side's work wins) | Kept, with a warning |
+| Only on the remote, unknown to the baseline | Kept, unless named with `--drop-tables` or on a `--mirror` first deploy | Not touched |
+
+The plan lists them under `DROP TABLES`. Nothing is dropped until it passes every check, on the side that drops it, just before the drop:
+
+- **No live code names it.** The active plugins, the active theme and its parent, and mu-plugins are searched for the table name without its prefix. A match keeps the table, and the warning names the file.
+- **Nothing in the database depends on it.** A foreign key from another table, a view or another table's trigger keeps it. WordPress core tables are never dropped.
+- **It still holds the rows the plan saw.** A table written to after the plan was made is kept.
+
+Each table is backed up twice before the drop: a `.sql` copy on the hub (`--backup-dir`, else `ENVSYNC_BACKUP_DIR`, else `backups/` in the plugin's storage folder), and a snapshot in the remote's job folder that `rollback` uses to recreate it. If either copy fails, the table stays.
+
+The home page, `/wp-login.php` and the REST index are fetched before and after the push. If one of them worked before and fails afterwards (5xx or WordPress's critical-error page), the push rolls back the whole job and the tables come back. If the drop breaks the REST API as well, the rollback goes through `rescue.php`. A crash inside a must-use plugin stops `rescue.php` too, and then needs the host's file manager. On a pull the same check runs against the local site, and the dropped tables are recreated from their copies.
+
+A baseline recorded before 0.7.0 only knows tables that had rows. Pull once with 0.7.0 on both sides to record the rest, or name leftovers with `--drop-tables`:
+
+```bash
+wp envsync push staging --drop-tables=wpda_logs,wpforms_tasks_meta --dry-run
+```
 
 ### `wp envsync unlock <env>`
 

@@ -214,6 +214,89 @@ B envsync rescue prod --plugins-off --yes >/dev/null || die "rescue --plugins-of
 B envsync env ping prod >/dev/null || die "REST not back after --plugins-off"
 rm -rf "$IXES_A/wp-content/plugins/ixboom"; B plugin deactivate ixboom >/dev/null; rm -rf "$IXES_B/wp-content/plugins/ixboom"
 
+# 15. a table dropped on the hub since the baseline is dropped on the remote: checked, copied, kept for rollback
+BK="$(mktemp -d)"
+T15="ixgone ixempty ixbusy ixnamed ixsmoke ixonly ixpull ixpullbusy"
+for T in $T15; do A db query "DROP TABLE IF EXISTS ${PA}$T" >/dev/null; B db query "DROP TABLE IF EXISTS ${PB}$T" >/dev/null; done
+rm -f "$IXES_A/wp-content/mu-plugins/ixnamed.php" "$IXES_A/wp-content/mu-plugins/ixsmoke.php"
+for T in ixgone ixbusy ixnamed ixsmoke ixpull ixpullbusy; do
+  for S in A B; do P=$([ $S = A ] && echo "$PA" || echo "$PB"); $S db query "CREATE TABLE ${P}$T ( id bigint(20) unsigned NOT NULL AUTO_INCREMENT, msg varchar(20), PRIMARY KEY (id) )" >/dev/null; done
+  A db query "INSERT INTO ${PA}$T (msg) VALUES ('kept')" >/dev/null
+done
+# a definition with SELECT and ; inside (a form plugin's enum) must still come back on rollback
+for S in A B; do P=$([ $S = A ] && echo "$PA" || echo "$PB"); $S db query "ALTER TABLE ${P}ixgone ADD kind enum('text','select') NOT NULL DEFAULT 'select' COMMENT 'a; b'" >/dev/null; done
+# an empty table leaves no rows in the baseline; it must be known anyway
+A db query "CREATE TABLE ${PA}ixempty ( id int NOT NULL, PRIMARY KEY (id) )" >/dev/null; B db query "CREATE TABLE ${PB}ixempty ( id int NOT NULL, PRIMARY KEY (id) )" >/dev/null
+B envsync pull prod --fresh --yes >/dev/null || die "pull before the drop tests failed"
+[ "$(B db query "SELECT COUNT(*) FROM ${PB}ixgone" --skip-column-names)" = "1" ] || die "test setup: pull did not fill ixgone"
+for T in ixgone ixempty ixbusy ixnamed; do B db query "DROP TABLE ${PB}$T" >/dev/null; done
+A db query "INSERT INTO ${PA}ixbusy (msg) VALUES ('remote work')" >/dev/null
+mkdir -p "$IXES_A/wp-content/mu-plugins"; echo '<?php // reads the ixnamed table' > "$IXES_A/wp-content/mu-plugins/ixnamed.php"
+OUT=$(B envsync diff prod 2>&1)
+echo "$OUT" | grep -q "DROP TABLES" || die "diff does not show the drops:\n$OUT"
+echo "$OUT" | grep -q "${PB}ixempty" || die "empty table dropped since the baseline not planned:\n$OUT"
+echo "$OUT" | grep -q "${PB}ixbusy: dropped here, but prod changed it" || die "a table the remote changed was not kept:\n$OUT"
+OUT=$(B envsync push prod --yes --backup-dir="$BK" 2>&1) || die "push with drops failed:\n$OUT"
+[ -z "$(A db query "SHOW TABLES LIKE '${PA}ixgone'" --skip-column-names)" ] || die "ixgone not dropped on the remote"
+[ -z "$(A db query "SHOW TABLES LIKE '${PA}ixempty'" --skip-column-names)" ] || die "empty ixempty not dropped on the remote"
+[ "$(A db query "SELECT COUNT(*) FROM ${PA}ixbusy" --skip-column-names)" = "2" ] || die "the remote's changed table was touched"
+[ "$(A db query "SELECT COUNT(*) FROM ${PA}ixnamed" --skip-column-names)" = "1" ] || die "a table live code names was dropped"
+echo "$OUT" | grep -q "kept table ${PB}ixnamed on prod: named in mu-plugins/ixnamed.php" || die "the code check did not say why it kept ixnamed:\n$OUT"
+BF=$(ls "$BK"/prod-*-${PA}ixgone.sql 2>/dev/null | head -1)
+[ -n "$BF" ] && grep -q "INSERT INTO \`${PA}ixgone\`" "$BF" || die "no local .sql copy of ixgone in $BK"
+B envsync rollback prod --yes >/dev/null
+[ "$(A db query "SELECT msg FROM ${PA}ixgone" --skip-column-names)" = "kept" ] || die "rollback did not bring ixgone back with its rows"
+[ -n "$(A db query "SHOW TABLES LIKE '${PA}ixempty'" --skip-column-names)" ] || die "rollback did not bring ixempty back"
+B envsync push prod --yes --backup-dir="$BK" >/dev/null || die "second push with drops failed"
+[ -z "$(A db query "SHOW TABLES LIKE '${PA}ixgone'" --skip-column-names)" ] || die "ixgone not dropped again after the rollback"
+rm -f "$IXES_A/wp-content/mu-plugins/ixnamed.php"
+
+# 15b. a plugin that builds the dropped table's name (the code check cannot see it) breaks the front end: the smoke test rolls back
+GUARD='<?php
+/*
+Plugin Name: IX Guard
+*/
+if ( defined( "WP_CLI" ) ) return;
+if ( IXGUARD_REST === false && strpos( $_SERVER["REQUEST_URI"] ?? "", "rest_route" ) !== false ) return;
+if ( strpos( $_SERVER["REQUEST_URI"] ?? "", "rescue.php" ) !== false ) return;
+add_action( "init", function () { global $wpdb; if ( ! $wpdb->get_var( "SHOW TABLES LIKE '"'"'" . $wpdb->prefix . "ix" . "smoke'"'"'" ) ) throw new Error( "table gone" ); } );'
+mkdir -p "$IXES_A/wp-content/plugins/ixguard"; echo "${GUARD/IXGUARD_REST/false}" > "$IXES_A/wp-content/plugins/ixguard/ixguard.php"
+A plugin activate ixguard >/dev/null
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" = "200" ] || die "test setup: remote broken before the drop"
+B db query "DROP TABLE ${PB}ixsmoke" >/dev/null
+OUT=$(B envsync push prod --yes --backup-dir="$BK" 2>&1) && die "a push that broke the site reported success:\n$OUT"
+echo "$OUT" | grep -q "prod broke after dropping .*${PB}ixsmoke" || die "no smoke-test failure reported:\n$OUT"
+echo "$OUT" | grep -q "the dropped tables are back" || die "smoke failure did not roll back:\n$OUT"
+[ "$(A db query "SELECT COUNT(*) FROM ${PA}ixsmoke" --skip-column-names)" = "1" ] || die "ixsmoke not restored after the smoke failure"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" = "200" ] || die "remote still broken after the smoke rollback"
+# 15b2. the same plugin also breaks REST: the push cannot finish, and rescue.php (no plugins) brings the table back
+echo "${GUARD/IXGUARD_REST/true}" > "$IXES_A/wp-content/plugins/ixguard/ixguard.php"
+OUT=$(B envsync push prod --yes --backup-dir="$BK" 2>&1) && die "a push that broke REST reported success:\n$OUT"
+echo "$OUT" | grep -q "through the rescue endpoint" || die "REST-breaking drop not rolled back through rescue:\n$OUT"
+[ "$(A db query "SELECT COUNT(*) FROM ${PA}ixsmoke" --skip-column-names)" = "1" ] || die "rescue did not restore ixsmoke"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$IXES_A_URL/")" = "200" ] || die "remote still broken after the rescue rollback"
+A plugin deactivate ixguard >/dev/null; rm -rf "$IXES_A/wp-content/plugins/ixguard"
+
+# 15c. a table only the remote has, unknown to the baseline, stays unless --drop-tables names it
+A db query "CREATE TABLE ${PA}ixonly ( id int NOT NULL, PRIMARY KEY (id) )" >/dev/null
+OUT=$(B envsync diff prod 2>&1); echo "$OUT" | grep -q "${PB}ixonly" && die "a table only the remote has was planned for a drop"
+OUT=$(B envsync push prod --yes --backup-dir="$BK" --drop-tables=nosuchtable 2>&1) && die "--drop-tables accepted an unknown table"
+echo "$OUT" | grep -q "is not a table only prod has" || die "--drop-tables did not say why it refused:\n$OUT"
+B envsync push prod --yes --backup-dir="$BK" --drop-tables=ixonly >/dev/null || die "push --drop-tables failed"
+[ -z "$(A db query "SHOW TABLES LIKE '${PA}ixonly'" --skip-column-names)" ] || die "--drop-tables did not drop ixonly"
+
+# 15d. pull: a table the remote dropped since the baseline goes here too, unless it changed here
+B envsync pull prod --fresh --yes >/dev/null || die "pull before the pull-drop test failed"
+A db query "DROP TABLE ${PA}ixpull" >/dev/null; A db query "DROP TABLE ${PA}ixpullbusy" >/dev/null
+B db query "INSERT INTO ${PB}ixpullbusy (msg) VALUES ('hub work')" >/dev/null
+OUT=$(B envsync pull prod --yes --backup-dir="$BK" 2>&1) || die "pull with drops failed:\n$OUT"
+[ -z "$(B db query "SHOW TABLES LIKE '${PB}ixpull'" --skip-column-names)" ] || die "pull did not drop ixpull on the hub"
+[ "$(B db query "SELECT COUNT(*) FROM ${PB}ixpullbusy" --skip-column-names)" = "2" ] || die "pull dropped a table the hub changed"
+echo "$OUT" | grep -q "${PB}ixpullbusy: prod dropped it, but it changed here" || die "pull did not warn about the kept table:\n$OUT"
+ls "$BK"/pull-prod-*-${PB}ixpull.sql >/dev/null 2>&1 || die "pull left no .sql copy of ixpull"
+for T in $T15; do A db query "DROP TABLE IF EXISTS ${PA}$T" >/dev/null; B db query "DROP TABLE IF EXISTS ${PB}$T" >/dev/null; done
+rm -rf "$BK"
+
 [ -n "$(roles A)" ] || die "no administrator left on the remote after the pushes"
 [ -n "$(roles B)" ] || die "no administrator left on the hub"
 echo "ALL OK"

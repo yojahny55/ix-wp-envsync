@@ -65,6 +65,7 @@ class IXES_Pull {
 			$delete   = array_keys( array_diff_key( $local, $remote ) );
 		}
 		$tables_in_scope = array_values( array_filter( $info['tables'], function ( $t ) use ( $scope ) { return $scope->table_in( $t['name'] ); } ) );
+		list( $drop_local, $drop_warn ) = self::plan_drops( $env, $info, $scope, $algo );
 		return [
 			'created' => time(),
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
@@ -74,8 +75,80 @@ class IXES_Pull {
 			'sizes' => $sizes === null ? null : array_intersect_key( $sizes, array_flip( $transfer ) ),
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
 			'scope' => $scope->to_array(),
-			'warnings' => $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ),
+			'warnings' => array_merge( $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ), $drop_warn ),
+			'drop_local' => $drop_local,
 		];
+	}
+
+	/**
+	 * Tables the remote dropped since the baseline that this side still has, unchanged: the pull drops them here too.
+	 * A table this side wrote to since the baseline stays (with a warning), as does any table the baseline does not know.
+	 * @return array [ drop_local: table => [why, pk, rows, expect], warnings ]
+	 */
+	public static function plan_drops( array $env, array $info, IXES_Scope $scope, $algo ) {
+		global $wpdb;
+		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
+		if ( ! $bl->exists() || ! $scope->db_wanted() || $bl->meta( 'algo' ) !== $algo ) return [ [], [] ];
+		$remote = array_flip( array_column( $info['tables'], 'name' ) );
+		list( , $extra_local ) = IXES_Env::extras( $env );
+		$pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		$drop = []; $warn = [];
+		foreach ( $bl->tables() as $n ) {
+			if ( isset( $remote[ $n ] ) || strpos( $n, $wpdb->prefix . 'ixes_' ) === 0 || ! $scope->table_in( $n ) || ! IXES_Transfer::valid_table( $n ) ) continue;
+			$pk  = IXES_Transfer::pk_of( $n );
+			$now = IXES_Droptable::hashes( $n, $pairs, $algo );
+			if ( is_wp_error( $now ) ) { $warn[] = "{$n}: " . $now->get_error_message(); continue; }
+			$base = $bl->rows( $n ); $cmp = $now;
+			if ( ! $pk ) { $base = array_values( array_unique( array_values( $base ) ) ); $cmp = array_values( array_unique( $now ) ); }
+			if ( ! IXES_Droptable::same_rows( $cmp, $base, (bool) $pk ) ) { $warn[] = "{$n}: {$env['name']} dropped it, but it changed here since the baseline, so it stays"; continue; }
+			$drop[ $n ] = [ 'why' => 'baseline', 'pk' => $pk, 'rows' => count( $now ), 'digest' => IXES_Droptable::digest( $now, (bool) $pk ) ];
+		}
+		return [ $drop, $warn ];
+	}
+
+	/**
+	 * Drops the plan's drop_local tables here: each one checked again, copied to a .sql file and kept in memory,
+	 * then dropped; if the site stops answering afterwards, every table dropped here comes back.
+	 * @return array [ dropped, kept (table => why), backups (table => file), restored (url => why, when rolled back) ]
+	 */
+	public static function drop_tables( array $env, array $plan, IXES_Progress $progress ) {
+		$drops = array_filter( (array) ( $plan['drop_local'] ?? [] ), function ( $n ) { return IXES_Transfer::valid_table( $n ); }, ARRAY_FILTER_USE_KEY );
+		$out = [ 'dropped' => [], 'kept' => [], 'backups' => [], 'restored' => [] ];
+		if ( ! $drops ) return $out;
+		global $wpdb;
+		list( , $extra_local ) = IXES_Env::extras( $env );
+		$pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		$get = function ( $u ) { return wp_remote_get( $u, [ 'timeout' => 30, 'sslverify' => false, 'redirection' => 3, 'headers' => [ 'Cache-Control' => 'no-cache' ] ] ); };
+		$before = IXES_Droptable::smoke( IXES_Droptable::smoke_urls( IXES_Env::local_url(), wp_generate_password( 12, false ) ), $get );
+		$blocked = IXES_Droptable::blockers( array_keys( $drops ) );
+		$dir = IXES_Droptable::backup_dir( (string) ( $plan['backup_dir'] ?? '' ) );
+		$label = 'pull-' . $env['name'] . '-' . date( 'Ymd-His' );
+		$snaps = [];
+		foreach ( $drops as $n => $d ) {
+			if ( ! empty( $blocked[ $n ] ) ) { $out['kept'][ $n ] = implode( '; ', $blocked[ $n ] ); continue; }
+			$now = IXES_Droptable::hashes( $n, $pairs, $plan['algo'] );
+			if ( is_wp_error( $now ) || IXES_Droptable::digest( $now, (bool) $d['pk'] ) !== (string) $d['digest'] ) { $out['kept'][ $n ] = 'changed since the plan'; continue; }
+			// the .sql is the person's copy; the .jsonl is what brings the table back if the site breaks
+			$jsonl = ixes_storage_dir() . '/drops/' . $label . '-' . $n . '.jsonl';
+			$snap = IXES_Droptable::snapshot_to( $n, $jsonl, IXES_Droptable::backup_file( $dir, $label, $n ) );
+			if ( is_wp_error( $snap ) ) { $out['kept'][ $n ] = 'no copy: ' . $snap->get_error_message(); continue; }
+			$out['backups'][ $n ] = IXES_Droptable::backup_file( $dir, $label, $n );
+			if ( $wpdb->query( "DROP TABLE `{$n}`" ) === false ) { $out['kept'][ $n ] = "DROP failed: {$wpdb->last_error}"; continue; }
+			$snaps[ $n ] = $jsonl;
+			$out['dropped'][] = $n;
+			$progress->item( "drop {$n}" );
+		}
+		if ( $snaps ) {
+			$bad = IXES_Droptable::regressions( $before, IXES_Droptable::smoke( IXES_Droptable::smoke_urls( IXES_Env::local_url(), wp_generate_password( 12, false ) ), $get ) );
+			if ( $bad ) {
+				foreach ( $snaps as $n => $jsonl ) {
+					$r = IXES_Droptable::restore_file( $jsonl );
+					if ( is_wp_error( $r ) ) $out['kept'][ $n ] = 'NOT restored: ' . $r->get_error_message();
+				}
+				$out['restored'] = $bad; $out['dropped'] = [];
+			}
+		}
+		return $out;
 	}
 
 	/** Drop everything an interrupted pull left behind. */
@@ -148,6 +221,7 @@ class IXES_Pull {
 			if ( is_wp_error( $r ) ) return $r;
 			if ( $row_err ) return $row_err;
 			$state->table_done( $name );
+			$bl->add_table( $name );
 			$done[] = $name;
 			$progress->item( "{$name} ({$t['rows']} rows)" );
 		}
@@ -165,6 +239,13 @@ class IXES_Pull {
 			wp_cache_flush();
 			if ( $options_in ) $bl->meta( 'opt_active_plugins', json_encode( get_option( 'active_plugins', [] ) ) );
 		}
+
+		// tables the remote dropped since the baseline go here too, once the imported tables are live
+		$dr = self::drop_tables( $env, $plan, $progress );
+		foreach ( $dr['dropped'] as $n ) $bl->forget_table( $n );
+		foreach ( $dr['kept'] as $n => $why ) $progress->note( "warning: kept table {$n}: {$why}" );
+		if ( $dr['dropped'] ) $progress->note( 'dropped here: ' . implode( ', ', $dr['dropped'] ) . '; copies: ' . implode( ', ', $dr['backups'] ) );
+		if ( $dr['restored'] ) $progress->note( 'warning: the site broke after dropping tables (' . implode( ', ', array_map( function ( $u, $w ) { return "{$u}: {$w}"; }, array_keys( $dr['restored'] ), $dr['restored'] ) ) . '); they were restored. Copies: ' . implode( ', ', $dr['backups'] ) );
 
 		$skipped = [];
 		$start = (int) $state->get( 'files_done' );

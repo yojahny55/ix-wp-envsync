@@ -39,4 +39,21 @@ class BaselineTest extends TestCase {
 		$this->assertSame( [], $bl->rows( 'wp_posts' ) );
 		$this->assertSame( [ 1 => 'b' ], $bl->rows( 'wp_terms' ) );
 	}
+
+	public function test_known_tables_include_empty_ones_and_survive_reopen() {
+		$bl = new IXES_Baseline( $this->path );
+		$bl->reset();
+		$bl->write_rows( 'wp_posts', [ 1 => 'a' ] );
+		$bl->add_table( 'wp_posts' ); $bl->add_table( 'wp_empty' ); $bl->add_table( 'wp_empty' );
+		$this->assertSame( [ 'wp_empty', 'wp_posts' ], ( new IXES_Baseline( $this->path ) )->tables() );
+	}
+	public function test_forget_table_drops_rows_and_name_and_reset_clears_names() {
+		$bl = new IXES_Baseline( $this->path );
+		$bl->reset();
+		$bl->write_rows( 'wp_a', [ 1 => 'x' ] ); $bl->add_table( 'wp_a' ); $bl->add_table( 'wp_b' );
+		$bl->forget_table( 'wp_a' );
+		$this->assertSame( [ 'wp_b' ], $bl->tables() );
+		$bl->reset();
+		$this->assertSame( [], $bl->tables() );
+	}
 }
