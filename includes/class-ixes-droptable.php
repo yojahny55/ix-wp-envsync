@@ -109,7 +109,8 @@ class IXES_Droptable {
 
 	/**
 	 * The longer prefix of another WordPress install sharing this database (wp_old_, a multisite's wp_2_) that $table
-	 * belongs to, or null. Such a table starts with this site's prefix but is not this site's.
+	 * belongs to, or null. Such a table starts with this site's prefix but is not this site's. An install has options,
+	 * posts and postmeta under its prefix; one or two of those names alone is a plugin's (WP All Import's pmxi_posts).
 	 * @param string[] $all every table name in the database under $prefix
 	 */
 	public static function other_install( $table, $prefix, array $all ) {
@@ -118,7 +119,7 @@ class IXES_Droptable {
 		$rest  = substr( $table, strlen( $prefix ) );
 		for ( $i = strpos( $rest, '_' ); $i !== false; $i = strpos( $rest, '_', $i + 1 ) ) {
 			$p = $prefix . substr( $rest, 0, $i + 1 );
-			if ( isset( $names[ $p . 'options' ] ) || isset( $names[ $p . 'posts' ] ) ) return $p;
+			if ( isset( $names[ $p . 'options' ], $names[ $p . 'posts' ], $names[ $p . 'postmeta' ] ) ) return $p;
 		}
 		return null;
 	}

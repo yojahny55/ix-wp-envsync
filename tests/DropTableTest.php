@@ -94,11 +94,12 @@ class DropTableTest extends TestCase {
 	}
 
 	public function test_other_install_spots_a_longer_prefix_sharing_the_database() {
-		$all = [ 'wp_options', 'wp_posts', 'wp_old_options', 'wp_old_posts', 'wp_2_posts', 'wp_2_wpda_logs', 'wp_wpda_logs', 'wp_wc_orders' ];
+		$all = [ 'wp_options', 'wp_posts', 'wp_old_options', 'wp_old_posts', 'wp_old_postmeta', 'wp_2_options', 'wp_2_posts', 'wp_2_postmeta', 'wp_2_wpda_logs', 'wp_wpda_logs', 'wp_wc_orders', 'wp_pmxi_posts', 'wp_pmxi_hash' ];
 		$this->assertSame( 'wp_old_', IXES_Droptable::other_install( 'wp_old_posts', 'wp_', $all ) );
 		$this->assertSame( 'wp_2_', IXES_Droptable::other_install( 'wp_2_wpda_logs', 'wp_', $all ) );
 		$this->assertNull( IXES_Droptable::other_install( 'wp_wpda_logs', 'wp_', $all ) );
 		$this->assertNull( IXES_Droptable::other_install( 'wp_wc_orders', 'wp_', $all ) );
+		$this->assertNull( IXES_Droptable::other_install( 'wp_pmxi_hash', 'wp_', $all ), 'a plugin with its own *_posts table is not an install' );
 	}
 
 	public function test_unrestorable_accepts_a_real_definition_with_select_in_it() {

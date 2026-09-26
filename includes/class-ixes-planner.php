@@ -137,6 +137,7 @@ class IXES_Planner {
 			$only[ $n ] = $t;
 		}
 		foreach ( $drop as $n ) {
+			if ( in_array( $n, $foreign, true ) ) return new WP_Error( 'drop_tables', "--drop-tables: {$n} belongs to another WordPress install sharing {$env['name']}'s database (" . IXES_Droptable::other_install( $n, $wpdb->prefix, $remote_names ) . '), never dropped' );
 			if ( ! isset( $only[ $n ] ) ) return new WP_Error( 'drop_tables', "--drop-tables: {$n} is not a table only {$env['name']} has, inside the scope" );
 		}
 		$two_way = ! $bl->exists();
