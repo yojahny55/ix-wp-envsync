@@ -15,6 +15,7 @@ class IXES_Rest {
 		$r( '/ping',       'GET',  function () { return [ 'ok' => true, 'time' => time(), 'auth_via' => self::auth_via() ]; } );
 		$r( '/info',       'GET',  function () { return IXES_Transfer::info(); } );
 		$r( '/hash/rows',  'POST', [ __CLASS__, 'hash_rows' ] );
+		$r( '/hash/tables', 'POST', [ __CLASS__, 'hash_tables' ] );
 		$r( '/hash/files', 'POST', [ __CLASS__, 'hash_files' ] );
 		$r( '/dump',       'POST', [ __CLASS__, 'dump' ] );
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
@@ -69,9 +70,30 @@ class IXES_Rest {
 		$p = $req->get_json_params();
 		return IXES_Transfer::hash_rows( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ), self::pairs( $p ), sanitize_key( $p['algo'] ?? 'sha1' ) );
 	}
+	/**
+	 * The first page of several tables' row hashes in one request, keyed by the hub's table names.
+	 * Stops once 'limit' rows are out; a table cut short carries its 'next' cursor for /hash/rows, and one never reached is left out.
+	 */
+	public static function hash_tables( WP_REST_Request $req ) {
+		$p      = $req->get_json_params();
+		$budget = max( 1, min( 20000, (int) ( $p['limit'] ?? 5000 ) ) );
+		$algo   = sanitize_key( $p['algo'] ?? 'sha1' );
+		$pairs  = self::pairs( $p );
+		$out    = [];
+		foreach ( array_slice( array_values( (array) ( $p['tables'] ?? [] ) ), 0, 100 ) as $name ) {
+			if ( $budget <= 0 ) break;
+			$name = sanitize_text_field( (string) $name );
+			$r = IXES_Transfer::hash_rows( self::table( $name ), null, $budget, $pairs, $algo );
+			if ( is_wp_error( $r ) ) return $r;
+			$out[ $name ] = $r;
+			$budget -= max( 1, count( $r['rows'] ) );
+		}
+		return [ 'tables' => (object) $out ];
+	}
 	public static function hash_files( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		return IXES_Transfer::file_manifest( $p['cursor'] ?? null, (int) ( $p['limit'] ?? 2000 ), array_merge( IXES_Env::default_excludes(), (array) ( $p['excludes'] ?? [] ) ), sanitize_key( $p['algo'] ?? 'sha1' ), ! empty( $p['sizes'] ) );
+		$roots = array_values( array_filter( array_map( 'strval', (array) ( $p['roots'] ?? [] ) ) ) );
+		return IXES_Transfer::file_manifest( $p['cursor'] ?? null, (int) ( $p['limit'] ?? 2000 ), array_merge( IXES_Env::default_excludes(), (array) ( $p['excludes'] ?? [] ) ), sanitize_key( $p['algo'] ?? 'sha1' ), ! empty( $p['sizes'] ), $roots );
 	}
 	public static function dump( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
