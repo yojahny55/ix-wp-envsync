@@ -48,12 +48,12 @@ class IXES_Baseline {
 		else { unset( $this->json['files'][ $path ] ); $this->save_json(); }
 	}
 
-	/** "2026-09-12", "2026-09-12 · partial 2026-09-22 (themes)" or "-" for CLI and admin tables. */
+	/** "2026-09-12 01:13 CEST", "… · partial 2026-09-22 10:04 CEST (themes)" or "-" for CLI and admin tables. */
 	public function baseline_label() {
 		$c = $this->meta( 'created_at' ); $p = $this->meta( 'partial_at' );
 		if ( ! $c && ! $p ) return '-';
-		$out = $c ? wp_date( 'Y-m-d H:i', (int) $c ) : 'none';
-		if ( $p && ( ! $c || $p > $c ) ) $out .= ' · partial ' . wp_date( 'Y-m-d H:i', (int) $p ) . ' (' . $this->meta( 'partial_scope' ) . ')';
+		$out = $c ? wp_date( 'Y-m-d H:i T', (int) $c ) : 'none';
+		if ( $p && ( ! $c || $p > $c ) ) $out .= ' · partial ' . wp_date( 'Y-m-d H:i T', (int) $p ) . ' (' . $this->meta( 'partial_scope' ) . ')';
 		return $out;
 	}
 

@@ -118,7 +118,7 @@ class IXES_Status {
 			if ( $r['token']['shown_pending'] ) $o[] = '  The token has not been read yet: wp envsync token';
 			return implode( "\n", $o ) . "\n";
 		}
-		$d = function ( $t ) { return $t ? wp_date( 'Y-m-d H:i', (int) $t ) : '-'; };
+		$d = function ( $t ) { return $t ? wp_date( 'Y-m-d H:i T', (int) $t ) : '-'; };
 		foreach ( $r['envs'] as $name => $e ) {
 			$o[] = "{$name}  {$e['url']}  ({$e['label']})";
 			if ( ! $e['reachable'] ) { $o[] = "  unreachable: {$e['error']}"; }

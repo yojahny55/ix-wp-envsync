@@ -50,4 +50,14 @@ class PlannerRenderTest extends TestCase {
 		unset( $plan['scope'] );
 		$this->assertStringNotContainsString( 'scope:', IXES_Planner::render_text( $plan ) );
 	}
+
+	public function test_render_text_names_the_timezone_of_the_baseline() {
+		$plan = [
+			'env' => 'prod', 'created' => 1, 'baseline_at' => 1790377984, 'algo' => 'sha1', 'two_way' => false,
+			'tables' => [], 'files' => [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ],
+			'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [],
+		];
+		$this->assertStringContainsString( 'baseline: ' . date( 'Y-m-d H:i T', 1790377984 ), IXES_Planner::render_text( $plan ) );
+		$this->assertMatchesRegularExpression( '/baseline: \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} \\S+/', IXES_Planner::render_text( $plan ) );
+	}
 }

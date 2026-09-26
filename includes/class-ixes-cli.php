@@ -166,7 +166,7 @@ class IXES_CLI {
 			$r = $this->fail_if_error( $c->get( '/ping' ) );
 			$info = $this->fail_if_error( $c->info() );
 			$via = ( $r['auth_via'] ?? 'authorization' ) === 'x-envsync-token' ? 'X-Envsync-Token (this host strips the Authorization header; that is fine)' : 'Authorization';
-			WP_CLI::success( 'ok, remote time ' . date( 'c', $r['time'] ) . ", remote {$info['plugin']}, auth via {$via}" );
+			WP_CLI::success( 'ok, remote time ' . wp_date( 'Y-m-d H:i:s T', (int) $r['time'] ) . ", remote {$info['plugin']}, auth via {$via}" );
 			if ( version_compare( (string) $info['plugin'], IXES_VERSION, '<' ) ) WP_CLI::warning( "remote runs {$info['plugin']}, hub runs " . IXES_VERSION . ": upload the release zip to {$this->get_env( $args[1] )['url']}" );
 			elseif ( version_compare( (string) $info['plugin'], IXES_VERSION, '>' ) ) WP_CLI::log( "note: remote runs {$info['plugin']}, newer than this hub (" . IXES_VERSION . ')' );
 			return;
