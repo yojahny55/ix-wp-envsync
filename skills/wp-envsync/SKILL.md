@@ -182,7 +182,7 @@ All commands take `--path=<site>`.
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
 | `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
@@ -258,6 +258,7 @@ wp --path=<site> envsync env add prod --remove-exclude=cache/              # dro
 - Never pass `--yes` to a plan the user has not approved in this conversation.
 - Do not push to a `prod`-labelled environment without explicit approval in this conversation.
 - Use `--force` only for a first deploy onto a fresh install the user has confirmed. Use `--mirror` only when the user asked for the remote's extra content to be deleted.
+- A plan's `DROP TABLES` section drops whole tables (checked, copied to `--backup-dir` and kept for rollback first). Show it to the user before any push or pull that has one. Use `--drop-tables` only for tables the user named.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.
 - Never put a token in a file, a commit, or any message that leaves the machine.
 - After a push, tell the user to pull again before their next round of work.

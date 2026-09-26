@@ -13,9 +13,12 @@ class IXES_Baseline {
 			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS rows (tbl TEXT, pk TEXT, hash TEXT, PRIMARY KEY (tbl, pk))' );
 			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, hash TEXT)' );
 			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)' );
+			// every table the pull saw, empty ones included: an empty table leaves no rows behind to say it existed
+			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS known (tbl TEXT PRIMARY KEY)' );
 		} else {
 			$this->json = file_exists( $this->json_path ) ? json_decode( file_get_contents( $this->json_path ), true ) : null;
 			if ( ! is_array( $this->json ) ) $this->json = [ 'rows' => [], 'files' => [], 'meta' => [] ];
+			if ( ! isset( $this->json['known'] ) ) $this->json['known'] = [];
 		}
 	}
 
@@ -25,9 +28,9 @@ class IXES_Baseline {
 
 	public function reset() {
 		if ( $this->pdo ) {
-			$this->pdo->exec( 'DELETE FROM rows; DELETE FROM files; DELETE FROM meta;' );
+			$this->pdo->exec( 'DELETE FROM rows; DELETE FROM files; DELETE FROM meta; DELETE FROM known;' );
 		} else {
-			$this->json = [ 'rows' => [], 'files' => [], 'meta' => [] ];
+			$this->json = [ 'rows' => [], 'files' => [], 'meta' => [], 'known' => [] ];
 			$this->save_json();
 		}
 	}
@@ -41,6 +44,19 @@ class IXES_Baseline {
 		} else {
 			unset( $this->json['rows'][ $table ] ); $this->save_json();
 		}
+	}
+
+	/** Records that $table existed when the baseline was taken, rows or not. */
+	public function add_table( $table ) {
+		if ( $this->pdo ) { $st = $this->pdo->prepare( 'INSERT OR IGNORE INTO known (tbl) VALUES (?)' ); $st->execute( [ $table ] ); }
+		else { $this->json['known'][ $table ] = true; $this->save_json(); }
+	}
+
+	/** $table is gone from both sides: drop its rows and its name. */
+	public function forget_table( $table ) {
+		$this->delete_table( $table );
+		if ( $this->pdo ) { $st = $this->pdo->prepare( 'DELETE FROM known WHERE tbl = ?' ); $st->execute( [ $table ] ); }
+		else { unset( $this->json['known'][ $table ] ); $this->save_json(); }
 	}
 
 	public function delete_file( $path ) {
@@ -106,9 +122,12 @@ class IXES_Baseline {
 		return $this->json['files'];
 	}
 
+	/** Tables the baseline knows: those with rows, and those add_table() recorded (a baseline older than 0.7.0 has only the first). */
 	public function tables() {
-		if ( $this->pdo ) return $this->pdo->query( 'SELECT DISTINCT tbl FROM rows ORDER BY tbl' )->fetchAll( PDO::FETCH_COLUMN );
-		return array_keys( $this->json['rows'] );
+		if ( $this->pdo ) return $this->pdo->query( 'SELECT tbl FROM rows UNION SELECT tbl FROM known ORDER BY tbl' )->fetchAll( PDO::FETCH_COLUMN );
+		$t = array_values( array_unique( array_merge( array_keys( $this->json['rows'] ), array_keys( (array) $this->json['known'] ) ) ) );
+		sort( $t, SORT_STRING );
+		return $t;
 	}
 
 	public function meta( $k, $v = null ) {

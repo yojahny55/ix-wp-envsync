@@ -3,8 +3,11 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class IXES_Planner {
 
-	/** $mirror (push --mirror, first deploy only): rows and files only the remote has, within the scope, are deleted there */
-	public static function build( array $env, IXES_Client $c, IXES_Scope $scope = null, $mirror = false ) {
+	/**
+	 * $mirror (push --mirror, first deploy only): rows, files and tables only the remote has, within the scope, are deleted there.
+	 * $drop (push --drop-tables): tables only the remote has that are dropped there even though the baseline does not know them.
+	 */
+	public static function build( array $env, IXES_Client $c, IXES_Scope $scope = null, $mirror = false, array $drop = [] ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
@@ -24,7 +27,7 @@ class IXES_Planner {
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
 		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 		$ex = IXES_Pull::excludes( $env );
-		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror ];
+		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror, 'drop_tables' => [], 'kept_tables' => [] ];
 		$mirror_warn = [];
 
 		// tables only this site has (a plugin's own tables on a first deploy): the push creates them, then fills them
@@ -37,6 +40,9 @@ class IXES_Planner {
 			$plan['new_tables'][ $name ] = $create[1];
 			$candidates[] = [ 'name' => $name, 'pk' => IXES_Transfer::pk_of( $name ), 'new' => true ];
 		}
+
+		$drop_warn = self::plan_drops( $plan, $env, $c, $info, $scope, $bl, $mirror, $drop, $algo, $extra_prod );
+		if ( is_wp_error( $drop_warn ) ) return $drop_warn;
 
 		$in_scope = [];
 		// empty and small remote tables up front: an empty one costs no request, small ones share requests
@@ -94,7 +100,7 @@ class IXES_Planner {
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] || ! empty( $d['set_delete'] ) ) $plan['tables'][ $name ] = $d;
 		}
-		$plan['warnings'] = array_merge( $scope->family_warnings( $in_scope ), $mirror_warn );
+		$plan['warnings'] = array_merge( $scope->family_warnings( $in_scope ), $mirror_warn, $drop_warn );
 
 		$plan['files'] = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
 		$plan['remote_file_hashes'] = [];
@@ -111,6 +117,56 @@ class IXES_Planner {
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
 		}
 		return $plan;
+	}
+
+	/**
+	 * Tables only the remote has, in scope: which ones the push drops there ($plan['drop_tables'], with the rows
+	 * the remote must still hold for the drop to go ahead) and which stay as the remote's own ($plan['kept_tables']).
+	 * @return string[]|WP_Error warnings
+	 */
+	private static function plan_drops( array &$plan, array $env, IXES_Client $c, array $info, IXES_Scope $scope, IXES_Baseline $bl, $mirror, array $drop, $algo, array $extra ) {
+		global $wpdb;
+		$local = array_flip( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) );
+		$only = []; $foreign = [];
+		$remote_names = array_column( $info['tables'], 'name' );
+		foreach ( $info['tables'] as $t ) {
+			$n = (string) $t['name'];
+			if ( isset( $local[ $n ] ) || strpos( $n, $wpdb->prefix ) !== 0 || strpos( $n, $wpdb->prefix . 'ixes_' ) === 0 || ! preg_match( '/^[A-Za-z0-9_]+$/', $n ) || ! $scope->table_in( $n ) ) continue;
+			// wp_old_posts, wp_2_options: another install sharing the database, never this sync's to drop
+			if ( IXES_Droptable::other_install( $n, $wpdb->prefix, $remote_names ) !== null ) { $foreign[] = $n; continue; }
+			$only[ $n ] = $t;
+		}
+		foreach ( $drop as $n ) {
+			if ( ! isset( $only[ $n ] ) ) return new WP_Error( 'drop_tables', "--drop-tables: {$n} is not a table only {$env['name']} has, inside the scope" );
+		}
+		$two_way = ! $bl->exists();
+		$sel = IXES_Differ::table_drops( $two_way ? [] : $bl->tables(), array_keys( $only ), $mirror, $drop );
+		$plan['kept_tables'] = array_merge( $sel['kept'], $foreign );
+		if ( ! $sel['drop'] ) return [];
+		if ( ! in_array( 'drop_table', (array) ( $info['caps'] ?? [] ), true ) ) {
+			return [ 'dropping ' . count( $sel['drop'] ) . " table(s) needs plugin 0.7.0 or newer on {$env['name']}; they stay: " . implode( ', ', array_keys( $sel['drop'] ) ) ];
+		}
+		$hashes = self::remote_hashes( $c, array_values( array_intersect_key( $only, $sel['drop'] ) ), (array) ( $info['caps'] ?? [] ), $algo, $extra );
+		if ( is_wp_error( $hashes ) ) return $hashes;
+		$warn = [];
+		foreach ( $sel['drop'] as $n => $why ) {
+			$pk = $only[ $n ]['pk'] ?? null;
+			if ( ! isset( $hashes[ $n ] ) ) {
+				$h = [];
+				$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS ], function ( $res ) use ( &$h, $pk ) { if ( $pk ) $h += $res['rows']; else $h = array_merge( $h, $res['rows'] ); } );
+				if ( is_wp_error( $r ) ) return $r;
+				$hashes[ $n ] = $h;
+			}
+			// this side dropped it since the baseline, but the remote wrote to it since: the remote's work wins
+			if ( $why === 'baseline' ) {
+				$base = $bl->rows( $n );
+				$now  = $hashes[ $n ];
+				if ( ! $pk ) { $base = array_values( array_unique( array_values( $base ) ) ); $now = array_values( array_unique( $now ) ); }
+				if ( ! IXES_Droptable::same_rows( $now, $base, (bool) $pk ) ) { $warn[] = "{$n}: dropped here, but {$env['name']} changed it since the baseline, so it stays there"; continue; }
+			}
+			$plan['drop_tables'][ $n ] = [ 'why' => $why, 'pk' => $pk, 'rows' => count( $hashes[ $n ] ), 'digest' => IXES_Droptable::digest( $hashes[ $n ], (bool) $pk ) ];
+		}
+		return $warn;
 	}
 
 	const BATCH_ROWS   = 5000;
@@ -167,7 +223,7 @@ class IXES_Planner {
 
 	public static function is_empty( array $plan ) {
 		foreach ( $plan['tables'] as $t ) if ( $t['push'] || $t['insert'] || $t['delete'] || $t['set_insert'] || ! empty( $t['set_delete'] ) ) return false;
-		return empty( $plan['files']['push'] ) && empty( $plan['files']['delete'] ) && $plan['active_plugins'] === null;
+		return empty( $plan['files']['push'] ) && empty( $plan['files']['delete'] ) && $plan['active_plugins'] === null && empty( $plan['drop_tables'] );
 	}
 
 	public static function render_text( array $plan ) {
@@ -182,6 +238,7 @@ class IXES_Planner {
 			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), count( $t['conflict'] ), count( $t['kept'] ) );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
+		foreach ( (array) ( $plan['drop_tables'] ?? [] ) as $name => $d ) $o[] = sprintf( '  %-32s DROP TABLE (%d rows, %s)', $name, $d['rows'], $d['why'] );
 		$o[] = 'FILES';
 		foreach ( [ 'push', 'delete', 'conflict', 'kept' ] as $k ) {
 			$by = [];

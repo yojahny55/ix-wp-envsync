@@ -312,6 +312,38 @@ class IXES_Applier {
 			return [ 'ok' => true, 'deleted' => count( $done ) ];
 		}
 
+		if ( $kind === 'drop_check' ) {
+			// before the hub copies and drops anything: what would stop each drop, and the definition to copy
+			$out = [];
+			$tables = array_map( function ( $t ) { return sanitize_text_field( (string) $t ); }, array_values( (array) ( $p['tables'] ?? [] ) ) );
+			$blocked = IXES_Droptable::blockers( array_values( array_filter( $tables, [ 'IXES_Transfer', 'valid_table' ] ) ) );
+			foreach ( $tables as $table ) {
+				if ( ! IXES_Transfer::valid_table( $table ) ) { $out[] = [ 'table' => $table, 'blocked' => [ 'unknown table' ], 'create' => null ]; continue; }
+				$create = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
+				$out[] = [ 'table' => $table, 'blocked' => $blocked[ $table ] ?? [], 'create' => $create ? $create[1] : null ];
+			}
+			return [ 'results' => $out ];
+		}
+
+		if ( $kind === 'drop_table' ) {
+			// the data checks run again here, not trusted from drop_check: the hub spent time copying in between.
+			// The code scan does not: code arrives by deploy, not in the seconds between the two steps
+			$table = sanitize_text_field( (string) ( $p['table'] ?? '' ) );
+			if ( ! IXES_Transfer::valid_table( $table ) ) return [ 'ok' => false, 'refused' => 'unknown table' ];
+			$blocked = IXES_Droptable::blockers( [ $table ], false )[ $table ] ?? [];
+			if ( $blocked ) return [ 'ok' => false, 'refused' => implode( '; ', $blocked ) ];
+			$pk  = IXES_Transfer::pk_of( $table );
+			$now = IXES_Droptable::hashes( $table, self::remote_pairs( array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) ) ), $p['algo'] ?? 'sha1' );
+			if ( is_wp_error( $now ) ) return $now;
+			if ( IXES_Droptable::digest( $now, (bool) $pk ) !== (string) ( $p['digest'] ?? '' ) ) return [ 'ok' => false, 'refused' => 'changed since the plan' ];
+			$dir  = self::job_dir( (string) $p['job'] );
+			$snap = $dir ? IXES_Droptable::snapshot_to( $table, $dir . '/drop-' . $table . '.jsonl' ) : new WP_Error( 'nojob', 'no job folder' );
+			if ( is_wp_error( $snap ) ) return [ 'ok' => false, 'refused' => 'no copy for rollback: ' . $snap->get_error_message() ];
+			self::record_meta( $p['job'], 'dropped_tables', $table );
+			if ( $wpdb->query( "DROP TABLE `{$table}`" ) === false ) return [ 'ok' => false, 'refused' => "DROP failed: {$wpdb->last_error}" ];
+			return [ 'ok' => true, 'rows' => $snap['rows'] ];
+		}
+
 		if ( $kind === 'delete_files' ) {
 			$expect  = (array) ( $p['expect'] ?? [] );
 			$algo    = $p['algo'] ?? 'sha1';
@@ -427,6 +459,13 @@ class IXES_Applier {
 		if ( ! is_array( $meta ) ) return new WP_Error( 'bad_meta', 'job meta unreadable', [ 'status' => 500 ] );
 		$n = 0;
 
+		// tables the push dropped come back first, so the row restores below find them
+		$errors = [];
+		foreach ( array_unique( (array) ( $meta['dropped_tables'] ?? [] ) ) as $table ) {
+			$r = IXES_Droptable::restore_file( $dir . '/drop-' . preg_replace( '/[^A-Za-z0-9_]/', '', (string) $table ) . '.jsonl' );
+			if ( is_wp_error( $r ) ) $errors[] = $r->get_error_message(); else $n++;
+		}
+
 		foreach ( glob( $dir . '/rows-*.json' ) as $f ) {
 			$table = substr( basename( $f ), strlen( 'rows-' ), -5 ); // strip 'rows-' prefix and '.json' suffix
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
@@ -466,7 +505,7 @@ class IXES_Applier {
 			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
 		}
 		wp_cache_flush();
-		return [ 'restored' => $n, 'job' => $job ];
+		return [ 'restored' => $n, 'job' => $job, 'errors' => $errors ];
 	}
 
 	private static function rrmdir( $d ) {
@@ -477,6 +516,22 @@ class IXES_Applier {
 	}
 
 	// ---------- hub side ----------
+
+	/**
+	 * Streams a remote table into a .sql file on the hub, page by page: $name in the hub's names for /dump,
+	 * $remote_name and $create as the remote reported them, so the file reloads on the remote as it was.
+	 * @return string|WP_Error the file
+	 */
+	private static function copy_remote_table( IXES_Client $c, $name, $remote_name, $create, $file ) {
+		if ( ! wp_mkdir_p( dirname( $file ) ) || ! ( $h = @fopen( $file, 'wb' ) ) ) return new WP_Error( 'backup_failed', "cannot write {$file}" );
+		$ok = true;
+		$put = function ( $s ) use ( $h, &$ok ) { if ( $ok && fwrite( $h, $s ) !== strlen( $s ) ) $ok = false; };
+		$put( IXES_Droptable::sql_head( $remote_name, $create ) );
+		$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000 ], function ( $res ) use ( $put, $remote_name ) { if ( $res['rows'] ) $put( IXES_Droptable::sql_insert( $remote_name, (array) $res['rows'] ) ); } );
+		if ( ! fclose( $h ) ) $ok = false;
+		if ( is_wp_error( $r ) || ! $ok ) { @unlink( $file ); return is_wp_error( $r ) ? $r : new WP_Error( 'backup_failed', "cannot write {$file}" ); }
+		return $file;
+	}
 
 	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, IXES_Progress $progress = null, callable $on_error = null ) {
 		global $wpdb;
@@ -506,6 +561,13 @@ class IXES_Applier {
 		if ( ! empty( $plan['new_tables'] ) && ! in_array( 'create_table', $caps, true ) ) {
 			return new WP_Error( 'old_remote', 'this push creates ' . count( $plan['new_tables'] ) . ' table(s) the remote lacks (' . implode( ', ', array_keys( $plan['new_tables'] ) ) . "); upload plugin 0.5.1 or newer to {$env['url']} first" );
 		}
+		$drops = (array) ( $plan['drop_tables'] ?? [] );
+		if ( $drops && ! in_array( 'drop_table', $caps, true ) ) {
+			return new WP_Error( 'old_remote', 'this push drops ' . count( $drops ) . " table(s); upload plugin 0.7.0 or newer to {$env['url']} first" );
+		}
+		// how the site answers before anything changes: a drop is blamed only for what it breaks
+		$smoke_urls = $drops ? IXES_Droptable::smoke_urls( $info['url'], (string) time() ) : [];
+		$smoke_before = $drops ? IXES_Droptable::smoke( $smoke_urls, [ $c, 'probe' ] ) : [];
 		$start = $c->post( '/job/start', [ 'plan_meta' => $plan_meta ] );
 		if ( is_wp_error( $start ) ) return $start;
 		$job = $start['job'];
@@ -625,6 +687,30 @@ class IXES_Applier {
 			$progress->item( $name );
 		}
 
+		$dropped = []; $backups = []; $kept_tables = [];
+		if ( $drops ) {
+			$names = array_keys( $drops );
+			$step = [ 'job' => $job, 'kind' => 'drop_check', 'tables' => $names ];
+			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
+			if ( is_wp_error( $r ) ) return $fail( $r );
+			$checks = array_values( (array) ( $r['results'] ?? [] ) );
+			$dir = IXES_Droptable::backup_dir( (string) ( $plan['backup_dir'] ?? '' ) );
+			foreach ( $names as $i => $name ) {
+				$chk = $checks[ $i ] ?? null;
+				if ( ! $chk || ! empty( $chk['blocked'] ) || empty( $chk['create'] ) ) { $kept_tables[ $name ] = $chk ? implode( '; ', $chk['blocked'] ?: [ 'no table definition' ] ) : 'no answer'; continue; }
+				// the hub's own copy exists before the remote drops anything; without it the table stays
+				$file = self::copy_remote_table( $c, $name, (string) $chk['table'], (string) $chk['create'], IXES_Droptable::backup_file( $dir, $env['name'] . '-' . $job, (string) $chk['table'] ) );
+				if ( is_wp_error( $file ) ) { $kept_tables[ $name ] = 'no local copy: ' . $file->get_error_message(); continue; }
+				$backups[ $name ] = $file;
+				$step = [ 'job' => $job, 'kind' => 'drop_table', 'table' => $name, 'digest' => $drops[ $name ]['digest'], 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
+				$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
+				if ( is_wp_error( $r ) ) return $fail( $r );
+				if ( empty( $r['ok'] ) ) { $kept_tables[ $name ] = (string) ( $r['refused'] ?? 'refused' ); continue; }
+				$dropped[] = $name;
+				$progress->item( "drop {$name}" );
+			}
+		}
+
 		if ( $plan['active_plugins'] !== null ) {
 			$step = [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ];
 			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
@@ -636,6 +722,20 @@ class IXES_Applier {
 		$r = $call( function () use ( $c, $job ) { return $c->post( '/job/finish', [ 'job' => $job ] ); } );
 		if ( is_wp_error( $r ) ) return $fail( $r );
 
-		return [ 'job' => $job, 'stale' => $stale ];
+		if ( $dropped ) {
+			// fresh urls: a page cache must not answer this round with the healthy pages of the first one
+			$after = IXES_Droptable::smoke( IXES_Droptable::smoke_urls( $info['url'], wp_generate_password( 12, false ) ), [ $c, 'probe' ] );
+			$bad = IXES_Droptable::regressions( $smoke_before, $after );
+			if ( $bad ) {
+				$why = implode( ', ', array_map( function ( $u, $w ) { return "{$u} ({$w})"; }, array_keys( $bad ), $bad ) );
+				$x = $c->post( '/rollback', [ 'job' => $job ] );
+				if ( is_wp_error( $x ) ) $tail = 'Rollback failed (' . $x->get_error_message() . "). Next: wp envsync rollback {$env['name']} --job={$job}";
+				elseif ( ! empty( $x['errors'] ) ) $tail = "Rolled back job {$job}, but not every table came back: " . implode( '; ', (array) $x['errors'] ) . '. Load the local copies below.';
+				else $tail = "Rolled back job {$job}: the dropped tables are back.";
+				return new WP_Error( 'smoke_failed', "{$env['name']} broke after dropping " . implode( ', ', $dropped ) . ": {$why}\n{$tail}\nLocal copies: " . implode( ', ', $backups ) );
+			}
+		}
+
+		return [ 'job' => $job, 'stale' => $stale, 'dropped' => $dropped, 'kept_tables' => $kept_tables, 'backups' => $backups ];
 	}
 }

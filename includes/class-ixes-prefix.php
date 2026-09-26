@@ -38,7 +38,10 @@ class IXES_Prefix {
 	/** A job step in the hub's names -> this site's. Orphan rows are dropped and named in 'prefix_refused'. */
 	public function step_in( array $p ) {
 		$kind = $p['kind'] ?? '';
-		if ( in_array( $kind, [ 'rows', 'delete_rows', 'delete_set', 'create_table' ], true ) ) {
+		if ( $kind === 'drop_check' ) {
+			$p['tables'] = array_map( function ( $n ) { $t = $this->table_in( (string) $n ); return $t === null ? '' : $t; }, array_values( (array) ( $p['tables'] ?? [] ) ) );
+		}
+		if ( in_array( $kind, [ 'rows', 'delete_rows', 'delete_set', 'create_table', 'drop_table' ], true ) ) {
 			$t = $this->table_in( (string) ( $p['table'] ?? '' ) );
 			$p['table'] = $t === null ? '' : $t;
 		}

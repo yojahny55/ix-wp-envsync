@@ -47,6 +47,25 @@ class IXES_Differ {
 		return [ 'insert' => array_values( $insert ) ];
 	}
 
+	/**
+	 * Which tables only the far side has get dropped there, and why.
+	 * 'baseline': both sides had it at the baseline and this side dropped it since. 'mirror': a first deploy
+	 * makes the far side equal to this one. 'asked': named with --drop-tables. Anything else is the far side's own table.
+	 * @param string[] $only_far tables the far side has and this side does not
+	 * @return array{drop: array<string,string>, kept: string[]}
+	 */
+	public static function table_drops( array $base_tables, array $only_far, $mirror, array $asked ) {
+		$base = array_flip( $base_tables ); $ask = array_flip( $asked );
+		$drop = []; $kept = [];
+		foreach ( $only_far as $t ) {
+			if ( isset( $ask[ $t ] ) ) $drop[ $t ] = 'asked';
+			elseif ( $mirror ) $drop[ $t ] = 'mirror';
+			elseif ( isset( $base[ $t ] ) ) $drop[ $t ] = 'baseline';
+			else $kept[] = $t;
+		}
+		return [ 'drop' => $drop, 'kept' => $kept ];
+	}
+
 	public static function merge_active_plugins( array $base, array $local, array $remote ) {
 		$deactivated = array_diff( $base, $local );
 		$activated   = array_diff( $local, $base );

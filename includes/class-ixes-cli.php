@@ -47,7 +47,7 @@ class IXES_CLI {
 			IXES_Report::save_run( $kind, $env, [ 'ok' => false, 'job' => null ] + $base + $end + [ 'stale' => [], 'error' => $r->get_error_message() ] );
 			WP_CLI::error( $r->get_error_message() );
 		}
-		IXES_Report::save_run( $kind, $env, [ 'ok' => true, 'job' => $r['job'] ?? null ] + $base + $end + [ 'stale' => $r['stale'] ?? [], 'error' => null ] );
+		IXES_Report::save_run( $kind, $env, [ 'ok' => true, 'job' => $r['job'] ?? null ] + $base + $end + [ 'stale' => $r['stale'] ?? [], 'dropped' => $r['dropped'] ?? [], 'kept_tables' => $r['kept_tables'] ?? [], 'backups' => $r['backups'] ?? [], 'error' => null ] );
 		return $r;
 	}
 	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
@@ -216,6 +216,9 @@ class IXES_CLI {
 	 *
 	 * [--paths=<paths>]
 	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+	 *
+	 * [--backup-dir=<dir>]
+	 * : Where to write the .sql copy of every table the pull drops here. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
@@ -244,6 +247,7 @@ class IXES_CLI {
 			return;
 		}
 		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc, $env ) ) );
+		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_pull_plan( $plan );
 		$manifest = $this->show_report( $report, $assoc );
 		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
@@ -385,6 +389,12 @@ class IXES_CLI {
 	 *
 	 * [--paths=<paths>]
 	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+	 *
+	 * [--drop-tables=<tables>]
+	 * : Comma list of tables only the remote has (with or without prefix) to drop there, although the baseline does not know them. Each one is checked, copied and kept for rollback first.
+	 *
+	 * [--backup-dir=<dir>]
+	 * : Where the hub writes its .sql copy of every table the push drops. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
 	 */
 	public function push( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
@@ -400,7 +410,8 @@ class IXES_CLI {
 		$mirror = $saved ? ! empty( $saved['mirror'] ) : ! empty( $assoc['mirror'] );
 		if ( $saved && ! empty( $assoc['mirror'] ) && empty( $saved['mirror'] ) ) WP_CLI::error( 'that plan was made without --mirror; run push --force --mirror without --plan' );
 		if ( $mirror && empty( $assoc['force'] ) ) WP_CLI::error( '--mirror only goes with --force, on a first deploy' );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror ) );
+		$drop = $saved ? array_keys( array_filter( (array) ( $saved['drop_tables'] ?? [] ), function ( $d ) { return ( $d['why'] ?? '' ) === 'asked'; } ) ) : IXES_Droptable::table_list( (string) ( $assoc['drop-tables'] ?? '' ), $wpdb->prefix );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
 		if ( $saved ) {
 			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" );
 			$plan = $saved;
@@ -410,6 +421,7 @@ class IXES_CLI {
 			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
 		}
+		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'push' );
 		$manifest = $this->show_report( $report, $assoc );
 		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
@@ -420,6 +432,8 @@ class IXES_CLI {
 		$progress = IXES_Progress::for_cli( $assoc );
 		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ) ); $progress->end(); return $r; } );
 		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );
+		foreach ( (array) ( $r['kept_tables'] ?? [] ) as $t => $why ) WP_CLI::warning( "kept table {$t} on {$env['name']}: {$why}" );
+		if ( ! empty( $r['dropped'] ) ) WP_CLI::log( 'dropped on ' . $env['name'] . ': ' . implode( ', ', $r['dropped'] ) . "\nlocal copies:\n  " . implode( "\n  ", (array) $r['backups'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
 		$this->forget_status();
 		WP_CLI::success( "pushed to {$env['name']} (job {$r['job']}). Pull again before the next round of changes." );
@@ -442,6 +456,7 @@ class IXES_CLI {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
 		$this->confirm( $assoc, "Rollback last push on {$env['name']}?" );
 		$r = $this->fail_if_error( $c->post( '/rollback', [ 'job' => $assoc['job'] ?? null ] ) );
+		foreach ( (array) ( $r['errors'] ?? [] ) as $e ) WP_CLI::warning( $e );
 		WP_CLI::success( "restored {$r['restored']} rows/files from job {$r['job']}" );
 	}
 

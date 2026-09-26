@@ -74,6 +74,13 @@ class IXES_Client {
 
 	public function get( $route )                    { return $this->request( 'GET', $route ); }
 
+	/** A plain page request to the site, as a visitor (through Basic Auth when the env has it): for smoke tests. */
+	public function probe( $url ) {
+		$h = [ 'Cache-Control' => 'no-cache' ];
+		if ( ! empty( $this->env['basic_auth'] ) ) $h['Authorization'] = 'Basic ' . base64_encode( $this->env['basic_auth'] );
+		return $this->transport( $url, [ 'method' => 'GET', 'timeout' => 30, 'redirection' => 3, 'headers' => $h ] );
+	}
+
 	/** A JSON job step; deflated into an octet-stream body when the remote can unpack it (see IXES_Rest::unpack_step). */
 	public function step( array $body ) {
 		if ( ! function_exists( 'gzdeflate' ) || ! in_array( 'packed', $this->caps(), true ) ) return $this->post( '/job/step', $body );

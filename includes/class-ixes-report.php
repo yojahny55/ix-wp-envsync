@@ -17,6 +17,8 @@ class IXES_Report {
 			'scope' => $in['scope'], 'scope_full' => (bool) $in['scope_full'],
 			'summary' => [ 'files' => count( $in['files'] ), 'delete' => count( $in['deletes'] ), 'bytes' => null, 'rows' => 0, 'conflicts' => count( $in['conflicts'] ) ],
 			'tables' => [], 'new_tables' => array_values( (array) ( $in['new_tables'] ?? [] ) ), 'plugins' => [], 'themes' => [], 'other' => [], 'conflicts' => $in['conflicts'], 'warnings' => $in['warnings'],
+			// tables dropped on the side that receives: [ name, rows, why ] ('baseline', 'mirror', 'asked')
+			'drop_tables' => array_values( (array) ( $in['drop_tables'] ?? [] ) ),
 		];
 
 		foreach ( $in['tables'] as $name => $t ) {
@@ -107,7 +109,14 @@ class IXES_Report {
 			'active_before' => $remote_active, 'active_after' => $plan['active_plugins'] !== null ? $plan['active_plugins'] : $remote_active,
 			'stylesheet_after' => $moves_ss ? get_stylesheet() : ( $before['stylesheet'] ?? null ),
 			'conflicts' => $conflicts, 'warnings' => (array) ( $plan['warnings'] ?? [] ),
+			'drop_tables' => self::drops( (array) ( $plan['drop_tables'] ?? [] ) ),
 		] );
+	}
+
+	private static function drops( array $d ) {
+		$out = [];
+		foreach ( $d as $name => $x ) $out[] = [ 'name' => $name, 'rows' => (int) ( $x['rows'] ?? 0 ), 'why' => (string) ( $x['why'] ?? '' ) ];
+		return $out;
 	}
 
 	public static function from_pull_plan( array $plan ) {
@@ -129,6 +138,7 @@ class IXES_Report {
 			'active_before' => $local_active, 'active_after' => $opts_in ? (array) ( $plan['info']['active_plugins'] ?? [] ) : $local_active,
 			'stylesheet_after' => $opts_in ? ( $remote['stylesheet'] ?? null ) : $local['stylesheet'],
 			'conflicts' => [], 'warnings' => (array) ( $plan['warnings'] ?? [] ),
+			'drop_tables' => self::drops( (array) ( $plan['drop_local'] ?? [] ) ),
 		] );
 	}
 
@@ -198,7 +208,12 @@ class IXES_Report {
 			$o[] = ''; $o[] = "CONFLICTS ({$r['env']} wins)";
 			foreach ( $r['conflicts'] as $c ) $o[] = $c['type'] === 'file' ? "  file                 {$c['path']}" : sprintf( '  %-20s #%s  %s', $c['table'], $c['id'], $c['title'] );
 		}
-		if ( ! $s['files'] && ! $s['delete'] && ! $r['tables'] && ! $r['plugins'] && ! $r['themes'] ) { $o[] = ''; $o[] = 'Nothing to ' . ( $push ? 'push' : 'pull' ) . '.'; }
+		if ( ! empty( $r['drop_tables'] ) ) {
+			$o[] = ''; $o[] = 'DROP TABLES (' . ( $push ? "on {$r['env']}" : 'here' ) . '; each is checked, copied and kept for rollback first)';
+			$why = [ 'baseline' => 'dropped on the other side since the baseline', 'mirror' => 'first deploy (--mirror)', 'asked' => '--drop-tables' ];
+			$o[] = self::table( [ 'table', 'rows', 'why' ], array_map( function ( $t ) use ( $why ) { return [ $t['name'], $t['rows'], $why[ $t['why'] ] ?? $t['why'] ]; }, $r['drop_tables'] ) );
+		}
+		if ( ! $s['files'] && ! $s['delete'] && ! $r['tables'] && ! $r['plugins'] && ! $r['themes'] && empty( $r['drop_tables'] ) ) { $o[] = ''; $o[] = 'Nothing to ' . ( $push ? 'push' : 'pull' ) . '.'; }
 		return implode( "\n", $o ) . "\n";
 	}
 
