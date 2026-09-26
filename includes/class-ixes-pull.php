@@ -55,11 +55,11 @@ class IXES_Pull {
 		$ex   = self::excludes( $env );
 		$remote = []; $local = []; $transfer = []; $delete = []; $sizes = [];
 		if ( $scope->files_wanted() ) {
-			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'sizes' => true ], function ( $res ) use ( &$remote, &$sizes ) { $remote += $res['files']; if ( isset( $res['sizes'] ) && $sizes !== null ) $sizes += $res['sizes']; else $sizes = null; }, 'cursor' );
+			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'sizes' => true, 'roots' => $scope->roots() ], function ( $res ) use ( &$remote, &$sizes ) { $remote += $res['files']; if ( isset( $res['sizes'] ) && $sizes !== null ) $sizes += $res['sizes']; else $sizes = null; }, 'cursor' );
 			if ( is_wp_error( $r ) ) return $r;
 			$remote = self::drop_excluded( $remote, $ex );
 			foreach ( array_keys( $remote ) as $rel ) if ( ! $scope->path_in( $rel ) ) unset( $remote[ $rel ] );
-			$local = IXES_Transfer::local_manifest( $ex, $algo );
+			$local = IXES_Transfer::local_manifest( $ex, $algo, $scope->roots() );
 			foreach ( array_keys( $local ) as $rel ) if ( ! $scope->path_in( $rel ) ) unset( $local[ $rel ] );
 			$transfer = array_keys( array_diff_assoc( $remote, $local ) ); sort( $transfer, SORT_STRING );
 			$delete   = array_keys( array_diff_key( $local, $remote ) );

@@ -116,6 +116,35 @@ class IXES_Scope {
 		return false;
 	}
 
+	/**
+	 * The wp-content folders a file walk can stay inside, each with a trailing slash; [] means all of wp-content.
+	 * Only narrows the walk: path_in() still decides what is in scope.
+	 */
+	public function roots() {
+		if ( ! $this->files_wanted() ) return [];
+		$roots = [];
+		foreach ( $this->paths as $pat ) {
+			$pat   = ltrim( $pat, '/' );
+			$fixed = substr( $pat, 0, strcspn( $pat, '*?[\\' ) );
+			$cut   = strrpos( $fixed, '/' );
+			// a pattern with no folder before its first wildcard can match anywhere: the paths cannot narrow the walk
+			if ( $cut === false ) { $roots = []; break; }
+			$roots[] = substr( $fixed, 0, $cut + 1 );
+		}
+		if ( ! $roots && $this->only && ! in_array( 'files', $this->only, true ) ) {
+			foreach ( $this->only as $o ) if ( isset( self::FOLDER[ $o ] ) ) $roots[] = self::FOLDER[ $o ];
+		}
+		// a root inside another root adds nothing but a second walk of the same files
+		$roots = array_values( array_unique( $roots ) );
+		sort( $roots, SORT_STRING );
+		$out = [];
+		foreach ( $roots as $r ) {
+			$last = end( $out );
+			if ( $last === false || strpos( $r, $last ) !== 0 ) $out[] = $r;
+		}
+		return $out;
+	}
+
 	public function label() {
 		if ( $this->is_full() ) return 'everything';
 		$parts = [];

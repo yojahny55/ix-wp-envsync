@@ -39,6 +39,13 @@ class IXES_Planner {
 		}
 
 		$in_scope = [];
+		// empty and small remote tables up front: an empty one costs no request, small ones share requests
+		$cheap = [];
+		foreach ( $candidates as $t ) {
+			if ( empty( $t['new'] ) && $scope->table_in( $t['name'] ) && IXES_Transfer::valid_table( $t['name'] ) ) $cheap[] = $t;
+		}
+		$pre = self::remote_hashes( $c, $cheap, (array) ( $info['caps'] ?? [] ), $algo, $extra_prod );
+		if ( is_wp_error( $pre ) ) return $pre;
 		foreach ( $candidates as $t ) {
 			if ( ! $scope->table_in( $t['name'] ) ) continue;
 			$in_scope[] = $t['name']; // every in-scope table, not just ones that ended up with diffs, so family_warnings() sees the real --tables list
@@ -48,7 +55,8 @@ class IXES_Planner {
 			$pk = $t['pk'] === null ? null : IXES_Transfer::safe_pk( $name, $t['pk'] );
 			if ( $t['pk'] !== null && ! $pk ) return new WP_Error( 'bad_pk', "remote reports unknown pk column '{$t['pk']}' for {$name}" );
 			$remote = [];
-			if ( empty( $t['new'] ) ) {
+			if ( isset( $pre[ $name ] ) ) $remote = $pre[ $name ];
+			elseif ( empty( $t['new'] ) ) {
 				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
 				if ( is_wp_error( $r ) ) return $r;
 			}
@@ -92,10 +100,10 @@ class IXES_Planner {
 		$plan['remote_file_hashes'] = [];
 		if ( $scope->files_wanted() ) {
 			$remote_files = [];
-			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000 ], function ( $res ) use ( &$remote_files ) { $remote_files += $res['files']; }, 'cursor' );
+			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'roots' => $scope->roots() ], function ( $res ) use ( &$remote_files ) { $remote_files += $res['files']; }, 'cursor' );
 			if ( is_wp_error( $r ) ) return $r;
 			$remote_files = self::in_scope( IXES_Pull::drop_excluded( $remote_files, $ex ), $scope );
-			$local_files  = self::in_scope( IXES_Transfer::local_manifest( $ex, $algo ), $scope );
+			$local_files  = self::in_scope( IXES_Transfer::local_manifest( $ex, $algo, $scope->roots() ), $scope );
 			$base_files   = $two_way ? [] : self::in_scope( $bl->files(), $scope );
 			$fd = IXES_Differ::diff( $base_files, $local_files, $remote_files );
 			if ( $mirror ) $fd = IXES_Differ::mirror( $fd, $local_files, $remote_files );
@@ -103,6 +111,47 @@ class IXES_Planner {
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
 		}
 		return $plan;
+	}
+
+	const BATCH_ROWS   = 5000;
+	const BATCH_TABLES = 50;
+
+	/**
+	 * Remote row hashes, keyed by table name, for the tables in $tables (the remote's info rows: name, pk, rows)
+	 * that it counted empty, or small enough to batch when it can ('hash_batch'). Larger tables are left out
+	 * and fetched one by one, so their hashes are never all held at once.
+	 * @return array|WP_Error
+	 */
+	public static function remote_hashes( IXES_Client $c, array $tables, array $caps, $algo, array $extra ) {
+		$out = []; $queue = []; $more = []; $has_pk = [];
+		$batch = in_array( 'hash_batch', $caps, true );
+		foreach ( $tables as $t ) {
+			if ( ! isset( $t['rows'] ) ) continue;
+			$n = (string) $t['name'];
+			$has_pk[ $n ] = ! empty( $t['pk'] );
+			if ( (int) $t['rows'] === 0 ) $out[ $n ] = [];
+			elseif ( $batch && (int) $t['rows'] <= self::BATCH_ROWS ) $queue[] = $n;
+		}
+		while ( $queue ) {
+			$ask = array_slice( $queue, 0, self::BATCH_TABLES );
+			$res = $c->post( '/hash/tables', [ 'tables' => $ask, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS ] );
+			if ( is_wp_error( $res ) ) return $res;
+			$got = array_intersect_key( (array) ( $res['tables'] ?? [] ), array_flip( $ask ) );
+			// the remote always answers at least the first table it was asked for; anything else would loop forever
+			if ( ! $got ) return new WP_Error( 'hash_batch', 'the remote answered a table batch without any of its tables' );
+			foreach ( $got as $n => $r ) {
+				$out[ $n ] = (array) ( $r['rows'] ?? [] );
+				if ( isset( $r['next'] ) && $r['next'] !== null ) $more[ $n ] = $r['next'];
+			}
+			$queue = array_values( array_diff( $queue, array_keys( $got ) ) );
+		}
+		// a table the batch cut short continues page by page from where it stopped
+		foreach ( $more as $n => $from ) {
+			$pk = $has_pk[ $n ];
+			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ], function ( $res ) use ( &$out, $n, $pk ) { if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] ); } );
+			if ( is_wp_error( $r ) ) return $r;
+		}
+		return $out;
 	}
 
 	private static function in_scope( array $manifest, IXES_Scope $scope ) {

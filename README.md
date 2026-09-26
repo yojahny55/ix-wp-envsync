@@ -558,6 +558,8 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 **File hashes are cached** by modification time and size, so unchanged files are not re-read. A file rewritten in place to exactly the same size within the same second is missed. Use `--flush-cache` if you suspect that.
 
+**A diff's time is mostly requests, not queries.** Every request to the remote boots WordPress there, which on a small host costs one to two seconds before any work starts. From 0.6.4 the hub asks nothing about a table the remote counts empty, reads small tables in shared requests, and has the remote walk only the folders in scope (`uploads/` for `--only=db,uploads`) instead of all of wp-content. Skipping empty tables works against any remote; batching and the narrower walk need 0.6.4 on the remote too.
+
 **Keep both sides on the same plugin version.** Different versions can have different exclude rules. The hub filters anything it would refuse, so a mismatch is handled safely, but matching versions avoid surprises.
 
 ---

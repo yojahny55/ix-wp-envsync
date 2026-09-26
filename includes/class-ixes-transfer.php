@@ -19,7 +19,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
@@ -127,26 +127,36 @@ class IXES_Transfer {
 	/** Dev artifacts that are never deployable wherever they sit (a theme's node_modules, a plugin's .git). */
 	const ANY_DEPTH = [ '.git/', 'node_modules/' ];
 
-	public static function all_files( array $excludes ) {
+	/** Files under wp-content, sorted. $roots (wp-content folders with a trailing slash) limits the walk; [] walks everything. */
+	public static function all_files( array $excludes, array $roots = [] ) {
 		$root = untrailingslashit( WP_CONTENT_DIR );
 		$out = [];
-		$it = new RecursiveIteratorIterator( new RecursiveCallbackFilterIterator(
-			new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ),
-			function ( $f ) use ( $root, $excludes ) {
-				$rel = ltrim( substr( $f->getPathname(), strlen( $root ) ), '/' );
-				if ( $f->isDir() ) $rel .= '/';
-				return ! self::excluded_path( $rel, $excludes );
+		foreach ( $roots ? $roots : [ '' ] as $base ) {
+			if ( $base !== '' ) {
+				$base = self::safe_rel( $base );
+				if ( $base === null ) continue;
+				$base = untrailingslashit( $base ) . '/';
+				if ( ! is_dir( $root . '/' . $base ) || self::excluded_path( $base, $excludes ) ) continue;
 			}
-		) );
-		foreach ( $it as $f ) {
-			if ( $f->isFile() ) $out[] = ltrim( substr( $f->getPathname(), strlen( $root ) ), '/' );
+			$it = new RecursiveIteratorIterator( new RecursiveCallbackFilterIterator(
+				new RecursiveDirectoryIterator( $root . ( $base === '' ? '' : '/' . untrailingslashit( $base ) ), FilesystemIterator::SKIP_DOTS ),
+				function ( $f ) use ( $root, $excludes ) {
+					$rel = ltrim( substr( $f->getPathname(), strlen( $root ) ), '/' );
+					if ( $f->isDir() ) $rel .= '/';
+					return ! self::excluded_path( $rel, $excludes );
+				}
+			) );
+			foreach ( $it as $f ) {
+				if ( $f->isFile() ) $out[] = ltrim( substr( $f->getPathname(), strlen( $root ) ), '/' );
+			}
 		}
+		$out = array_values( array_unique( $out ) );
 		sort( $out, SORT_STRING );
 		return $out;
 	}
 
-	public static function file_manifest( $cursor, $limit, array $excludes, $algo, $with_sizes = false ) {
-		$all = self::all_files( $excludes );
+	public static function file_manifest( $cursor, $limit, array $excludes, $algo, $with_sizes = false, array $roots = [] ) {
+		$all = self::all_files( $excludes, $roots );
 		$start = 0;
 		if ( $cursor !== null && $cursor !== '' ) {
 			$i = array_search( $cursor, $all, true );
@@ -349,9 +359,9 @@ class IXES_Transfer {
 		return @unlink( $p );
 	}
 
-	public static function local_manifest( array $excludes, $algo ) {
+	public static function local_manifest( array $excludes, $algo, array $roots = [] ) {
 		$out = [];
-		foreach ( self::all_files( $excludes ) as $rel ) {
+		foreach ( self::all_files( $excludes, $roots ) as $rel ) {
 			$h = IXES_Hashcache::hash( WP_CONTENT_DIR . '/' . $rel, $rel, $algo );
 			if ( $h !== false ) $out[ $rel ] = $h;
 		}
