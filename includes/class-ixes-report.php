@@ -166,7 +166,7 @@ class IXES_Report {
 		$push = $r['direction'] === 'push';
 		$o = [];
 		$o[] = $push ? "{$r['env']}  ←  local" : "{$r['env']}  →  local";
-		if ( $r['baseline_at'] ) $o[] = '  baseline: ' . wp_date( 'Y-m-d H:i', (int) $r['baseline_at'] );
+		if ( $r['baseline_at'] ) $o[] = '  baseline: ' . wp_date( 'Y-m-d H:i T', (int) $r['baseline_at'] );
 		elseif ( $push && $r['first_deploy'] ) $o[] = "  baseline: none — first deploy, local overwrites {$r['env']}";
 		else $o[] = '  baseline: none';
 		if ( ! $r['scope_full'] ) $o[] = "  scope: {$r['scope']}";

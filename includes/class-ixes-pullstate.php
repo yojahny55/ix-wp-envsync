@@ -56,7 +56,7 @@ class IXES_PullState {
 		$where = $this->d['table']
 			? "stopped in {$this->d['table']}" . ( $this->d['cursor'] !== null ? " at row {$this->d['cursor']}" : '' )
 			: 'finished tables';
-		return sprintf( 'An interrupted pull of %s from %s %s, %d/%d files done.', $this->d['env'], date( 'Y-m-d H:i', (int) $this->d['started'] ), $where, (int) $this->d['files_done'], (int) $files_total );
+		return sprintf( 'An interrupted pull of %s from %s %s, %d/%d files done.', $this->d['env'], wp_date( 'Y-m-d H:i T', (int) $this->d['started'] ), $where, (int) $this->d['files_done'], (int) $files_total );
 	}
 
 	/** '' when the pull can be resumed, otherwise a one-line reason. */

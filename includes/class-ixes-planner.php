@@ -172,7 +172,7 @@ class IXES_Planner {
 
 	public static function render_text( array $plan ) {
 		$o = [];
-		$o[] = sprintf( '%s  ←  local          baseline: %s%s', $plan['env'], $plan['baseline_at'] ? date( 'Y-m-d H:i', $plan['baseline_at'] ) : 'NONE (2-way)', $plan['two_way'] ? "   !! everything different would OVERWRITE {$plan['env']}" : '' );
+		$o[] = sprintf( '%s  ←  local          baseline: %s%s', $plan['env'], $plan['baseline_at'] ? wp_date( 'Y-m-d H:i T', $plan['baseline_at'] ) : 'NONE (2-way)', $plan['two_way'] ? "   !! everything different would OVERWRITE {$plan['env']}" : '' );
 		if ( ! empty( $plan['scope'] ) ) {
 			$sc = IXES_Scope::from_array( (array) $plan['scope'], '' );
 			if ( ! $sc->is_full() ) $o[] = '  scope: ' . $sc->label();
