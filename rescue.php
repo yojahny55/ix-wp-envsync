@@ -4,7 +4,9 @@
  *
  * WordPress boots here in installer mode: no plugins, no theme, no maintenance screen. The request is
  * authenticated exactly like the REST API (token + HMAC signature over the body), then one action runs:
- * status, plugins_off (keep only EnvSync active) or rollback (restore a push's snapshot, clear its lock).
+ * status, plugins_off (keep only EnvSync active), rollback (restore a push's snapshot, clear its lock) or
+ * restore_self (put back the plugin folder a self-update replaced). restore_self runs before the main plugin
+ * file loads, with only IXES_Auth and IXES_Selfupdate: the code it recovers from may be what fatals.
  * Must-use plugins and drop-ins still load; a crash there needs the host's file manager.
  *
  * phpcs:ignoreFile -- standalone entry point that bootstraps WordPress itself
@@ -21,7 +23,8 @@ for ( $ixes_i = 0; $ixes_i < 6 && ! $ixes_load; $ixes_i++ ) {
 }
 if ( ! $ixes_load ) { http_response_code( 500 ); header( 'Content-Type: application/json' ); echo '{"message":"wp-load.php not found"}'; exit; }
 require $ixes_load;
-require_once __DIR__ . '/ix-wp-envsync.php';
+require_once __DIR__ . '/includes/class-ixes-auth.php';
+require_once __DIR__ . '/includes/class-ixes-selfupdate.php';
 
 function ixes_rescue_send( $code, array $data ) {
 	status_header( $code );
@@ -38,18 +41,23 @@ list( $ixes_token ) = IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SE
 $ixes_body = (string) file_get_contents( 'php://input' );
 if ( $ixes_token === '' ) ixes_rescue_send( 401, [ 'message' => 'missing token' ] );
 $ixes_ok = IXES_Auth::verify(
-	(string) get_option( 'ixes_token_hash' ), $ixes_token, 'POST', '/' . IXES_Rest::NS . '/rescue',
+	(string) get_option( 'ixes_token_hash' ), $ixes_token, 'POST', '/envsync/v1/rescue', // IXES_Rest::NS, spelled out: that class is not loaded yet
 	(int) ( $_SERVER['HTTP_X_ENVSYNC_TS'] ?? 0 ), $ixes_body, (string) ( $_SERVER['HTTP_X_ENVSYNC_SIG'] ?? '' )
 );
 if ( ! $ixes_ok ) ixes_rescue_send( 401, [ 'message' => 'bad signature' ] );
 
 $ixes_p = json_decode( $ixes_body, true );
 $ixes_p = is_array( $ixes_p ) ? $ixes_p : [];
-switch ( $ixes_p['action'] ?? '' ) {
-	case 'status':      $ixes_r = IXES_Applier::rescue_status(); break;
-	case 'plugins_off': $ixes_r = IXES_Applier::rescue_plugins_off(); break;
-	case 'rollback':    $ixes_r = IXES_Applier::rescue_rollback( isset( $ixes_p['job'] ) ? (string) $ixes_p['job'] : null ); break;
-	default:            $ixes_r = new WP_Error( 'bad_action', 'unknown action', [ 'status' => 400 ] );
+if ( ( $ixes_p['action'] ?? '' ) === 'restore_self' ) {
+	$ixes_r = IXES_Selfupdate::restore( isset( $ixes_p['from'] ) ? (string) $ixes_p['from'] : null, [ 'by' => 'rescue', 'ip' => substr( (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ), 0, 64 ) ] );
+} else {
+	require_once __DIR__ . '/ix-wp-envsync.php';
+	switch ( $ixes_p['action'] ?? '' ) {
+		case 'status':      $ixes_r = IXES_Applier::rescue_status(); break;
+		case 'plugins_off': $ixes_r = IXES_Applier::rescue_plugins_off(); break;
+		case 'rollback':    $ixes_r = IXES_Applier::rescue_rollback( isset( $ixes_p['job'] ) ? (string) $ixes_p['job'] : null ); break;
+		default:            $ixes_r = new WP_Error( 'bad_action', 'unknown action', [ 'status' => 400 ] );
+	}
 }
 if ( is_wp_error( $ixes_r ) ) {
 	$ixes_d = $ixes_r->get_error_data();

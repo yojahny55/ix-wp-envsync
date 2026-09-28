@@ -67,7 +67,7 @@ class IXES_Status {
 	private static function env_facts( array $env, callable $info_for, array $ctx ) {
 		$now = $ctx['now'];
 		$e = [ 'url' => $env['url'], 'label' => $env['label'] ?? '', 'reachable' => false, 'error' => null, 'remote_version' => null, 'version_ok' => null, 'auth_via' => null,
-			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
+			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'self_update' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
 		$info = $info_for( $env );
 		if ( is_wp_error( $info ) ) { $e['error'] = $info->get_error_message(); }
 		else {
@@ -75,6 +75,9 @@ class IXES_Status {
 			$e['remote_version'] = (string) ( $info['plugin'] ?? '' );
 			$e['version_ok'] = $e['remote_version'] === '' ? null : version_compare( $e['remote_version'], $ctx['hub_version'], '>=' );
 			$e['auth_via'] = $info['auth_via'] ?? null;
+			// 'on' / 'off' (the remote turned it off) / null (a remote older than 0.9.4 cannot)
+			$caps = (array) ( $info['caps'] ?? [] );
+			$e['self_update'] = in_array( 'self_update', $caps, true ) ? 'on' : ( in_array( 'self_update_off', $caps, true ) ? 'off' : null );
 			// a remote with another prefix reports its tables in the hub's names (IXES_Client::info())
 			$names_prefix = $info['hub_prefix'] ?? ( $info['prefix'] ?? '' );
 			foreach ( (array) ( $info['tables'] ?? [] ) as $t ) if ( $t['name'] === $names_prefix . 'posts' ) $e['remote_posts'] = (int) $t['rows'];
@@ -95,7 +98,11 @@ class IXES_Status {
 		if ( ! $e['reachable'] && strpos( (string) $e['error'], 'remote 500' ) === 0 ) return $cmd( "wp envsync rescue {$name}", "{$env['url']} crashes on every request (a plugin or a half-finished push); rescue works without loading plugins" );
 		if ( ! $e['reachable'] && strpos( (string) $e['error'], 'HTTP Basic Auth' ) !== false ) return $cmd( "wp envsync env add {$name} --basic-auth=<user:pass>", "{$env['url']} is password-protected by its web server: {$e['error']}" );
 		if ( ! $e['reachable'] ) return $cmd( "wp envsync env add {$name} --token=<new token>", "cannot reach {$env['url']}: {$e['error']}" );
-		if ( $e['version_ok'] === false ) return $cmd( "upload the release zip to {$env['url']}", "remote runs {$e['remote_version']}, hub runs {$ctx['hub_version']}" );
+		if ( $e['version_ok'] === false ) {
+			$why = "remote runs {$e['remote_version']}, hub runs {$ctx['hub_version']}";
+			if ( $e['self_update'] === 'on' ) return $cmd( "wp envsync self-update {$name}", $why );
+			return $cmd( "upload the release zip to {$env['url']}", $why . ( $e['self_update'] === 'off' ? '; self-update is turned off there' : '' ) );
+		}
 		$lock = $e['remote_lock'];
 		if ( $lock && ( $lock['age_minutes'] === null || $lock['age_minutes'] >= self::LOCK_STALE_MIN ) ) return $cmd( "wp envsync unlock {$name}", 'a push started ' . ( $lock['age_minutes'] === null ? 'some time' : $lock['age_minutes'] . ' minutes' ) . ' ago never finished' );
 		if ( $e['interrupted_pull'] ) return $cmd( "wp envsync pull {$name}", 'an interrupted pull can be resumed (or start over with --fresh)' );

@@ -54,6 +54,16 @@ class StatusTest extends TestCase {
 		$n = $this->next( $this->ctx(), $this->info( [ 'plugin' => '0.3.0' ] ) );
 		$this->assertStringContainsString( 'upload the release zip', $n['command'] );
 	}
+	public function test_old_remote_that_can_update_itself_gets_self_update() {
+		$n = $this->next( $this->ctx(), $this->info( [ 'plugin' => '0.3.0', 'caps' => [ 'binary', 'self_update' ] ] ) );
+		$this->assertSame( 'wp envsync self-update prod', $n['command'] );
+		$this->assertSame( 'remote runs 0.3.0, hub runs 0.4.0', $n['why'] );
+	}
+	public function test_old_remote_with_self_update_turned_off_keeps_the_manual_upload() {
+		$n = $this->next( $this->ctx(), $this->info( [ 'plugin' => '0.3.0', 'caps' => [ 'self_update_off' ] ] ) );
+		$this->assertSame( 'upload the release zip to https://p.test', $n['command'] );
+		$this->assertStringContainsString( 'self-update is turned off there', $n['why'] );
+	}
 	public function test_stale_lock_beats_interrupted_pull() {
 		$ctx = $this->ctx( [ 'pull_state' => function () { return [ 'started' => $this->now - 600, 'table' => 'wp_posts', 'cursor' => '5', 'files_done' => 1, 'files_total' => 9 ]; } ] );
 		$n = $this->next( $ctx, $this->info( [ 'lock' => [ 'job' => 'j1', 'started' => $this->now - 1200 ] ] ) );

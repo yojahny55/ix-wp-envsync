@@ -326,6 +326,36 @@ class IXES_Client {
 		}
 	}
 
+	/**
+	 * Upload a self-update zip to /self-update/chunk, chunk by chunk, each signed with its step header. Deflated when the
+	 * remote inflates packed steps: a zip's stored (uncompressed) entries would otherwise show plain PHP to a host firewall.
+	 * @return true|WP_Error
+	 */
+	public function send_package( $id, $abs ) {
+		$sha = hash_file( 'sha256', $abs ); $total = (int) filesize( $abs );
+		$z   = $this->deflate() && in_array( 'packed', $this->caps(), true );
+		$ch  = new IXES_Chunker();
+		$fh  = fopen( $abs, 'rb' );
+		if ( ! $fh ) return new WP_Error( 'io', "cannot read {$abs}" );
+		$offset = 0;
+		while ( true ) {
+			fseek( $fh, $offset );
+			$data  = (string) fread( $fh, $ch->size() );
+			$final = $offset + strlen( $data ) >= $total || $data === '';
+			$step  = [ 'id' => $id, 'offset' => $offset, 'final' => $final, 'sha256' => $sha ] + ( $z ? [ 'enc' => 'deflate' ] : [] );
+			$t0 = microtime( true );
+			$r  = $this->post( '/self-update/chunk', null, [ 'raw_body' => $z ? gzdeflate( $data, 6 ) : $data, 'step' => wp_json_encode( $step ) ] );
+			if ( is_wp_error( $r ) ) {
+				if ( $ch->fail( self::err_code( $r ) ) ) { $this->sleep_s( $ch->backoff() ); continue; }
+				fclose( $fh );
+				return new WP_Error( 'transfer', "gave up at offset {$offset} after {$ch->attempts()} attempts: " . $r->get_error_message() );
+			}
+			$ch->ok( microtime( true ) - $t0 ); $ch->reset_attempts();
+			if ( $final ) { fclose( $fh ); return true; }
+			$offset += strlen( $data );
+		}
+	}
+
 	/** A 'files' push step for many(); deflated when the remote inflates it (0.8.0). */
 	private function batch_step( $job, array $items ) {
 		// 'packed' is how a remote says it has gzinflate; one without zlib still takes plain batches

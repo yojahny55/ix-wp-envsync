@@ -10,6 +10,7 @@ class IXES_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) return;
 		if ( isset( $_POST['ixes_rotate'] ) && check_admin_referer( 'ixes_rotate' ) ) IXES_Auth::install_token();
 		if ( isset( $_POST['ixes_refresh_dirs'] ) && check_admin_referer( 'ixes_excludes' ) ) self::forget_dir_sizes();
+		if ( isset( $_POST['ixes_self_update'] ) && check_admin_referer( 'ixes_self_update' ) ) update_option( IXES_Selfupdate::OPTION, sanitize_key( wp_unslash( $_POST['ixes_self_update'] ) ) === 'off' ? 1 : 0, false );
 		list( $saved_excludes, $excludes_error ) = self::save_excludes();
 		$token = get_transient( 'ixes_token_show' );
 		echo '<div class="wrap"><h1>EnvSync</h1>';
@@ -21,6 +22,7 @@ class IXES_Admin {
 		else echo '<p>Token already issued. Rotate to get a new one (the old one stops working).</p>';
 		echo '<p><strong>Anyone holding this token can write to this site\'s database and to every file in wp-content, plugin PHP included — treat it like an admin password.</strong></p>';
 		echo '<form method="post">'; wp_nonce_field( 'ixes_rotate' ); submit_button( 'Rotate token', 'secondary', 'ixes_rotate', false ); echo '</form>';
+		self::self_update_section();
 
 		$envs = IXES_Env::all();
 		if ( $envs ) {
@@ -53,6 +55,36 @@ class IXES_Admin {
 			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ?? '' ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ?? 0 ) ), count( (array) ( $m['plan']['tables'] ?? [] ) ) );
 		}
 		echo '</div>';
+	}
+
+	/** The self-update switch and its log. Installing code is more than the sync itself does, so a site can refuse it. */
+	private static function self_update_section() {
+		echo '<h2>Self-update</h2>';
+		if ( IXES_Selfupdate::by_constant() ) {
+			echo '<p>Off: <code>ENVSYNC_DISABLE_SELF_UPDATE</code> is set in <code>wp-config.php</code>. Upgrade EnvSync here through Plugins &rarr; Add New.</p>';
+		} else {
+			$on = IXES_Selfupdate::enabled();
+			echo '<p>' . ( $on
+				? 'On: a hub holding this site\'s token can install a newer EnvSync here with <code>wp envsync self-update &lt;env&gt;</code>. The current folder is kept, and put back when the site stops answering.'
+				: 'Off: a hub cannot install EnvSync here; upgrade it through Plugins &rarr; Add New.' ) . ' To lock it off for good, add <code>define( \'ENVSYNC_DISABLE_SELF_UPDATE\', true );</code> to <code>wp-config.php</code>.</p>';
+			echo '<form method="post">'; wp_nonce_field( 'ixes_self_update' );
+			printf( '<input type="hidden" name="ixes_self_update" value="%s">', $on ? 'off' : 'on' );
+			submit_button( $on ? 'Turn self-update off' : 'Turn self-update on', 'secondary', 'ixes_self_update_submit', false );
+			echo '</form>';
+		}
+		$log = array_reverse( IXES_Selfupdate::log_tail( 5 ) );
+		if ( ! $log ) return;
+		echo '<ul>';
+		foreach ( $log as $l ) {
+			$what = [ 'install' => 'installed', 'install_failed' => 'install failed', 'restore' => 'restored' ][ $l['event'] ?? '' ] ?? (string) ( $l['event'] ?? '' );
+			printf( '<li>%s &mdash; %s %s%s%s%s</li>', esc_html( wp_date( 'Y-m-d H:i', (int) ( $l['at'] ?? 0 ) ) ), esc_html( $what ),
+				esc_html( isset( $l['from'] ) ? "{$l['from']} → {$l['to']}" : (string) ( $l['to'] ?? '' ) ),
+				! empty( $l['hub'] ) || ! empty( $l['by'] ) ? esc_html( ' by ' . trim( ( $l['by'] ?? '' ) . ' ' . ( $l['hub'] ?? '' ) ) ) : '',
+				! empty( $l['ip'] ) ? esc_html( " from {$l['ip']}" ) : '',
+				! empty( $l['sha256'] ) ? ' <small><code>' . esc_html( substr( $l['sha256'], 0, 12 ) ) . '</code></small>' : ''
+			);
+		}
+		echo '</ul>';
 	}
 
 	/** Same report as `wp envsync status`, cached 60 s so a dead remote cannot slow the page. */
