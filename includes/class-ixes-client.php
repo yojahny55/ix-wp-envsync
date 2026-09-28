@@ -209,6 +209,8 @@ class IXES_Client {
 		return $this->caps;
 	}
 	public function set_caps( array $caps ) { $this->caps = $caps; }
+	/** The remote carries byte cells losslessly (0.9.3): the hub then asks for them with 'cells' and hashes them as raw bytes. */
+	public function cells() { return in_array( IXES_Hasher::CAP, $this->caps(), true ); }
 	private function binary() { return in_array( 'binary', $this->caps(), true ); }
 	/** The remote serves /file/batch and takes deflated push batches (0.8.0). */
 	public function batch_files() { return $this->binary() && in_array( 'file_batch', $this->caps(), true ); }
@@ -219,6 +221,7 @@ class IXES_Client {
 		return IXES_Hasher::placeholders( $i['url'], $i['abspath'] );
 	}
 
+	/** Pages through $route until 'next' is null; $each( $res ) returning false stops early. */
 	public function paged( $route, array $body, callable $each, $cursor_key = 'from' ) {
 		$limit = isset( $body['limit'] ) ? (int) $body['limit'] : 5000;
 		$max   = $limit;
@@ -230,8 +233,15 @@ class IXES_Client {
 			$res = $this->post( $route, $body );
 			if ( is_wp_error( $res ) ) return $res;
 			$dt  = microtime( true ) - $t0;
-			$each( $res );
+			if ( $each( $res ) === false ) return;
+			$prev = $next;
 			$next = isset( $res['next'] ) ? $res['next'] : null;
+			// a cursor that did not move answers the same page forever: an older remote sends a binary key's cursor
+			// through JSON, which turns its bytes into '?'
+			if ( $next !== null && $next === $prev ) {
+				$t = isset( $body['table'] ) ? " for {$body['table']}" : '';
+				return new WP_Error( 'no_progress', "paging {$route}{$t} stopped: the remote returned the same cursor twice. A binary primary key needs plugin 0.9.3 or newer on the remote." );
+			}
 			if ( $dt > 10 ) $limit = max( 100, (int) ( $limit / 2 ) );
 			elseif ( $dt < 2 ) $limit = min( $max, $limit * 2 );
 		} while ( $next !== null );
