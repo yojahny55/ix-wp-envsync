@@ -247,6 +247,7 @@ class IXES_CLI {
 	 *
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this pull, overriding the environment's own --timeout (env add).
+	 *
 	 * [--parallel=<n>]
 	 * : File requests in flight at once, 1 to 16. Batching and parallel requests need 0.8.0 on the remote; an older one gets one file per request.
 	 * ---
@@ -445,6 +446,7 @@ class IXES_CLI {
 	 *
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this push, overriding the environment's own --timeout (env add).
+	 *
 	 * [--parallel=<n>]
 	 * : File requests in flight at once, 1 to 16. Batching and parallel requests need 0.8.0 on the remote; an older one gets one file per request.
 	 * ---
