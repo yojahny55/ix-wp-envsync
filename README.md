@@ -380,6 +380,7 @@ Options for `add`:
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
+- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
@@ -405,6 +406,7 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 - `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
+- `--timeout=<seconds>` — HTTP timeout for this pull, overriding the environment's own `--timeout` (`env add`).
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
 
@@ -419,6 +421,7 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--timeout=<seconds>` — HTTP timeout for this diff, overriding the environment's own `--timeout` (`env add`).
 
 ### `wp envsync push <env>`
 
@@ -433,12 +436,15 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--timeout=<seconds>` — HTTP timeout for this push, overriding the environment's own `--timeout` (`env add`).
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
 
 Database steps go up deflated as binary, the same way as files. Host firewalls such as Hostinger's score the serialized PHP objects inside plugin rows (Action Scheduler jobs, many options) as an attack, and block a plain JSON batch with `403 Forbidden`. Compressed bytes are not pattern-matched. Both sides need 0.5.5 or newer for this; against an older remote the hub sends plain JSON.
 
 Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks.
+
+Rows are paged by count and by an ~4 MB byte budget, whichever is hit first, so a page of a handful of very wide rows (a table with a lot of post content or serialized options) doesn't outgrow the transfer either. On each side, `INSERT`/`REPLACE` statements built from an incoming page are themselves split to stay under ~75% of that site's own `max_allowed_packet` (read once per sync), so a database with a small packet limit never drops the connection with "MySQL server has gone away" no matter how the other side paged.
 
 Options are matched by row ID, but on a fresh remote those IDs are often taken by WordPress's own transients. A pushed option whose ID is held by a transient or other excluded option there is placed by its name instead. It is not reported as "changed on prod". Upgrade both sides to 0.5.3 before a first deploy.
 
