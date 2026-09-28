@@ -74,7 +74,8 @@ class IXES_Applier {
 			$found = array_map( function ( $r ) use ( $pk ) { return $r[ $pk ]; }, $rows );
 			// touch ids that don't exist yet were inserted by this push and must be deleted, not restored, on rollback
 			$meta['inserted'][ $table ] = [ 'pk' => $pk, 'ids' => array_values( array_diff( (array) ( $t['touch'] ?? [] ), $found ) ) ];
-			file_put_contents( $dir . '/rows-' . $table . '.json', json_encode( [ 'pk' => $pk, 'rows' => $rows ] ) );
+			// byte cells wrapped, or json_encode() fails and rollback finds an empty file
+			file_put_contents( $dir . '/rows-' . $table . '.json', json_encode( [ 'pk' => $pk, 'rows' => array_map( [ 'IXES_Hasher', 'cells_out' ], $rows ) ] ) );
 		}
 
 		$files = array_unique( array_merge( (array) ( $p['plan_meta']['files']['push'] ?? [] ), (array) ( $p['plan_meta']['files']['delete'] ?? [] ) ) );
@@ -94,7 +95,7 @@ class IXES_Applier {
 	}
 
 	// $expect maps id => hash the hub saw on prod, or null for "no row here yet" (an insert)
-	private static function stale( $table, $pk, array $expect, $algo, array $extra = [] ) {
+	private static function stale( $table, $pk, array $expect, $algo, array $extra = [], $bytes = false ) {
 		global $wpdb;
 		$stale = [];
 		$pairs = self::remote_pairs( $extra );
@@ -105,7 +106,7 @@ class IXES_Applier {
 			if ( $row && $map ) $row = $map->row_out( $map->bare( $table ), $row );
 			// an excluded option (transient, cron, siteurl...) is invisible to the planner, so it is "no row" here too
 			if ( $row && self::excluded_option_row( $table, $row ) ) $row = null;
-			$cur = $row ? IXES_Hasher::hash_row( $row, $pairs, $algo ) : null;
+			$cur = $row ? IXES_Hasher::hash_row( $row, $pairs, $algo, $bytes ) : null;
 			if ( $cur !== $h ) $stale[] = $id;
 		}
 		return $stale;
@@ -133,7 +134,7 @@ class IXES_Applier {
 		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return;
 		$meta = json_decode( file_get_contents( $dir . '/meta.json' ), true );
 		if ( ! is_array( $meta ) ) $meta = [ 'set_inserted' => [] ];
-		$meta['set_inserted'][ $table ] = array_merge( (array) ( $meta['set_inserted'][ $table ] ?? [] ), $rows );
+		$meta['set_inserted'][ $table ] = array_merge( (array) ( $meta['set_inserted'][ $table ] ?? [] ), array_map( [ 'IXES_Hasher', 'cells_out' ], $rows ) );
 		file_put_contents( $dir . '/meta.json', json_encode( $meta ) );
 	}
 
@@ -201,10 +202,19 @@ class IXES_Applier {
 		return hash_file( (string) $algo, $abs ) === $expect;
 	}
 
+	/** $wpdb->replace()/insert(), or IXES_Transfer::write_row() for a row with byte cells, which $wpdb would quote as text. */
+	private static function put_row( $table, array $row, $verb ) {
+		global $wpdb;
+		if ( IXES_Transfer::has_bytes( $row ) ) return IXES_Transfer::write_row( $table, $row, $verb );
+		return $verb === 'REPLACE' ? $wpdb->replace( $table, $row ) : $wpdb->insert( $table, $row );
+	}
+
 	public static function job_step( array $p ) {
 		global $wpdb;
 		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		$kind = $p['kind'] ?? '';
+		// a 0.9.3 hub sends byte cells wrapped and says so; it then hashes them as raw bytes too (IXES_Hasher::CAP)
+		$bytes = ! empty( $p['cells'] );
 
 		if ( $kind === 'rows' || $kind === 'delete_rows' ) {
 			$table = sanitize_text_field( $p['table'] );
@@ -213,19 +223,21 @@ class IXES_Applier {
 			if ( ( $p['pk'] ?? null ) !== null && $p['pk'] !== '' && ! $pk ) return new WP_Error( 'bad_pk', 'unknown primary key column', [ 'status' => 400 ] );
 			$algo = $p['algo'] ?? 'sha1';
 			$extra = array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) );
-			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo, $extra ) : [];
+			$stale = $pk ? self::stale( $table, $pk, (array) ( $p['expect'] ?? [] ), $algo, $extra, $bytes ) : [];
 			$skip = array_flip( $stale );
 			$refused = array_values( (array) ( $p['prefix_refused'] ?? [] ) );
 			$is_options = ( $table === $wpdb->options );
 
 			if ( $kind === 'rows' ) {
+				$rows = IXES_Hasher::rows_in( (array) $p['rows'] );
+				if ( is_wp_error( $rows ) ) return new WP_Error( 'bad_cells', "table {$table}: " . $rows->get_error_message(), [ 'status' => 400 ] );
 				$inserted_rows = [];
-				foreach ( (array) $p['rows'] as $row ) {
+				foreach ( $rows as $row ) {
 					if ( $pk && isset( $skip[ $row[ $pk ] ] ) ) continue;
 					if ( $is_options && isset( $row['option_name'] ) && IXES_Env::option_excluded( $row['option_name'] ) ) { $refused[] = $row['option_name']; continue; }
 					foreach ( $row as $k => $v ) if ( $v !== null ) $row[ $k ] = IXES_Hasher::normalize( $v, (array) $p['pairs'] );
 					if ( ! $pk ) {
-						if ( $wpdb->insert( $table, $row ) ) $inserted_rows[] = $row;
+						if ( self::put_row( $table, $row, 'INSERT' ) ) $inserted_rows[] = $row;
 						continue;
 					}
 					if ( $is_options && isset( $row['option_id'] ) ) {
@@ -235,7 +247,7 @@ class IXES_Applier {
 							if ( ! $had ) self::record_meta( $p['job'], 'inserted_option_names', $row['option_name'] );
 						}
 					}
-					$wpdb->replace( $table, $row );
+					self::put_row( $table, $row, 'REPLACE' );
 				}
 				if ( $inserted_rows ) self::record_set_inserted( $p['job'], $table, $inserted_rows );
 			} else {
@@ -312,7 +324,7 @@ class IXES_Applier {
 				foreach ( $rows as $row ) {
 					// hash the row as the hub saw it: in the hub's prefix
 					$seen = $map ? $map->row_out( $map->bare( $table ), $row ) : $row;
-					if ( $seen !== null && isset( $want[ IXES_Hasher::hash_row( $seen, $pairs, $algo ) ] ) ) $gone[] = $row;
+					if ( $seen !== null && isset( $want[ IXES_Hasher::hash_row( $seen, $pairs, $algo, $bytes ) ] ) ) $gone[] = $row;
 				}
 				$off += 5000;
 			} while ( count( $rows ) === 5000 );
@@ -320,7 +332,7 @@ class IXES_Applier {
 			// rollback reads this file; if the rows cannot be kept (bad encoding, disk), delete nothing
 			$dir  = self::job_dir( $p['job'] );
 			$file = $dir ? $dir . '/setdel-' . $table . '.json' : null;
-			$keep = function ( array $rows ) use ( $file ) { $j = json_encode( $rows ); return $j !== false && $file && file_put_contents( $file, $j ) !== false; };
+			$keep = function ( array $rows ) use ( $file ) { $j = json_encode( array_map( [ 'IXES_Hasher', 'cells_out' ], $rows ) ); return $j !== false && $file && file_put_contents( $file, $j ) !== false; };
 			if ( ! $keep( $gone ) ) return new WP_Error( 'snapshot_failed', "cannot keep the {$table} rows for rollback; nothing deleted", [ 'status' => 500 ] );
 			$done = [];
 			foreach ( $gone as $row ) {
@@ -328,6 +340,8 @@ class IXES_Applier {
 				$where = []; $vals = [];
 				foreach ( $row as $col => $v ) {
 					if ( $v === null ) { $where[] = "`{$col}` IS NULL"; continue; }
+					// byte cells as a hex literal (see IXES_Transfer::sql_cell()): quoted they may not match under a utf8mb4 connection
+					if ( IXES_Hasher::is_bytes( $v ) ) { $where[] = "BINARY `{$col}` = 0x" . bin2hex( $v ); continue; }
 					$where[] = "BINARY `{$col}` = %s"; $vals[] = $v;
 				}
 				$sql = "DELETE FROM `{$table}` WHERE " . implode( ' AND ', $where ) . ' LIMIT 1';
@@ -358,7 +372,7 @@ class IXES_Applier {
 			$blocked = IXES_Droptable::blockers( [ $table ], false )[ $table ] ?? [];
 			if ( $blocked ) return [ 'ok' => false, 'refused' => implode( '; ', $blocked ) ];
 			$pk  = IXES_Transfer::pk_of( $table );
-			$now = IXES_Droptable::hashes( $table, self::remote_pairs( array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) ) ), $p['algo'] ?? 'sha1' );
+			$now = IXES_Droptable::hashes( $table, self::remote_pairs( array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) ) ), $p['algo'] ?? 'sha1', $bytes );
 			if ( is_wp_error( $now ) ) return $now;
 			if ( IXES_Droptable::digest( $now, (bool) $pk ) !== (string) ( $p['digest'] ?? '' ) ) return [ 'ok' => false, 'refused' => 'changed since the plan' ];
 			$dir  = self::job_dir( (string) $p['job'] );
@@ -496,7 +510,7 @@ class IXES_Applier {
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
 			$snap = json_decode( file_get_contents( $f ), true );
 			if ( ! is_array( $snap ) ) continue;
-			foreach ( (array) ( $snap['rows'] ?? [] ) as $row ) { $wpdb->replace( $table, $row ); $n++; }
+			foreach ( (array) ( $snap['rows'] ?? [] ) as $row ) { $row = is_array( $row ) ? IXES_Hasher::cells_in( $row ) : null; if ( $row === null ) continue; self::put_row( $table, $row, 'REPLACE' ); $n++; }
 		}
 		foreach ( (array) ( $meta['inserted'] ?? [] ) as $table => $i ) {
 			if ( ! IXES_Transfer::valid_table( $table ) || empty( $i['ids'] ) ) continue;
@@ -507,12 +521,20 @@ class IXES_Applier {
 		foreach ( (array) ( $meta['options_before'] ?? [] ) as $name => $val ) { update_option( $name, $val ); $n++; }
 		foreach ( (array) ( $meta['set_inserted'] ?? [] ) as $table => $rows ) {
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
-			foreach ( (array) $rows as $row ) { $wpdb->delete( $table, $row ); $n++; }
+			foreach ( (array) $rows as $row ) {
+				$row = is_array( $row ) ? IXES_Hasher::cells_in( $row ) : null;
+				if ( $row === null ) continue;
+				IXES_Transfer::has_bytes( $row ) ? IXES_Transfer::delete_row( $table, $row ) : $wpdb->delete( $table, $row );
+				$n++;
+			}
 		}
 		foreach ( glob( $dir . '/setdel-*.json' ) ?: [] as $f ) {
 			$table = substr( basename( $f, '.json' ), 7 );
 			if ( ! IXES_Transfer::valid_table( $table ) ) continue;
-			foreach ( (array) json_decode( (string) file_get_contents( $f ), true ) as $row ) if ( is_array( $row ) ) { $wpdb->insert( $table, $row ); $n++; }
+			foreach ( (array) json_decode( (string) file_get_contents( $f ), true ) as $row ) {
+				$row = is_array( $row ) ? IXES_Hasher::cells_in( $row ) : null;
+				if ( $row !== null ) { self::put_row( $table, $row, 'INSERT' ); $n++; }
+			}
 		}
 
 		$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/files', FilesystemIterator::SKIP_DOTS ) );
@@ -552,7 +574,14 @@ class IXES_Applier {
 		$ok = true;
 		$put = function ( $s ) use ( $h, &$ok ) { if ( $ok && fwrite( $h, $s ) !== strlen( $s ) ) $ok = false; };
 		$put( IXES_Droptable::sql_head( $remote_name, $create ) );
-		$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ], function ( $res ) use ( $put, $remote_name ) { if ( $res['rows'] ) $put( IXES_Droptable::sql_insert( $remote_name, (array) $res['rows'] ) ); } );
+		$bad = null;
+		$ask = [ 'table' => $name, 'limit' => 5000, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ] + ( $c->cells() ? [ 'cells' => 1 ] : [] );
+		$r = $c->paged( '/dump', $ask, function ( $res ) use ( $put, $remote_name, &$bad ) {
+			$rows = IXES_Hasher::rows_in( (array) $res['rows'] );
+			if ( is_wp_error( $rows ) ) { $bad = $rows; return; }
+			if ( $rows ) $put( IXES_Droptable::sql_insert( $remote_name, $rows ) );
+		} );
+		if ( $bad && ! is_wp_error( $r ) ) $r = $bad;
 		if ( ! fclose( $h ) ) $ok = false;
 		if ( is_wp_error( $r ) || ! $ok ) { @unlink( $file ); return is_wp_error( $r ) ? $r : new WP_Error( 'backup_failed', "cannot write {$file}" ); }
 		return $file;
@@ -576,6 +605,12 @@ class IXES_Applier {
 		$pairs[] = [ '//' . $bare( IXES_Env::local_url() ), '//' . $bare( $info['url'] ) ];
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
 		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		// a 0.9.3 remote takes byte cells wrapped (an older one gets rows as before); 'cells' tells it to hash them as
+		// raw bytes, only when the plan's own hashes were taken that way (IXES_Hasher::bytes_mode())
+		$bytes = ! empty( $plan['bytes_hash'] );
+		$cells = $bytes ? [ 'cells' => 1 ] : [];
+		$wrap  = $c->cells();
+		$wire  = function ( array $rows ) use ( $wrap ) { return $wrap ? array_map( [ 'IXES_Hasher', 'cells_out' ], $rows ) : $rows; };
 
 		$touch = [];
 		foreach ( $plan['tables'] as $name => $t ) {
@@ -695,7 +730,7 @@ class IXES_Applier {
 					// estimated size, same as the hub's own import_rows(), so neither side ever ships an oversized statement
 					foreach ( IXES_Transfer::row_batches( $rows, IXES_Transfer::DUMP_BYTE_BUDGET ) as $sub ) {
 						$sub_expect = array_intersect_key( $expect, array_flip( array_column( $sub, $pk ) ) );
-						$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $sub, 'expect' => $sub_expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
+						$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $wire( $sub ), 'expect' => $sub_expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ] + $cells;
 						$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 						if ( is_wp_error( $r ) ) return $fail( $r );
 						foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
@@ -705,7 +740,7 @@ class IXES_Applier {
 			}
 			// before set_insert, so a pushed row can never be what gets deleted
 			if ( ! empty( $t['set_delete'] ) ) {
-				$step = [ 'job' => $job, 'kind' => 'delete_set', 'table' => $name, 'hashes' => $t['set_delete'], 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
+				$step = [ 'job' => $job, 'kind' => 'delete_set', 'table' => $name, 'hashes' => $t['set_delete'], 'extra' => $extra_prod, 'algo' => $plan['algo'] ] + $cells;
 				$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 			}
@@ -714,10 +749,10 @@ class IXES_Applier {
 				// the pk branch above: the remote inserts one row at a time, and bytes alone could still let a step
 				// of many small rows carry so many that one HTTP request runs past the remote's execution time limit
 				$rows = []; $next = null;
-				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'] ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
+				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'], $bytes ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
 				foreach ( array_chunk( $rows, 500 ) as $c500 ) {
 					foreach ( IXES_Transfer::row_batches( $c500, IXES_Transfer::DUMP_BYTE_BUDGET ) as $chunk ) {
-						$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
+						$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $wire( $chunk ), 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ] + $cells;
 						$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 						if ( is_wp_error( $r ) ) return $fail( $r );
 						foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
@@ -726,7 +761,7 @@ class IXES_Applier {
 			}
 			if ( $t['delete'] ) {
 				$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $t['delete'] ) );
-				$step = [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
+				$step = [ 'job' => $job, 'kind' => 'delete_rows', 'table' => $name, 'pk' => $pk, 'ids' => $t['delete'], 'expect' => $expect, 'extra' => $extra_prod, 'algo' => $plan['algo'] ] + $cells;
 				$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 				foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id} (delete)";
@@ -750,7 +785,7 @@ class IXES_Applier {
 				$file = self::copy_remote_table( $c, $name, (string) $chk['table'], (string) $chk['create'], IXES_Droptable::backup_file( $dir, $env['name'] . '-' . $job, (string) $chk['table'] ) );
 				if ( is_wp_error( $file ) ) { $kept_tables[ $name ] = 'no local copy: ' . $file->get_error_message(); continue; }
 				$backups[ $name ] = $file;
-				$step = [ 'job' => $job, 'kind' => 'drop_table', 'table' => $name, 'digest' => $drops[ $name ]['digest'], 'extra' => $extra_prod, 'algo' => $plan['algo'] ];
+				$step = [ 'job' => $job, 'kind' => 'drop_table', 'table' => $name, 'digest' => $drops[ $name ]['digest'], 'extra' => $extra_prod, 'algo' => $plan['algo'] ] + $cells;
 				$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 				if ( is_wp_error( $r ) ) return $fail( $r );
 				if ( empty( $r['ok'] ) ) { $kept_tables[ $name ] = (string) ( $r['refused'] ?? 'refused' ); continue; }

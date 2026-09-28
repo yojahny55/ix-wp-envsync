@@ -70,9 +70,11 @@ class IXES_Pull {
 		$tables_in_scope = array_values( array_filter( $info['tables'], function ( $t ) use ( $scope ) { return $scope->table_in( $t['name'] ); } ) );
 		list( $drop_local, $drop_warn ) = self::plan_drops( $env, $info, $scope, $algo );
 		list( $new_tables, $schema_changes, $schema_warn ) = self::plan_schema( $c, $info, $tables_in_scope );
+		$bytes_hash = self::bytes_hash( $env, $info );
+		$byte_warn = IXES_Transfer::byte_warnings( (array) ( $info['caps'] ?? [] ), array_column( $tables_in_scope, 'name' ), $env['name'], $new_tables );
 		return [
 			'created' => time(),
-			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
+			'env' => $env['name'], 'algo' => $algo, 'info' => $info, 'bytes_hash' => $bytes_hash,
 			'tables' => $tables_in_scope,
 			'new_tables' => $new_tables, 'schema_changes' => $schema_changes,
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
@@ -80,7 +82,7 @@ class IXES_Pull {
 			'seed' => $seed,
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
 			'scope' => $scope->to_array(),
-			'warnings' => array_merge( $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ), $drop_warn, $schema_warn ),
+			'warnings' => array_merge( $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ), $drop_warn, $schema_warn, $byte_warn ),
 			'drop_local' => $drop_local,
 		];
 	}
@@ -174,6 +176,26 @@ class IXES_Pull {
 	 * A table this side wrote to since the baseline stays (with a warning), as does any table the baseline does not know.
 	 * @return array [ drop_local: table => [why, pk, rows, expect], warnings ]
 	 */
+	/**
+	 * How rows a pull writes into the baseline hash byte cells: the mode that baseline recorded. A baseline pull
+	 * records its own at the start (run()), so a resume reads it back the same; a scoped pull over an older
+	 * baseline keeps hashing the old way, or its rows would never match the rest of that baseline's comparisons.
+	 */
+	public static function hash_mode( $bl ) {
+		return $bl->meta( 'bytes_hash' ) === 'yes';
+	}
+
+	/** A new baseline records how its byte cells are hashed; a pull refreshing part of one keeps that baseline's mode. */
+	public static function record_hash_mode( $bl, $as_baseline, $cells ) {
+		if ( $as_baseline ) $bl->meta( 'bytes_hash', $cells ? 'yes' : 'no' );
+	}
+
+	/** How this env's existing baseline hashes byte cells, for comparing this side against it (IXES_Hasher::bytes_mode()). */
+	private static function bytes_hash( array $env, array $info ) {
+		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
+		return IXES_Hasher::bytes_mode( (array) ( $info['caps'] ?? [] ), $bl->exists(), $bl->exists() ? $bl->meta( 'bytes_hash' ) : null );
+	}
+
 	public static function plan_drops( array $env, array $info, IXES_Scope $scope, $algo ) {
 		global $wpdb;
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
@@ -185,7 +207,7 @@ class IXES_Pull {
 		foreach ( $bl->tables() as $n ) {
 			if ( isset( $remote[ $n ] ) || strpos( $n, $wpdb->prefix . 'ixes_' ) === 0 || ! $scope->table_in( $n ) || ! IXES_Transfer::valid_table( $n ) ) continue;
 			$pk  = IXES_Transfer::pk_of( $n );
-			$now = IXES_Droptable::hashes( $n, $pairs, $algo );
+			$now = IXES_Droptable::hashes( $n, $pairs, $algo, self::bytes_hash( $env, $info ) );
 			if ( is_wp_error( $now ) ) { $warn[] = "{$n}: " . $now->get_error_message(); continue; }
 			$base = $bl->rows( $n ); $cmp = $now;
 			if ( ! $pk ) { $base = array_values( array_unique( array_values( $base ) ) ); $cmp = array_values( array_unique( $now ) ); }
@@ -215,7 +237,8 @@ class IXES_Pull {
 		$snaps = [];
 		foreach ( $drops as $n => $d ) {
 			if ( ! empty( $blocked[ $n ] ) ) { $out['kept'][ $n ] = implode( '; ', $blocked[ $n ] ); continue; }
-			$now = IXES_Droptable::hashes( $n, $pairs, $plan['algo'] );
+			// hashed the way plan_drops() hashed them for the digest
+			$now = IXES_Droptable::hashes( $n, $pairs, $plan['algo'], ! empty( $plan['bytes_hash'] ) );
 			if ( is_wp_error( $now ) || IXES_Droptable::digest( $now, (bool) $d['pk'] ) !== (string) $d['digest'] ) { $out['kept'][ $n ] = 'changed since the plan'; continue; }
 			// the .sql is the person's copy; the .jsonl is what brings the table back if the site breaks
 			$jsonl = ixes_storage_dir() . '/drops/' . $label . '-' . $n . '.jsonl';
@@ -343,6 +366,7 @@ class IXES_Pull {
 			if ( $as_baseline ) $bl->reset();
 			// decided once: a resumed pull finishes the way it started, whatever the environment says by then
 			$bl->meta( 'pull_as_baseline', $as_baseline ? 'yes' : 'no' );
+			self::record_hash_mode( $bl, $as_baseline, $c->cells() );
 			$path  = IXES_Planner::save( $plan, 'pull' );
 			$state = IXES_PullState::start( $env['name'], $path, (string) ( $plan['info']['plugin'] ?? '' ), (array) ( $plan['scope'] ?? [] ) );
 		}
@@ -385,13 +409,18 @@ class IXES_Pull {
 			}
 			$pk = $t['pk'];
 			$row_err = null;
-			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'from' => $from, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, &$row_err ) {
+			// the wire always carries bytes intact when the remote can; the hashes follow the baseline they join
+			$bytes = self::hash_mode( $bl );
+			$ask = [ 'table' => $name, 'limit' => 5000, 'from' => $from, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ] + ( $c->cells() ? [ 'cells' => 1 ] : [] );
+			$r = $c->paged( '/dump', $ask, function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, $bytes, &$row_err ) {
 				if ( $row_err ) return;
-				$ins = IXES_Transfer::import_rows( $name, $res['rows'], $pairs, (bool) $pk );
+				$rows = IXES_Hasher::rows_in( (array) $res['rows'] );
+				if ( is_wp_error( $rows ) ) { $row_err = new WP_Error( 'bad_cells', "table {$name}: " . $rows->get_error_message() ); return; }
+				$ins = IXES_Transfer::import_rows( $name, $rows, $pairs, (bool) $pk );
 				if ( is_wp_error( $ins ) ) { $row_err = $ins; return; }
 				$map = [];
-				foreach ( $res['rows'] as $row ) {
-					$h = IXES_Hasher::hash_row( $row, $hash_pairs, $plan['algo'] );
+				foreach ( $rows as $row ) {
+					$h = IXES_Hasher::hash_row( $row, $hash_pairs, $plan['algo'], $bytes );
 					if ( $pk ) $map[ $row[ $pk ] ] = $h; else $map[ $h ] = $h;
 				}
 				$bl->write_rows( $name, $map );

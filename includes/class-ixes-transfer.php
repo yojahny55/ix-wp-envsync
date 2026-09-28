@@ -86,7 +86,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
 			'self_dir'        => basename( dirname( IXES_FILE ) ), // a self-update zip's top folder must be this
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
@@ -124,13 +124,14 @@ class IXES_Transfer {
 
 	/** $byte_budget (0 = off): a page also stops once its rows' estimated size crosses it, whichever comes first; an
 	 *  old remote that does not read this parameter simply keeps paging by row count alone (still safe: the hub's
-	 *  own import_rows() splits its INSERT/REPLACE statements regardless of how big a page it was handed). */
-	public static function dump( $table, $from_pk, $limit, $byte_budget = 0 ) {
+	 *  own import_rows() splits its INSERT/REPLACE statements regardless of how big a page it was handed).
+	 *  $bytes: the hub asked for byte cells as wrappers (IXES_Hasher::CAP); an older hub never does, and gets rows as before. */
+	public static function dump( $table, $from_pk, $limit, $byte_budget = 0, $bytes = false ) {
 		global $wpdb;
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$pk = self::pk_of( $table );
 		if ( $pk ) {
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` > %s ORDER BY `{$pk}` LIMIT %d", $from_pk === null ? '' : $from_pk, $limit ), ARRAY_A );
+			$rows = $wpdb->get_results( "SELECT * FROM `{$table}` WHERE `{$pk}` > " . self::key_literal( $from_pk === null ? '' : $from_pk ) . " ORDER BY `{$pk}` LIMIT " . (int) $limit, ARRAY_A );
 			$more = count( $rows ) === $limit;
 			$page = self::budget_page( $rows, (int) $byte_budget );
 			$rows = $page['rows']; $more = $more || $page['cut'];
@@ -154,23 +155,90 @@ class IXES_Transfer {
 			foreach ( $rows as $r ) { $t = $map->row_out( $bare, $r ); if ( $t !== null ) $out[] = $t; }
 			$rows = $out;
 		}
+		if ( $bytes ) $rows = array_map( [ 'IXES_Hasher', 'cells_out' ], $rows );
 		return [ 'rows' => $rows, 'next' => $next ];
 	}
 
-	public static function hash_rows( $table, $from_pk, $limit, array $pairs, $algo ) {
+	/**
+	 * A key cursor as a SQL literal: a binary key as hex, so no invalid UTF-8 ever sits inside the query text
+	 * (wpdb may strip or refuse it on a table whose collation it does not trust); anything else quoted as before.
+	 */
+	public static function key_literal( $v ) {
+		global $wpdb;
+		if ( IXES_Hasher::is_bytes( $v ) ) return '0x' . bin2hex( $v );
+		return $wpdb->prepare( '%s', (string) $v );
+	}
+
+	/** Columns of a CREATE TABLE whose type holds raw bytes: binary, varbinary, the blobs, bit. */
+	public static function byte_columns( $sql ) {
+		$out = [];
+		foreach ( self::column_defs_from_create( $sql ) as $col => $def ) {
+			if ( preg_match( '/^`[^`]+`\s+(?:(?:tiny|medium|long)?blob|(?:var)?binary|bit)\b/i', $def ) ) $out[] = $col;
+		}
+		return $out;
+	}
+
+	/**
+	 * Against a remote without IXES_Hasher::CAP, rows still travel as before: say which tables have byte columns, whose
+	 * values may arrive with '?' where the bytes were. $create: table => CREATE TABLE text for tables not here yet.
+	 * @return string[]
+	 */
+	public static function byte_warnings( array $caps, array $tables, $env, array $create = [] ) {
+		if ( in_array( IXES_Hasher::CAP, $caps, true ) ) return [];
+		$warn = [];
+		foreach ( $tables as $n ) {
+			$sql  = $create[ $n ] ?? ( self::valid_table( $n ) ? self::create_table_sql( $n ) : null );
+			$cols = $sql ? self::byte_columns( $sql ) : [];
+			if ( $cols ) $warn[] = "{$n}: binary column(s) " . implode( ', ', $cols ) . " may not travel intact: {$env} runs a plugin older than 0.9.3, and bytes that are not valid UTF-8 arrive as '?' (distinct keys can collide). Upload 0.9.3 or newer there.";
+		}
+		return $warn;
+	}
+
+	/** One cell as a SQL literal. Bytes that are not valid UTF-8 go as a hex literal: quoted, a utf8mb4 connection may reject or mangle them. */
+	public static function sql_cell( $v ) {
+		if ( $v === null ) return 'NULL';
+		if ( IXES_Hasher::is_bytes( $v ) ) return '0x' . bin2hex( $v );
+		return "'" . esc_sql( (string) $v ) . "'";
+	}
+
+	/** INSERT/REPLACE of one row through sql_cell(), for a row with byte cells ($wpdb->insert() quotes them as text). Only real columns. */
+	public static function write_row( $table, array $row, $verb = 'INSERT' ) {
+		global $wpdb;
+		if ( ! $row || array_diff( array_keys( $row ), self::local_columns( $table ) ) ) return false;
+		return $wpdb->query( ( $verb === 'REPLACE' ? 'REPLACE' : 'INSERT' ) . " INTO `{$table}` (`" . implode( '`,`', array_keys( $row ) ) . '`) VALUES (' . implode( ',', array_map( [ __CLASS__, 'sql_cell' ], $row ) ) . ')' );
+	}
+
+	/** $wpdb->delete() for a row with byte cells. */
+	public static function delete_row( $table, array $row ) {
+		global $wpdb;
+		if ( ! $row || array_diff( array_keys( $row ), self::local_columns( $table ) ) ) return false;
+		$where = [];
+		foreach ( $row as $col => $v ) $where[] = $v === null ? "`{$col}` IS NULL" : "`{$col}` = " . self::sql_cell( $v );
+		return $wpdb->query( "DELETE FROM `{$table}` WHERE " . implode( ' AND ', $where ) );
+	}
+
+	/** A row with at least one byte cell: written through write_row(), not $wpdb. */
+	public static function has_bytes( array $row ) {
+		foreach ( $row as $v ) if ( IXES_Hasher::is_bytes( $v ) ) return true;
+		return false;
+	}
+
+	public static function hash_rows( $table, $from_pk, $limit, array $pairs, $algo, $bytes = false ) {
 		global $wpdb;
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$d  = self::dump( $table, $from_pk, $limit );
 		if ( is_wp_error( $d ) ) return $d;
 		$pk = self::pk_of( $table );
-		$out = [];
+		$out = []; $byte_keys = false;
 		$is_options = ( $table === $wpdb->options );
 		foreach ( $d['rows'] as $r ) {
 			if ( $is_options && IXES_Env::option_excluded( $r['option_name'] ) ) continue;
-			$h = IXES_Hasher::hash_row( $r, $pairs, $algo );
+			$h = IXES_Hasher::hash_row( $r, $pairs, $algo, $bytes );
 			if ( $pk ) $out[ $r[ $pk ] ] = $h; else $out[] = $h;
+			if ( $pk && IXES_Hasher::is_bytes( $r[ $pk ] ) ) $byte_keys = true;
 		}
-		return [ 'rows' => $out, 'next' => $d['next'] ];
+		// a key JSON cannot carry: the hub must not compare this table by key (see IXES_Planner::build())
+		return [ 'rows' => $out, 'next' => $d['next'] ] + ( $byte_keys ? [ 'byte_keys' => true ] : [] );
 	}
 
 	/** This plugin's own directory, relative to wp-content, with a trailing slash. */
@@ -444,9 +512,8 @@ class IXES_Transfer {
 			$cells = [];
 			foreach ( $cols as $c ) {
 				$v = isset( $r[ $c ] ) ? $r[ $c ] : null;
-				if ( $v === null ) { $cells[] = 'NULL'; continue; }
-				$v = IXES_Hasher::normalize( $v, $pairs );
-				$cells[] = "'" . esc_sql( (string) $v ) . "'";
+				// normalize() leaves byte cells alone; sql_cell() sends them as hex so they land byte for byte
+				$cells[] = self::sql_cell( $v === null ? null : IXES_Hasher::normalize( $v, $pairs ) );
 			}
 			$frags[] = '(' . implode( ',', $cells ) . ')';
 		}
