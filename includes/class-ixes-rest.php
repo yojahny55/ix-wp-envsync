@@ -113,7 +113,7 @@ class IXES_Rest {
 	}
 	public static function dump( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		return IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ) );
+		return IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ), (int) ( $p['bytes'] ?? 0 ) );
 	}
 	public static function file_get( WP_REST_Request $req ) {
 		$p   = $req->get_json_params();

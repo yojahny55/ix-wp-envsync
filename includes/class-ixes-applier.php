@@ -427,7 +427,7 @@ class IXES_Applier {
 	 * Run one remote call; on failure ask $on_error what to do: retry | plugins_off (then retry) | rollback | leave.
 	 * No $on_error (agents, --yes) means rollback. $choice receives the final answer.
 	 */
-	public static function attempt( callable $op, callable $on_error = null, callable $plugins_off = null, &$choice = null ) {
+	public static function attempt( callable $op, ?callable $on_error = null, ?callable $plugins_off = null, &$choice = null ) {
 		while ( true ) {
 			$r = $op();
 			if ( ! is_wp_error( $r ) ) return $r;
@@ -546,13 +546,13 @@ class IXES_Applier {
 		$ok = true;
 		$put = function ( $s ) use ( $h, &$ok ) { if ( $ok && fwrite( $h, $s ) !== strlen( $s ) ) $ok = false; };
 		$put( IXES_Droptable::sql_head( $remote_name, $create ) );
-		$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000 ], function ( $res ) use ( $put, $remote_name ) { if ( $res['rows'] ) $put( IXES_Droptable::sql_insert( $remote_name, (array) $res['rows'] ) ); } );
+		$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ], function ( $res ) use ( $put, $remote_name ) { if ( $res['rows'] ) $put( IXES_Droptable::sql_insert( $remote_name, (array) $res['rows'] ) ); } );
 		if ( ! fclose( $h ) ) $ok = false;
 		if ( is_wp_error( $r ) || ! $ok ) { @unlink( $file ); return is_wp_error( $r ) ? $r : new WP_Error( 'backup_failed', "cannot write {$file}" ); }
 		return $file;
 	}
 
-	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, IXES_Progress $progress = null, callable $on_error = null ) {
+	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, ?IXES_Progress $progress = null, ?callable $on_error = null ) {
 		global $wpdb;
 		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$info = $c->info();
@@ -671,11 +671,16 @@ class IXES_Applier {
 					$expect = array_intersect_key( $plan['remote_hashes'][ $name ] ?? [], array_flip( $chunk ) );
 					$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $chunk ) );
 					$rows = $wpdb->get_results( "SELECT * FROM `{$name}` WHERE `{$pk}` IN ({$in})", ARRAY_A );
-					$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $rows, 'expect' => $expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
-					$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
-					if ( is_wp_error( $r ) ) return $fail( $r );
-					foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
-					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
+					// a fixed id count still lets wide rows (post content, big option values) make one huge step; re-split by
+					// estimated size, same as the hub's own import_rows(), so neither side ever ships an oversized statement
+					foreach ( IXES_Transfer::row_batches( $rows, IXES_Transfer::DUMP_BYTE_BUDGET ) as $sub ) {
+						$sub_expect = array_intersect_key( $expect, array_flip( array_column( $sub, $pk ) ) );
+						$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => $pk, 'rows' => $sub, 'expect' => $sub_expect, 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
+						$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
+						if ( is_wp_error( $r ) ) return $fail( $r );
+						foreach ( $r['stale'] as $id ) $stale[] = "{$name}#{$id}";
+						foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
+					}
 				}
 			}
 			// before set_insert, so a pushed row can never be what gets deleted
@@ -685,14 +690,18 @@ class IXES_Applier {
 				if ( is_wp_error( $r ) ) return $fail( $r );
 			}
 			if ( $t['set_insert'] ) {
-				// no-pk table: send full rows whose hash is in set_insert
+				// no-pk table: send full rows whose hash is in set_insert. Capped at 500 rows per step too, same as
+				// the pk branch above: the remote inserts one row at a time, and bytes alone could still let a step
+				// of many small rows carry so many that one HTTP request runs past the remote's execution time limit
 				$rows = []; $next = null;
 				do { $d = IXES_Transfer::dump( $name, $next, 5000 ); foreach ( $d['rows'] as $row ) if ( in_array( IXES_Hasher::hash_row( $row, $local_pairs, $plan['algo'] ), $t['set_insert'], true ) ) $rows[] = $row; $next = $d['next']; } while ( $next !== null );
-				foreach ( array_chunk( $rows, 500 ) as $chunk ) {
-					$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
-					$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
-					if ( is_wp_error( $r ) ) return $fail( $r );
-					foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
+				foreach ( array_chunk( $rows, 500 ) as $c500 ) {
+					foreach ( IXES_Transfer::row_batches( $c500, IXES_Transfer::DUMP_BYTE_BUDGET ) as $chunk ) {
+						$step = [ 'job' => $job, 'kind' => 'rows', 'table' => $name, 'pk' => null, 'rows' => $chunk, 'expect' => [], 'extra' => $extra_prod, 'pairs' => $pairs, 'algo' => $plan['algo'] ];
+						$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
+						if ( is_wp_error( $r ) ) return $fail( $r );
+						foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "{$name}: refused {$ref}";
+					}
 				}
 			}
 			if ( $t['delete'] ) {

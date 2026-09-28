@@ -7,7 +7,7 @@ class IXES_Planner {
 	 * $mirror (push --mirror, first deploy only): rows, files and tables only the remote has, within the scope, are deleted there.
 	 * $drop (push --drop-tables): tables only the remote has that are dropped there even though the baseline does not know them.
 	 */
-	public static function build( array $env, IXES_Client $c, IXES_Scope $scope = null, $mirror = false, array $drop = [] ) {
+	public static function build( array $env, IXES_Client $c, ?IXES_Scope $scope = null, $mirror = false, array $drop = [] ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();

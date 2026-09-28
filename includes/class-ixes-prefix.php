@@ -15,7 +15,7 @@ class IXES_Prefix {
 
 	/** The translation for the request being served, or null when both sides share a prefix (always null on the hub). */
 	public static function current() { return self::$current; }
-	public static function set_current( IXES_Prefix $p = null ) { self::$current = $p; }
+	public static function set_current( ?IXES_Prefix $p = null ) { self::$current = $p; }
 	public static function valid( $prefix ) { return is_string( $prefix ) && preg_match( '/\A[A-Za-z0-9_]+\z/', $prefix ) === 1; }
 
 	public function local() { return $this->local; }

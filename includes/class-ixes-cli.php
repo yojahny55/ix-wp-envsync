@@ -8,7 +8,17 @@ class IXES_CLI {
 		if ( ! $e ) WP_CLI::error( "unknown env '{$name}'. Run: wp envsync env list" );
 		return $e;
 	}
-	private function client( $name ) { return new IXES_Client( $this->get_env( $name ) ); }
+	/** $timeout (from --timeout on pull/diff/push) overrides the env's own --timeout for this run only; it is never saved. */
+	private function client( $name, $timeout = null ) {
+		$env = $this->get_env( $name );
+		if ( $timeout !== null ) $env['timeout'] = $timeout;
+		return new IXES_Client( $env );
+	}
+	private function timeout_override( $assoc ) {
+		if ( ! isset( $assoc['timeout'] ) ) return null;
+		if ( ! is_numeric( $assoc['timeout'] ) || (int) $assoc['timeout'] < 1 ) WP_CLI::error( '--timeout must be a positive number of seconds' );
+		return (int) $assoc['timeout'];
+	}
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
 	private function logger() { return function ( $m ) { WP_CLI::log( $m ); }; }
@@ -82,6 +92,9 @@ class IXES_CLI {
 	 * [--only=<parts>]
 	 * : Default scope for this environment's pull, diff and push, e.g. db,uploads when code travels by git (for add). An empty value or "all" removes it.
 	 *
+	 * [--timeout=<seconds>]
+	 * : HTTP timeout for every request to this environment (for add). Default: 120. --timeout on pull/diff/push overrides it for that run. Pass an empty value to remove it.
+	 *
 	 * [--basic-auth=<credentials>]
 	 * : HTTP Basic Auth credentials as user:pass, for a remote behind a password-protected proxy (for add). Pass an empty value to remove them.
 	 *
@@ -103,9 +116,9 @@ class IXES_CLI {
 			$rows = [];
 			foreach ( IXES_Env::all() as $e ) {
 				$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $e['name'] . '.sqlite' );
-				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'only' => ( $e['default_only'] ?? '' ) !== '' ? $e['default_only'] : 'everything', 'baseline' => $bl->baseline_label() ];
+				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'only' => ( $e['default_only'] ?? '' ) !== '' ? $e['default_only'] : 'everything', 'timeout' => ( $e['timeout'] ?? '' ) !== '' ? $e['timeout'] . 's' : '120s (default)', 'baseline' => $bl->baseline_label() ];
 			}
-			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'only', 'baseline' ] );
+			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'only', 'timeout', 'baseline' ] );
 			return;
 		}
 		if ( $action === 'add' ) {
@@ -122,6 +135,10 @@ class IXES_CLI {
 				try { $only = IXES_Scope::default_only( $assoc['only'] === true ? '' : $assoc['only'] ); }
 				catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 				if ( $only === '' ) unset( $env['default_only'] ); else $env['default_only'] = $only;
+			}
+			if ( isset( $assoc['timeout'] ) ) {
+				if ( $assoc['timeout'] === '' || $assoc['timeout'] === true ) unset( $env['timeout'] );
+				else $env['timeout'] = $assoc['timeout']; // IXES_Env::add() validates it
 			}
 			if ( isset( $assoc['basic-auth'] ) ) {
 				if ( $assoc['basic-auth'] === '' || $assoc['basic-auth'] === true ) unset( $env['basic_auth'] );
@@ -219,10 +236,13 @@ class IXES_CLI {
 	 *
 	 * [--backup-dir=<dir>]
 	 * : Where to write the .sql copy of every table the pull drops here. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
+	 *
+	 * [--timeout=<seconds>]
+	 * : HTTP timeout for this pull, overriding the environment's own --timeout (env add).
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) );
 		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
 		$state = IXES_PullState::load( $env['name'] );
 		if ( $state ) {
@@ -313,10 +333,13 @@ class IXES_CLI {
 	 *
 	 * [--paths=<paths>]
 	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+	 *
+	 * [--timeout=<seconds>]
+	 * : HTTP timeout for this diff, overriding the environment's own --timeout (env add).
 	 */
 	public function diff( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) );
 		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
 		$path = IXES_Planner::save( $plan );
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
@@ -395,9 +418,12 @@ class IXES_CLI {
 	 *
 	 * [--backup-dir=<dir>]
 	 * : Where the hub writes its .sql copy of every table the push drops. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
+	 *
+	 * [--timeout=<seconds>]
+	 * : HTTP timeout for this push, overriding the environment's own --timeout (env add).
 	 */
 	public function push( $args, $assoc ) {
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) );
 		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
 		$saved = null;
 		if ( ! empty( $assoc['plan'] ) ) {
