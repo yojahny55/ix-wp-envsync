@@ -561,6 +561,9 @@ class IXES_CLI {
 	 * [--restore-self]
 	 * : Put back the EnvSync folder the last self-update replaced.
 	 *
+	 * [--from=<version>]
+	 * : With --restore-self: the version to put back. Default: the version the remote's backup holds.
+	 *
 	 * [--yes]
 	 * : Skip confirmation.
 	 */
@@ -568,8 +571,14 @@ class IXES_CLI {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
 		// before 'status': that action loads the plugin, and the plugin may be exactly what is broken
 		if ( ! empty( $assoc['restore-self'] ) ) {
-			$this->confirm( $assoc, "Put back the EnvSync folder the last self-update replaced on {$env['name']}?" );
-			$r = $this->fail_if_error( $c->rescue( 'restore_self' ) );
+			$from = (string) ( $assoc['from'] ?? '' );
+			if ( $from === '' ) {
+				$b = $this->fail_if_error( $c->rescue( 'self_backup' ) );
+				$from = (string) ( $b['version'] ?? '' );
+				if ( $from === '' ) WP_CLI::error( "{$env['name']} keeps no self-update backup (a successful self-update drops it)" );
+			}
+			$this->confirm( $assoc, "Put EnvSync {$from} back on {$env['name']}, from the backup its last self-update kept?" );
+			$r = $this->fail_if_error( $c->rescue( 'restore_self', [ 'from' => $from ] ) );
 			$this->forget_status();
 			WP_CLI::success( "EnvSync {$r['restored']} is back on {$env['name']}" );
 			return;
@@ -642,7 +651,7 @@ class IXES_CLI {
 		$r = IXES_Selfupdate::apply( $env, $c, $plan, $this->logger(), function () use ( $args, $t ) { return $this->client( $args[0], $t ); } );
 		$this->forget_status();
 		$this->fail_if_error( $r );
-		if ( $r['note'] !== '' ) WP_CLI::warning( "the install answered with an error, but the new version runs and the site answers: {$r['note']}" );
+		if ( $r['note'] !== '' ) WP_CLI::warning( "the new version runs and the site answers, but: {$r['note']}" );
 		WP_CLI::success( "{$env['name']} runs EnvSync {$r['to']} (was {$r['from']}); /info and the site answer" );
 	}
 

@@ -22,7 +22,7 @@ class SelfupdateClient extends IXES_Client {
 }
 
 class SelfupdateTest extends TestCase {
-	private $tmp;
+	private $tmp; private $router;
 	private $env = [ 'name' => 'prod', 'url' => 'https://p.test', 'token' => 'tok' ];
 
 	protected function setUp(): void {
@@ -179,9 +179,11 @@ class SelfupdateTest extends TestCase {
 		$router->routes = $routes + [
 			'/self-update/chunk'   => function () { return SelfupdateRouter::json( 200, [ 'ok' => true ] ); },
 			'/self-update/install' => function () { return SelfupdateRouter::json( 200, [ 'ok' => true ] ); },
+			'/self-update/commit'  => function () { return SelfupdateRouter::json( 200, [ 'ok' => true ] ); },
 			'rescue'               => function ( $a ) use ( &$rescued ) { $rescued[] = json_decode( $a['body'], true ); return SelfupdateRouter::json( 200, [ 'ok' => true, 'restored' => '0.9.2' ] ); },
 		];
 		$c = new SelfupdateClient( $this->env, $router ); $c->set_caps( [ 'binary', 'packed', 'self_update' ] );
+		$this->router = $router;
 		$zip = $this->good();
 		$plan = [ 'from' => '0.9.2', 'to' => '0.9.4', 'zip' => $zip, 'size' => filesize( $zip ), 'sha256' => hash_file( 'sha256', $zip ), 'top' => 'ix-wp-envsync', 'url' => 'https://p.test', 'force' => false ];
 		return IXES_Selfupdate::apply( $this->env, $c, $plan, function () {}, function () use ( $router ) { return new SelfupdateClient( $this->env, $router ); } );
@@ -227,6 +229,8 @@ class SelfupdateTest extends TestCase {
 		], $rescued );
 		$this->assertSame( [ 'from' => '0.9.2', 'to' => '0.9.4' ], [ 'from' => $r['from'], 'to' => $r['to'] ] );
 		$this->assertSame( [], $rescued );
+		$this->assertContains( '/self-update/commit', $this->router->log );
+		$this->assertSame( '', $r['note'] );
 	}
 	public function test_a_refused_install_touches_nothing_and_checks_nothing() {
 		$rescued = [];
@@ -267,6 +271,8 @@ class SelfupdateTest extends TestCase {
 		$log = IXES_Selfupdate::log_tail();
 		$this->assertSame( [ 'install', '0.4.0', '0.5.0', 'https://hub.test', 'dev', '203.0.113.9' ], [ $log[0]['event'], $log[0]['from'], $log[0]['to'], $log[0]['hub'], $log[0]['by'], $log[0]['ip'] ] );
 
+		$this->assertSame( 'from_required', IXES_Selfupdate::restore( null )->get_error_code() );
+		$this->assertSame( 'from_required', IXES_Selfupdate::restore( '' )->get_error_code() );
 		$this->assertSame( 'backup_mismatch', IXES_Selfupdate::restore( '0.3.0' )->get_error_code() );
 		$this->assertSame( [ 'ok' => true, 'restored' => '0.4.0' ], IXES_Selfupdate::restore( '0.4.0' ) );
 		$this->assertStringContainsString( '0.4.0', file_get_contents( "{$dir}/ix-wp-envsync.php" ) );
@@ -301,6 +307,85 @@ class SelfupdateTest extends TestCase {
 		unset( $GLOBALS['ixes_test_transients']['ixes_lock'] );
 		$this->assertSame( 'locked', $r->get_error_code() );
 		$this->assertSame( 409, $r->get_error_data()['status'] );
+	}
+
+	/** A plugins folder with our 0.4.0 in it, installed over by a 0.5.0 zip: the state right after a self-update. */
+	private function installed( $installer = null ) {
+		$plugins = $this->tmp . '/plugins'; $dir = "{$plugins}/ix-wp-envsync";
+		mkdir( $dir, 0777, true );
+		file_put_contents( "{$dir}/ix-wp-envsync.php", self::main( '0.4.0' ) );
+		if ( ! defined( 'WP_PLUGIN_DIR' ) ) define( 'WP_PLUGIN_DIR', $plugins );
+		IXES_Selfupdate::$folder = $dir;
+		IXES_Selfupdate::$installer = $installer ?: function ( $zip ) use ( $plugins ) { $z = new ZipArchive(); $z->open( $zip ); $z->extractTo( $plugins ); $z->close(); return true; };
+		$zip = $this->good( '0.5.0' );
+		copy( $zip, IXES_Selfupdate::store() . '/incoming-abcdef123456.zip' );
+		return [ $dir, IXES_Selfupdate::install( [ 'id' => 'abcdef123456', 'sha256' => hash_file( 'sha256', $zip ) ] ) ];
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_restore_obeys_the_opt_out() {
+		list( $dir ) = $this->installed();
+		$GLOBALS['ixes_test_options'][ IXES_Selfupdate::OPTION ] = 1;
+		$this->assertSame( 403, IXES_Selfupdate::restore( '0.4.0' )->get_error_data()['status'] );
+		$this->assertStringContainsString( '0.5.0', file_get_contents( "{$dir}/ix-wp-envsync.php" ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_restore_obeys_disallow_file_mods() {
+		list( $dir ) = $this->installed();
+		define( 'DISALLOW_FILE_MODS', true );
+		$this->assertSame( 'file_mods', IXES_Selfupdate::restore( '0.4.0' )->get_error_code() );
+		$this->assertStringContainsString( '0.5.0', file_get_contents( "{$dir}/ix-wp-envsync.php" ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_restore_leaves_a_symlinked_plugin_folder_alone() {
+		list( $dir ) = $this->installed();
+		$release = $this->tmp . '/releases/0.9.0';
+		mkdir( $release, 0777, true );
+		file_put_contents( "{$release}/ix-wp-envsync.php", self::main( '0.9.0' ) );
+		IXES_Selfupdate::rrmdir( $dir );
+		symlink( $release, $dir );
+		$this->assertSame( 'not_in_plugins', IXES_Selfupdate::restore( '0.4.0' )->get_error_code() );
+		IXES_Selfupdate::$folder = realpath( $dir ); // what own_folder() sees in production: __FILE__ resolves the link
+		$this->assertSame( 'not_in_plugins', IXES_Selfupdate::restore( '0.4.0' )->get_error_code() );
+		$this->assertStringContainsString( '0.9.0', file_get_contents( "{$release}/ix-wp-envsync.php" ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_commit_drops_the_backup_so_it_cannot_come_back_later() {
+		$this->installed();
+		$this->assertSame( '0.4.0', IXES_Selfupdate::backup_version() );
+		$this->assertSame( 'not_running', IXES_Selfupdate::commit( [ 'to' => '0.9.9' ] )->get_error_code() );
+		$this->assertSame( [ 'ok' => true ], IXES_Selfupdate::commit( [ 'to' => IXES_VERSION ] ) );
+		$this->assertNull( IXES_Selfupdate::backup_version() );
+		$this->assertSame( 'no_backup', IXES_Selfupdate::restore( '0.4.0' )->get_error_code() );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failed_core_install_still_puts_the_old_folder_back() {
+		list( $dir, $r ) = $this->installed( function () {
+			unlink( IXES_Selfupdate::$folder . '/ix-wp-envsync.php' ); // core cleared the folder, then gave up
+			return new WP_Error( 'copy_failed', 'Could not copy file.' );
+		} );
+		$this->assertSame( 'install_failed', $r->get_error_code() );
+		$this->assertStringContainsString( 'the previous version is back', $r->get_error_message() );
+		$this->assertStringContainsString( '0.4.0', file_get_contents( "{$dir}/ix-wp-envsync.php" ) );
 	}
 
 	// ---------- opt-out ----------

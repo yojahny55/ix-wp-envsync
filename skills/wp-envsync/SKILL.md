@@ -203,7 +203,7 @@ All commands take `--path=<site>`.
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
-| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
 | `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
@@ -261,7 +261,7 @@ A push that breaks the remote mid-way already rolls back through rescue by itsel
 - `refused` with `fs_method`, `DISALLOW_FILE_MODS` or `not_in_plugins`: the remote cannot install plugins from a request (WordPress would need FTP credentials, file changes are disabled, or the plugin is a symlinked checkout there). Nothing changed. Tell the user to upload the zip by hand.
 - `zip refused: …`: the zip failed a check (wrong top folder, missing header, a path outside the folder, a symlink, a PHP syntax error). Nothing was sent. With `--zip`, the release zip's top folder must match the remote's plugin folder name.
 - `health_failed` with "Restored … through the rescue endpoint": the new version broke the remote and the old one is back. Report the reason in the error. Do not retry the same zip.
-- `health_failed` with "failed too": run `rescue <env> --restore-self --yes`. If rescue does not answer, tell the user to copy `wp-content/envsync-*/self-update/backup/<folder>/` over `wp-content/plugins/<folder>/` with the host's file manager.
+- `health_failed` with "failed too": run `rescue <env> --restore-self --from=<the version the error says it replaced> --yes`. A successful self-update deletes the backup, so there is nothing to restore after one. If rescue does not answer, tell the user to copy `wp-content/envsync-*/self-update/backup/<folder>/` over `wp-content/plugins/<folder>/` with the host's file manager.
 
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 

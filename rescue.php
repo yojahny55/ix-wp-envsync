@@ -5,7 +5,7 @@
  * WordPress boots here in installer mode: no plugins, no theme, no maintenance screen. The request is
  * authenticated exactly like the REST API (token + HMAC signature over the body), then one action runs:
  * status, plugins_off (keep only EnvSync active), rollback (restore a push's snapshot, clear its lock) or
- * restore_self (put back the plugin folder a self-update replaced). restore_self runs before the main plugin
+ * restore_self (put back the plugin folder a self-update replaced; self_backup names its version). Both run before the main plugin
  * file loads, with only IXES_Auth and IXES_Selfupdate: the code it recovers from may be what fatals.
  * Must-use plugins and drop-ins still load; a crash there needs the host's file manager.
  *
@@ -48,7 +48,9 @@ if ( ! $ixes_ok ) ixes_rescue_send( 401, [ 'message' => 'bad signature' ] );
 
 $ixes_p = json_decode( $ixes_body, true );
 $ixes_p = is_array( $ixes_p ) ? $ixes_p : [];
-if ( ( $ixes_p['action'] ?? '' ) === 'restore_self' ) {
+if ( ( $ixes_p['action'] ?? '' ) === 'self_backup' ) {
+	$ixes_r = [ 'ok' => true, 'version' => IXES_Selfupdate::backup_version() ];
+} elseif ( ( $ixes_p['action'] ?? '' ) === 'restore_self' ) {
 	$ixes_r = IXES_Selfupdate::restore( isset( $ixes_p['from'] ) ? (string) $ixes_p['from'] : null, [ 'by' => 'rescue', 'ip' => substr( (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ), 0, 64 ) ] );
 } else {
 	require_once __DIR__ . '/ix-wp-envsync.php';

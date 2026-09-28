@@ -357,7 +357,7 @@ The hub then sends those credentials in the `Authorization` header, and the EnvS
 
 From 0.9.4 on the remote, `status` then recommends `wp envsync self-update <env>` (see [Upgrading EnvSync on a remote](#upgrading-envsync-on-a-remote)). An older remote, or one that turned self-update off, needs the new release zip uploaded through **Plugins → Add New**.
 
-**A self-update broke the remote and the hub could not put the old version back.** Run `wp envsync rescue <env> --restore-self`. If rescue does not answer either, copy `wp-content/envsync-*/self-update/backup/<folder>/` over `wp-content/plugins/<folder>/` with the host's file manager.
+**A self-update broke the remote and the hub could not put the old version back.** Run `wp envsync rescue <env> --restore-self` (it names the version the backup holds and asks first; `--from=<version>` names it yourself). If rescue does not answer either, copy `wp-content/envsync-*/self-update/backup/<folder>/` over `wp-content/plugins/<folder>/` with the host's file manager.
 
 ---
 
@@ -382,7 +382,7 @@ What happens:
 2. **The zip travels signed**, in chunks like any file of a push, compressed where the remote takes compressed steps. `--timeout` applies.
 3. **The remote checks it again** before touching anything: the sha256 matches, the zip has one top folder named like the remote's own plugin folder, no absolute or `../` paths, no symlinks, a main file whose `Plugin Name` is `IX WP EnvSync` with a version, and every PHP file parses on the remote's PHP.
 4. **The remote copies its current plugin folder** into its storage folder (`wp-content/envsync-*/self-update/backup/`), then installs with WordPress's own `Plugin_Upgrader`, the same code as **Plugins → Add New → Upload → Replace current with uploaded**. The plugin stays active.
-5. **The hub checks the site** with fresh requests: `/info` must answer with the new version, and the home page, the login page and the REST index must not start to fail. If either check fails, the hub has the remote put the old folder back through the rescue endpoint, which loads no plugins, and says so.
+5. **The hub checks the site** with fresh requests: `/info` must answer with the new version, and the home page, the login page and the REST index must not start to fail. If either check fails, the hub has the remote put the old folder back through the rescue endpoint, which loads no plugins, and says so. Once the new version is healthy, the hub tells the remote to delete the backup, so no later restore can bring back a version nobody is rolling back from.
 
 It needs 0.9.4 or newer on the remote, so the first upgrade to 0.9.4 is a manual upload. The remote also needs WordPress to write plugin files directly: where WordPress would ask for FTP credentials (`FS_METHOD` other than `direct`, or plugin folders PHP does not own), or where `DISALLOW_FILE_MODS` is set, the remote refuses and nothing changes.
 
@@ -560,7 +560,8 @@ Recovers a remote that crashes on every request, through `rescue.php` (no plugin
 - `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
 - `--job=<id>` — roll back this job instead.
 - `--plugins-off` — deactivate every plugin except EnvSync.
-- `--restore-self` — put back the EnvSync folder the last self-update replaced.
+- `--restore-self` — put back the EnvSync folder the last self-update replaced. It obeys the same gates as a self-update (the opt-out, `DISALLOW_FILE_MODS`, no symlinked plugin folder) and only restores the version it names.
+- `--from=<version>` — with `--restore-self`: the version to put back. Default: the version the remote's backup holds.
 - `--yes` — skip the confirmation.
 
 ### `wp envsync self-update <env>`

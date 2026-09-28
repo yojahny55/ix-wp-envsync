@@ -165,15 +165,23 @@ class IXES_Selfupdate {
 
 	/** Why this site cannot install over its own folder right now, or null. */
 	private static function refusal( $dir ) {
-		if ( defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS ) return new WP_Error( 'file_mods', 'DISALLOW_FILE_MODS is set on this site; upload the zip by hand', [ 'status' => 403 ] );
-		$plugins = defined( 'WP_PLUGIN_DIR' ) ? realpath( WP_PLUGIN_DIR ) : false;
-		if ( ! $plugins || is_link( $dir ) || realpath( dirname( $dir ) ) !== $plugins ) {
-			return new WP_Error( 'not_in_plugins', "EnvSync runs from {$dir}, not straight from the plugins folder (a symlinked checkout?); update it there by hand", [ 'status' => 409 ] );
-		}
-		if ( self::$installer ) return null; // a test stands in for Plugin_Upgrader and the filesystem it needs
+		$r = self::place_refusal( $dir );
+		if ( $r || self::$installer ) return $r; // a test's $installer stands in for Plugin_Upgrader and its filesystem
 		if ( ! function_exists( 'get_filesystem_method' ) ) require_once ABSPATH . 'wp-admin/includes/file.php';
 		$m = get_filesystem_method( [], WP_PLUGIN_DIR );
 		if ( $m !== 'direct' ) return new WP_Error( 'fs_method', "WordPress would write plugins here through '{$m}', which needs credentials a REST request cannot give. Let PHP write wp-content/plugins directly (FS_METHOD 'direct'), or upload the zip by hand", [ 'status' => 409 ] );
+		return null;
+	}
+
+	/** Why nothing may be written over this folder at all (install and restore alike), or null. */
+	private static function place_refusal( $dir ) {
+		if ( defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS ) return new WP_Error( 'file_mods', 'DISALLOW_FILE_MODS is set on this site; change the plugin by hand', [ 'status' => 403 ] );
+		// rescue.php boots through wp-settings.php, which defines it; the fallback is for a bootstrap that did not get that far
+		$root = defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR : ( defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR . '/plugins' : '' );
+		$plugins = $root !== '' ? realpath( $root ) : false;
+		if ( ! $plugins || is_link( $dir ) || realpath( dirname( $dir ) ) !== $plugins ) {
+			return new WP_Error( 'not_in_plugins', "EnvSync runs from {$dir}, not straight from the plugins folder (a symlinked checkout?); change it there by hand", [ 'status' => 409 ] );
+		}
 		return null;
 	}
 
@@ -204,7 +212,7 @@ class IXES_Selfupdate {
 		$r = self::upgrade( $zip );
 		@unlink( $zip );
 		if ( is_wp_error( $r ) || ! is_file( $dir . '/' . self::MAIN ) ) {
-			$back = self::restore( IXES_VERSION, $who );
+			$back = self::restore( IXES_VERSION, $who, true );
 			$msg = ( is_wp_error( $r ) ? $r->get_error_message() : 'the main plugin file is missing afterwards' ) . ( is_wp_error( $back ) ? '; putting the previous version back failed too: ' . $back->get_error_message() : '; the previous version is back' );
 			self::log( [ 'event' => 'install_failed', 'from' => IXES_VERSION, 'to' => $meta['version'], 'sha256' => $sha, 'error' => $msg ] + $who );
 			return new WP_Error( 'install_failed', 'install failed: ' . $msg, [ 'status' => 500 ] );
@@ -254,13 +262,20 @@ class IXES_Selfupdate {
 	}
 
 	/**
-	 * Put the kept folder back (rescue.php 'restore_self', or install() when core's installer failed). $expect guards
-	 * against restoring an older backup than the version the hub replaced. The copy is complete before the swap,
+	 * Put the kept folder back (rescue.php 'restore_self', or install() when core's installer failed: $internal).
+	 * From rescue it obeys the same gates as an install, and $expect, the version the hub replaced, is required:
+	 * a backup holding anything else is not the one this rollback is about. The copy is complete before the swap,
 	 * so a failure halfway never leaves the site without rescue.php.
 	 */
-	public static function restore( $expect = null, array $who = [] ) {
+	public static function restore( $expect = null, array $who = [], $internal = false ) {
 		$store = self::store();
 		$dir = self::own_folder();
+		if ( ! $internal ) {
+			if ( ! self::enabled() ) return self::off();
+			$r = self::place_refusal( $dir );
+			if ( $r ) return $r;
+			if ( (string) $expect === '' ) return new WP_Error( 'from_required', 'name the version to put back (from)', [ 'status' => 400 ] );
+		}
 		$src = "{$store}/backup/" . basename( $dir );
 		$meta = $store ? json_decode( (string) @file_get_contents( "{$store}/backup.json" ), true ) : null;
 		if ( ! is_array( $meta ) || ! is_file( $src . '/' . self::MAIN ) ) return new WP_Error( 'no_backup', 'no backup of the plugin folder here', [ 'status' => 404 ] );
@@ -278,6 +293,20 @@ class IXES_Selfupdate {
 		if ( ! in_array( $base, $active, true ) ) { $active[] = $base; update_option( 'active_plugins', $active ); }
 		self::log( [ 'event' => 'restore', 'to' => (string) $meta['version'] ] + $who );
 		return [ 'ok' => true, 'restored' => (string) $meta['version'] ];
+	}
+
+	/**
+	 * /self-update/commit, once the hub found the new version healthy: the backup goes, so no later restore_self can
+	 * bring back a version nobody is rolling back from. $p['to'] must be the version running now.
+	 */
+	public static function commit( array $p ) {
+		if ( (string) ( $p['to'] ?? '' ) !== IXES_VERSION ) return new WP_Error( 'not_running', 'this site runs ' . IXES_VERSION, [ 'status' => 409 ] );
+		$store = self::store();
+		if ( ! $store ) return new WP_Error( 'io', 'no storage folder', [ 'status' => 500 ] );
+		foreach ( [ 'backup', 'backup-new', 'failed' ] as $d ) if ( is_dir( "{$store}/{$d}" ) ) self::rrmdir( "{$store}/{$d}" );
+		@unlink( "{$store}/backup.json" );
+		self::log( [ 'event' => 'commit', 'to' => IXES_VERSION ] );
+		return [ 'ok' => true ];
 	}
 
 	/** A host with opcache.validate_timestamps=0 would go on running the replaced files. */
@@ -402,14 +431,18 @@ class IXES_Selfupdate {
 		if ( $note !== '' ) $log( "the install answer was an error ({$note}); checking what {$name} runs now" );
 		$log( 'checking /info and the site with fresh requests' );
 		$h = self::health( $fresh(), $plan['url'], $before );
-		if ( $h['why'] === null && $h['version'] === $plan['to'] ) return [ 'from' => $plan['from'], 'to' => $plan['to'], 'sha256' => $plan['sha256'], 'note' => $note ];
+		if ( $h['why'] === null && $h['version'] === $plan['to'] ) {
+			$k = $fresh()->post( '/self-update/commit', [ 'to' => $plan['to'] ] );
+			if ( is_wp_error( $k ) ) $note = trim( "{$note} the remote kept its backup of {$plan['from']} (" . $k->get_error_message() . ')' );
+			return [ 'from' => $plan['from'], 'to' => $plan['to'], 'sha256' => $plan['sha256'], 'note' => $note ];
+		}
 		if ( $h['why'] === null && $h['version'] === $plan['from'] ) return new WP_Error( 'not_installed', "{$name} still runs {$plan['from']} and answers normally; the update did not take" . ( $note !== '' ? ": {$note}" : '' ) );
 		$why = $h['why'] ?? "/info reports {$h['version']}, expected {$plan['to']}";
 		$log( "unhealthy after the install ({$why}); restoring {$plan['from']} through the rescue endpoint" );
 		$x = $c->rescue( 'restore_self', [ 'from' => $plan['from'] ] );
 		$head = "{$name} is unhealthy after installing {$plan['to']}: {$why}";
 		if ( is_wp_error( $x ) ) {
-			return new WP_Error( 'health_failed', "{$head}\nRestoring {$plan['from']} through the rescue endpoint failed too (" . $x->get_error_message() . "). Next: wp envsync rescue {$name} --restore-self; if rescue does not answer, copy wp-content/envsync-*/self-update/backup/{$plan['top']}/ over wp-content/plugins/{$plan['top']}/ with the host's file manager." );
+			return new WP_Error( 'health_failed', "{$head}\nRestoring {$plan['from']} through the rescue endpoint failed too (" . $x->get_error_message() . "). Next: wp envsync rescue {$name} --restore-self --from={$plan['from']}; if rescue does not answer, copy wp-content/envsync-*/self-update/backup/{$plan['top']}/ over wp-content/plugins/{$plan['top']}/ with the host's file manager." );
 		}
 		$again = self::health( $fresh(), $plan['url'], $before );
 		$tail = $again['why'] === null ? "the site answers again on {$again['version']}." : "the site still looks unhealthy: {$again['why']}. Next: wp envsync rescue {$name}";
