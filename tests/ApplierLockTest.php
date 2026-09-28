@@ -46,6 +46,22 @@ class ApplierLockTest extends TestCase {
 		$this->assertSame( 'one statement only', IXES_Applier::create_table_refusal( 'wp_aiowps_events', $ok . '; DROP TABLE wp_users', 'wp_', false ) );
 		$this->assertSame( 'unsupported table option', IXES_Applier::create_table_refusal( 'wp_aiowps_events', 'CREATE TABLE `wp_aiowps_events` ( `id` int ) SELECT * FROM wp_users', 'wp_', false ) );
 	}
+	public function test_add_column_refusal() {
+		$def = '`term_order` bigint(20) NOT NULL DEFAULT 0';
+		$this->assertNull( IXES_Applier::add_column_refusal( 'wp_terms', 'term_order', $def, 'wp_', false ) );
+		$this->assertSame( 'unknown table', IXES_Applier::add_column_refusal( 'other_terms', 'term_order', $def, 'wp_', false ) );
+		$this->assertSame( 'column name refused', IXES_Applier::add_column_refusal( 'wp_terms', 'term order', $def, 'wp_', false ) );
+		$this->assertSame( 'column already exists', IXES_Applier::add_column_refusal( 'wp_terms', 'term_order', $def, 'wp_', true ) );
+		$this->assertSame( 'one statement only', IXES_Applier::add_column_refusal( 'wp_terms', 'term_order', $def . '; DROP TABLE wp_users', 'wp_', false ) );
+		$this->assertSame( 'not a column definition for that column', IXES_Applier::add_column_refusal( 'wp_terms', 'term_order', '`other_col` int', 'wp_', false ) );
+		$this->assertSame( 'unsupported column option', IXES_Applier::add_column_refusal( 'wp_terms', 'fk_id', '`fk_id` bigint(20), CONSTRAINT `fk` FOREIGN KEY (`fk_id`) REFERENCES `wp_posts` (`ID`)', 'wp_', false ) );
+		// a second ALTER clause smuggled in after the column definition, no semicolon needed
+		$this->assertSame( 'one column only', IXES_Applier::add_column_refusal( 'wp_terms', 'term_order', '`term_order` int, DROP COLUMN `name`', 'wp_', false ) );
+		$this->assertSame( 'one column only', IXES_Applier::add_column_refusal( 'wp_terms', 'term_order', '`term_order` int, RENAME TO `wp_x`', 'wp_', false ) );
+		// commas that legitimately belong to the type, an enum list or a comment must still be accepted
+		$this->assertNull( IXES_Applier::add_column_refusal( 'wp_terms', 'price', '`price` decimal(10,2) NOT NULL DEFAULT 0', 'wp_', false ) );
+		$this->assertNull( IXES_Applier::add_column_refusal( 'wp_terms', 'kind', "`kind` enum('a','b') NOT NULL COMMENT 'x, y'", 'wp_', false ) );
+	}
 	public function test_rekey_option_only_when_an_excluded_option_holds_the_id() {
 		$row = [ 'option_id' => 131, 'option_name' => 'rank-math-options-titles', 'option_value' => 'x' ];
 		$r = $row; $this->assertTrue( IXES_Applier::rekey_option( $r, '_transient_update_themes' ) );
