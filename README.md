@@ -24,7 +24,7 @@ One plugin runs on every site you sync. The site you run commands from is the **
 
 ## Install
 
-1. Upload the plugin zip to every site through **Plugins → Add New → Upload**, then activate it.
+1. Upload the plugin zip to every site through **Plugins → Add New → Upload**, then activate it. From 0.9.4 on, later upgrades of a remote go through `wp envsync self-update <env>` from the hub (see [Upgrading EnvSync on a remote](#upgrading-envsync-on-a-remote)).
 2. On each remote, open **Tools → EnvSync** and copy the token shown there.
 3. On the hub, register the remote, then check it:
 
@@ -355,7 +355,46 @@ The hub then sends those credentials in the `Authorization` header, and the EnvS
   remote 0.3.0  hub 0.4.0  auth via Authorization  (remote is older)
 ```
 
-Upload the new release zip to that site through **Plugins → Add New**.
+From 0.9.4 on the remote, `status` then recommends `wp envsync self-update <env>` (see [Upgrading EnvSync on a remote](#upgrading-envsync-on-a-remote)). An older remote, or one that turned self-update off, needs the new release zip uploaded through **Plugins → Add New**.
+
+**A self-update broke the remote and the hub could not put the old version back.** Run `wp envsync rescue <env> --restore-self` (it names the version the backup holds and asks first; `--from=<version>` names it yourself). If rescue does not answer either, copy `wp-content/envsync-*/self-update/backup/<folder>/` over `wp-content/plugins/<folder>/` with the host's file manager.
+
+---
+
+## Upgrading EnvSync on a remote
+
+A sync never copies the plugin's own folder, in either direction, so a pull or push cannot replace the code that is running it. `self-update` installs a new version on a remote from the hub instead:
+
+```bash
+wp envsync self-update prod --dry-run
+```
+
+```
+prod  https://client.com
+  EnvSync 0.9.4 → 0.9.5
+  zip     built from this hub's plugin folder, 212.4 KB, top folder ix-wp-envsync/
+  sha256  3f1c…
+```
+
+What happens:
+
+1. **The hub builds the zip** from its own plugin folder, laid out like a release zip (no tests, docs, `vendor/`, `.git` or symlinks), or takes the one you pass with `--zip=<file>`. It refuses a zip that is not newer than the remote's version unless you pass `--force`.
+2. **The zip travels signed**, in chunks like any file of a push, compressed where the remote takes compressed steps. `--timeout` applies.
+3. **The remote checks it again** before touching anything: the sha256 matches, the zip has one top folder named like the remote's own plugin folder, no absolute or `../` paths, no symlinks, a main file whose `Plugin Name` is `IX WP EnvSync` with a version, and every PHP file parses on the remote's PHP.
+4. **The remote copies its current plugin folder** into its storage folder (`wp-content/envsync-*/self-update/backup/`), then installs with WordPress's own `Plugin_Upgrader`, the same code as **Plugins → Add New → Upload → Replace current with uploaded**. The plugin stays active.
+5. **The hub checks the site** with fresh requests: `/info` must answer with the new version, and the home page, the login page and the REST index must not start to fail. If either check fails, the hub has the remote put the old folder back through the rescue endpoint, which loads no plugins, and says so. Once the new version is healthy, the hub tells the remote to delete the backup, so no later restore can bring back a version nobody is rolling back from.
+
+It needs 0.9.4 or newer on the remote, so the first upgrade to 0.9.4 is a manual upload. The remote also needs WordPress to write plugin files directly: where WordPress would ask for FTP credentials (`FS_METHOD` other than `direct`, or plugin folders PHP does not own), or where `DISALLOW_FILE_MODS` is set, the remote refuses and nothing changes.
+
+**Turning it off.** The token already allows writing to the database and to wp-content, but installing code is a separate power, so a site can refuse it. Press **Turn self-update off** on that site's **Tools → EnvSync**, or lock it off in `wp-config.php`:
+
+```php
+define( 'ENVSYNC_DISABLE_SELF_UPDATE', true );
+```
+
+The hub then reports `self-update is turned off there` and `status` goes back to recommending a manual upload.
+
+Every self-update and every restore is logged on the remote, with the time, the versions, the zip's sha256, the hub's URL and user and the requesting IP. The last entries show on **Tools → EnvSync**; the full log is `wp-content/envsync-*/self-update/log.jsonl`.
 
 ---
 
@@ -521,7 +560,19 @@ Recovers a remote that crashes on every request, through `rescue.php` (no plugin
 - `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
 - `--job=<id>` — roll back this job instead.
 - `--plugins-off` — deactivate every plugin except EnvSync.
+- `--restore-self` — put back the EnvSync folder the last self-update replaced. It obeys the same gates as a self-update (the opt-out, `DISALLOW_FILE_MODS`, no symlinked plugin folder) and only restores the version it names.
+- `--from=<version>` — with `--restore-self`: the version to put back. Default: the version the remote's backup holds.
 - `--yes` — skip the confirmation.
+
+### `wp envsync self-update <env>`
+
+Installs this hub's EnvSync, or a release zip, on the remote, checks the site, and restores the old version if the site breaks. See [Upgrading EnvSync on a remote](#upgrading-envsync-on-a-remote).
+
+- `--zip=<file>` — install this release zip instead of one built from the hub's own plugin folder.
+- `--force` — install even when the zip is not newer than the remote's version.
+- `--dry-run` — show the versions, the zip's size and sha256, and stop.
+- `--yes` — skip the confirmation.
+- `--timeout=<seconds>` — HTTP timeout for this run, overriding the environment's own `--timeout`.
 
 ### `wp envsync rollback <env>`
 
@@ -609,7 +660,7 @@ Options that are specific to one environment stay put on both sides: `siteurl`, 
 
 ## Things worth knowing
 
-**The token is an admin-level credential.** It grants write access to the database and to wp-content, including plugin PHP. Treat it like a password. Rotate it if it leaks.
+**The token is an admin-level credential.** It grants write access to the database and to wp-content, including plugin PHP, and from 0.9.4 the power to install a new EnvSync unless the site turned self-update off. Treat it like a password. Rotate it if it leaks.
 
 **A pull that stops partway leaves the local site half-updated until you finish it.** Files may be only partly copied, which can leave a plugin half-updated and the site erroring. Fix the cause and run the same pull again; it resumes where it stopped (see [If a pull is interrupted](#if-a-pull-is-interrupted)). A push does not have this problem, because it snapshots first and can be rolled back.
 
@@ -629,7 +680,7 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 **Binary columns need 0.9.3 on both sides.** Rows travel as JSON, and JSON cannot carry bytes that are not valid UTF-8: a `varbinary` IP address, a blob, or latin1 text on a site whose connection is not UTF-8. Before 0.9.3 those bytes arrived as `?`, so two IPs that differ only there became one value, and a table with such a column in its primary key failed the pull with `Duplicate entry … for key 'PRIMARY'`. From 0.9.3 such a cell travels base64-encoded and is written back with a hex literal, byte for byte, in pulls, pushes, rollbacks and dropped-table copies. Diffs hash those bytes as they are, once a pull from a 0.9.3 remote has recorded the baseline that way; until then such rows are compared as before, and the plan says so. Rows of plain text keep their hashes. Against an older remote, rows travel as before (a push can write `?` into those cells there), and the plan warns about every table with a `binary`, `varbinary`, `blob` or `bit` column. URLs inside such a cell are never rewritten. A push skips, with a warning, a table whose single-column primary key holds values that are not valid UTF-8 (an ASCII digest in a `varbinary` key is fine): its row hashes are keyed by that key, and JSON cannot carry it. Pulls copy such tables in full.
 
-**Keep both sides on the same plugin version.** Different versions can have different exclude rules. The hub filters anything it would refuse, so a mismatch is handled safely, but matching versions avoid surprises.
+**Keep both sides on the same plugin version.** Different versions can have different exclude rules. The hub filters anything it would refuse, so a mismatch is handled safely, but matching versions avoid surprises. `wp envsync self-update <env>` brings a remote up to the hub's version.
 
 ---
 

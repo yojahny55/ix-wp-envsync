@@ -26,6 +26,10 @@ class IXES_Rest {
 			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
 		}
 		$r( '/rollback', 'POST', function ( $req ) { return self::applier( 'rollback', $req->get_json_params() ); } );
+		// installing code is a power of its own: both refuse with 403 when the site turned self-update off
+		$r( '/self-update/chunk',   'POST', function ( $req ) { return IXES_Selfupdate::receive( self::step_params( $req ) ); } );
+		$r( '/self-update/install', 'POST', function ( $req ) { $p = $req->get_json_params(); return IXES_Selfupdate::install( is_array( $p ) ? $p : [] ); } );
+		$r( '/self-update/commit',  'POST', function ( $req ) { $p = $req->get_json_params(); return IXES_Selfupdate::commit( is_array( $p ) ? $p : [] ); } );
 		add_filter( 'rest_pre_serve_request', [ __CLASS__, 'serve_binary' ], 10, 4 );
 	}
 

@@ -17,7 +17,7 @@ Every task follows the same four steps. Do not skip one.
 3. **Preview anything that changes a site** with `--dry-run` (or `diff` before a push). Show the output to the user and say what it means.
 4. **After the user approves, rerun the same command with `--yes`.**
 
-Why `--yes`: `pull`, `push`, `rollback` and `unlock` each stop at a `[y/n]` prompt. Your shell cannot answer it, so without `--yes` the command aborts. `--yes` is only for a plan the user approved in this conversation.
+Why `--yes`: `pull`, `push`, `rollback`, `unlock` and `self-update` each stop at a `[y/n]` prompt. Your shell cannot answer it, so without `--yes` the command aborts. `--yes` is only for a plan the user approved in this conversation.
 
 Always pass `--path=<site root>`. The hub is the site you run commands from.
 
@@ -48,6 +48,7 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `next.why` is the reason. Quote it to the user.
 - `reachable: false`: `error` says why (DNS, 401 bad token, TLS).
 - `version_ok: false`: the remote runs an older plugin.
+- `self_update`: `"on"` when the remote can install a newer EnvSync itself (`self-update <env>`), `"off"` when its owner turned that off, `null` when the remote is older than 0.9.4 and cannot.
 - `baseline.created_at: null`: no pull has been done for this environment.
 - `remote_lock`: `{job, started, age_minutes}` means a push is running or died there.
 - `interrupted_pull`: `{started, table, files_done, files_total}` means a pull stopped partway.
@@ -61,7 +62,8 @@ In a push plan, `new_tables` lists tables the push will create on the remote (sh
 | `next.command` | `next.why` | What you do |
 |---|---|---|
 | `wp envsync env add <name> <url> --token=…` | not set up, or cannot reach | Ask the user for the token from that site's **Tools → EnvSync** page. Never invent one. |
-| `upload the release zip to <url>` | remote runs X, hub runs Y | Tell the user to upload the release zip through **Plugins → Add New → Upload** on that site. You cannot do it. |
+| `wp envsync self-update <env>` | remote runs X, hub runs Y | Run `self-update <env> --dry-run`, show the plan (versions, size, sha256), then `self-update <env> --yes` after approval. See [Upgrade the remote's EnvSync](#upgrade-the-remotes-envsync). |
+| `upload the release zip to <url>` | remote runs X, hub runs Y (`; self-update is turned off there` when its owner turned it off) | The remote is older than 0.9.4, or refuses self-update. Tell the user to upload the release zip through **Plugins → Add New → Upload** on that site. You cannot do it. Do not ask them to turn self-update back on. |
 | `wp envsync rescue <env>` | … crashes on every request | Run it, report what it shows, then offer `--rollback` or `--plugins-off` (see Diagnosing failures). |
 | `wp envsync unlock <env>` | a push … never finished | Tell the user a push died. Nothing is rolled back. Then run `unlock <env> --yes` after approval. |
 | `wp envsync pull <env>` | an interrupted pull can be resumed | Run `pull <env> --dry-run` (it shows where it stopped), then `pull <env> --yes` to resume. Use `--fresh` only if resume is refused. |
@@ -131,6 +133,20 @@ wp --path=<site> envsync rollback prod --job=<id> --yes
 
 Restores the snapshot the remote took before the push. Only the last three jobs are kept.
 
+### Upgrade the remote's EnvSync
+
+A sync never copies the plugin's own folder, in either direction. `self-update` is how its code travels.
+
+```bash
+wp --path=<site> envsync self-update prod --dry-run      # remote version → new version, zip size, sha256
+wp --path=<site> envsync self-update prod --yes
+```
+
+- The zip is built from the hub's own plugin folder. `--zip=<file>` installs a release zip instead.
+- A zip that is not newer than the remote's version is refused. `--force` installs it anyway; use it only when the user asks for a downgrade or a reinstall.
+- The remote checks the zip again, keeps a copy of its current plugin folder and installs with WordPress's own plugin installer. The hub then calls `/info` and loads the home page, the login page and the REST index with fresh requests. If the new version does not answer or a page starts to fail, the hub restores the old folder through the rescue endpoint by itself. The error says so.
+- The remote needs 0.9.4 or newer. The first upgrade to 0.9.4 is a manual zip upload.
+
 ### Investigate one conflict
 
 ```bash
@@ -187,7 +203,8 @@ All commands take `--path=<site>`.
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
-| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
+| `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
 `--only` takes `db,files,uploads,themes,plugins,mu-plugins`. `--tables` takes table names or globs and implies `--only=db`. `--paths` takes wp-content paths or globs and implies `--only=files`.
@@ -236,6 +253,15 @@ A push that breaks the remote mid-way already rolls back through rescue by itsel
 **A slow file transfer** (the plan's `TRANSFER` line says "one request each"): the remote runs a plugin older than 0.8.0, so every file costs a full WordPress boot there. Tell the user to upload the current zip to the remote; from 0.8.0 small files travel in compressed batches, `--parallel=<n>` at a time (default 4). If a host limits concurrent PHP requests and batches fail with 503 or 429, retry with `--parallel=1` or `2`.
 
 **`403 Forbidden` on `/job/step`** (plain text, not a WordPress error): the host's firewall blocked a database batch, usually because of serialized PHP objects in plugin rows. Retry and plugins-off will not help. Tell the user to upload plugin 0.5.5 or newer to the remote, which sends steps compressed. Then run `unlock <env>` and push again.
+
+**`self-update` errors**:
+- `old_remote` / "cannot update itself": the remote is older than 0.9.4. Tell the user to upload the release zip by hand this once.
+- `self_update_off`: the remote's owner turned self-update off (`ENVSYNC_DISABLE_SELF_UPDATE` in `wp-config.php`, or the switch on Tools → EnvSync). Tell the user to upload the zip by hand. Do not suggest turning it back on.
+- `not_newer`: the zip is not newer than what the remote runs. Nothing to do, unless the user wants a reinstall (`--force`).
+- `refused` with `fs_method`, `DISALLOW_FILE_MODS` or `not_in_plugins`: the remote cannot install plugins from a request (WordPress would need FTP credentials, file changes are disabled, or the plugin is a symlinked checkout there). Nothing changed. Tell the user to upload the zip by hand.
+- `zip refused: …`: the zip failed a check (wrong top folder, missing header, a path outside the folder, a symlink, a PHP syntax error). Nothing was sent. With `--zip`, the release zip's top folder must match the remote's plugin folder name.
+- `health_failed` with "Restored … through the rescue endpoint": the new version broke the remote and the old one is back. Report the reason in the error. Do not retry the same zip.
+- `health_failed` with "failed too": run `rescue <env> --restore-self --from=<the version the error says it replaced> --yes`. A successful self-update deletes the backup, so there is nothing to restore after one. If rescue does not answer, tell the user to copy `wp-content/envsync-*/self-update/backup/<folder>/` over `wp-content/plugins/<folder>/` with the host's file manager.
 
 **`checksum mismatch`**: the file changed on the remote during the transfer. Run it again.
 

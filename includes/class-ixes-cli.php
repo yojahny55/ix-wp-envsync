@@ -189,7 +189,7 @@ class IXES_CLI {
 			$info = $this->fail_if_error( $c->info() );
 			$via = ( $r['auth_via'] ?? 'authorization' ) === 'x-envsync-token' ? 'X-Envsync-Token (this host strips the Authorization header; that is fine)' : 'Authorization';
 			WP_CLI::success( 'ok, remote time ' . wp_date( 'Y-m-d H:i:s T', (int) $r['time'] ) . ", remote {$info['plugin']}, auth via {$via}" );
-			if ( version_compare( (string) $info['plugin'], IXES_VERSION, '<' ) ) WP_CLI::warning( "remote runs {$info['plugin']}, hub runs " . IXES_VERSION . ": upload the release zip to {$this->get_env( $args[1] )['url']}" );
+			if ( version_compare( (string) $info['plugin'], IXES_VERSION, '<' ) ) WP_CLI::warning( "remote runs {$info['plugin']}, hub runs " . IXES_VERSION . ': ' . ( in_array( 'self_update', (array) ( $info['caps'] ?? [] ), true ) ? "run wp envsync self-update {$args[1]}" : "upload the release zip to {$this->get_env( $args[1] )['url']}" ) );
 			elseif ( version_compare( (string) $info['plugin'], IXES_VERSION, '>' ) ) WP_CLI::log( "note: remote runs {$info['plugin']}, newer than this hub (" . IXES_VERSION . ')' );
 			return;
 		}
@@ -558,11 +558,31 @@ class IXES_CLI {
 	 * [--job=<id>]
 	 * : Job to roll back instead.
 	 *
+	 * [--restore-self]
+	 * : Put back the EnvSync folder the last self-update replaced.
+	 *
+	 * [--from=<version>]
+	 * : With --restore-self: the version to put back. Default: the version the remote's backup holds.
+	 *
 	 * [--yes]
 	 * : Skip confirmation.
 	 */
 	public function rescue( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		// before 'status': that action loads the plugin, and the plugin may be exactly what is broken
+		if ( ! empty( $assoc['restore-self'] ) ) {
+			$from = (string) ( $assoc['from'] ?? '' );
+			if ( $from === '' ) {
+				$b = $this->fail_if_error( $c->rescue( 'self_backup' ) );
+				$from = (string) ( $b['version'] ?? '' );
+				if ( $from === '' ) WP_CLI::error( "{$env['name']} keeps no self-update backup (a successful self-update drops it)" );
+			}
+			$this->confirm( $assoc, "Put EnvSync {$from} back on {$env['name']}, from the backup its last self-update kept?" );
+			$r = $this->fail_if_error( $c->rescue( 'restore_self', [ 'from' => $from ] ) );
+			$this->forget_status();
+			WP_CLI::success( "EnvSync {$r['restored']} is back on {$env['name']}" );
+			return;
+		}
 		$s = $c->rescue( 'status' );
 		if ( is_wp_error( $s ) ) {
 			WP_CLI::error( $s->get_error_message() . "\nThe rescue endpoint ({$c->rescue_url()}) did not answer. Either the remote runs a plugin older than 0.5.1, or the host blocks PHP files under wp-content/plugins. Use the host's file manager or terminal: rename the crashing plugin's folder under wp-content/plugins." );
@@ -571,6 +591,7 @@ class IXES_CLI {
 		WP_CLI::log( '  plugin ' . $s['plugin'] . ( $s['maintenance'] ? '  · maintenance file present' : '' ) );
 		WP_CLI::log( '  lock   ' . ( $s['lock'] ? "job {$s['lock']['job']}" : 'none' ) . '   last job ' . ( $s['last_job'] ?: 'none' ) );
 		WP_CLI::log( '  active ' . ( $s['active_plugins'] ? implode( ', ', $s['active_plugins'] ) : 'none' ) );
+		if ( ! empty( $s['self_backup'] ) ) WP_CLI::log( "  self-update backup of EnvSync {$s['self_backup']} kept (--restore-self puts it back)" );
 		if ( empty( $assoc['plugins-off'] ) && empty( $assoc['rollback'] ) ) {
 			WP_CLI::log( "\nNext: wp envsync rescue {$env['name']} --rollback   (undo the push)   or   --plugins-off   (keep its changes, disable plugins)" );
 			return;
@@ -588,6 +609,50 @@ class IXES_CLI {
 			WP_CLI::success( "restored {$r['restored']} rows/files from job {$r['job']}; lock and maintenance cleared" );
 		}
 		$this->forget_status();
+	}
+
+	/**
+	 * Install this hub's EnvSync (or a release zip) on <env>, then check the site; an unhealthy site gets its old version back.
+	 * ## OPTIONS
+	 *
+	 * <env>
+	 * : Environment name.
+	 *
+	 * [--zip=<file>]
+	 * : Release zip to install. Default: a zip built from this hub's own plugin folder.
+	 *
+	 * [--force]
+	 * : Install even when the zip is not newer than what the remote runs.
+	 *
+	 * [--dry-run]
+	 * : Show the plan and stop.
+	 *
+	 * [--yes]
+	 * : Skip confirmation.
+	 *
+	 * [--timeout=<seconds>]
+	 * : HTTP timeout for this run, overriding the environment's own --timeout (env add).
+	 *
+	 * @subcommand self-update
+	 */
+	public function self_update( $args, $assoc ) {
+		$env = $this->get_env( $args[0] ); $t = $this->timeout_override( $assoc );
+		$c = $this->client( $args[0], $t );
+		$zip = isset( $assoc['zip'] ) ? (string) $assoc['zip'] : null;
+		if ( $zip !== null && ! is_file( $zip ) ) WP_CLI::error( "no such file: {$zip}" );
+		$plan = $this->fail_if_error( IXES_Selfupdate::plan( $c, $zip, ! empty( $assoc['force'] ) ) );
+		WP_CLI::log( "{$env['name']}  {$env['url']}" );
+		WP_CLI::log( "  EnvSync {$plan['from']} → {$plan['to']}" . ( version_compare( $plan['to'], $plan['from'], '>' ) ? '' : '  (--force: not newer)' ) );
+		WP_CLI::log( '  zip     ' . ( $plan['built'] ? "built from this hub's plugin folder" : $zip ) . ', ' . IXES_Report::size( $plan['size'] ) . ", top folder {$plan['top']}/" );
+		WP_CLI::log( "  sha256  {$plan['sha256']}" );
+		WP_CLI::log( '  The remote keeps a copy of its current EnvSync folder. If /info or the site fails afterwards, the hub puts it back through the rescue endpoint.' );
+		if ( ! empty( $assoc['dry-run'] ) ) return;
+		$this->confirm( $assoc, "Install EnvSync {$plan['to']} on {$env['name']}?" );
+		$r = IXES_Selfupdate::apply( $env, $c, $plan, $this->logger(), function () use ( $args, $t ) { return $this->client( $args[0], $t ); } );
+		$this->forget_status();
+		$this->fail_if_error( $r );
+		if ( $r['note'] !== '' ) WP_CLI::warning( "the new version runs and the site answers, but: {$r['note']}" );
+		WP_CLI::success( "{$env['name']} runs EnvSync {$r['to']} (was {$r['from']}); /info and the site answer" );
 	}
 
 	/**

@@ -418,7 +418,7 @@ class IXES_Applier {
 	public static function rescue_status() {
 		$l = self::raw_lock();
 		return [ 'ok' => true, 'plugin' => IXES_VERSION, 'active_plugins' => array_values( (array) get_option( 'active_plugins', [] ) ),
-			'lock' => $l['job'] === '' ? null : $l, 'maintenance' => file_exists( ABSPATH . '.maintenance' ), 'last_job' => self::last_job() ];
+			'lock' => $l['job'] === '' ? null : $l, 'maintenance' => file_exists( ABSPATH . '.maintenance' ), 'last_job' => self::last_job(), 'self_backup' => IXES_Selfupdate::backup_version() ];
 	}
 
 	/** Keep only EnvSync active; the previous list is kept in ixes_rescue_plugins_before. */
