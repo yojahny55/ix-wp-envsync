@@ -161,6 +161,25 @@ class IXES_Applier {
 		return null;
 	}
 
+	/**
+	 * A pull may add a column a plugin created on the remote (taxonomy-terms-order's term_order, and the like).
+	 * Only one column, on a table that already exists, that is not there yet, with a definition line taken
+	 * straight off the remote's own `SHOW CREATE TABLE` (see IXES_Transfer::column_defs_from_create()).
+	 * @return string|null why it is refused
+	 */
+	public static function add_column_refusal( $table, $column, $def, $prefix, $exists ) {
+		if ( ! preg_match( '/^[A-Za-z0-9_]+$/', (string) $table ) || strpos( $table, $prefix ) !== 0 ) return 'unknown table';
+		if ( ! preg_match( '/^[A-Za-z0-9_]+$/', (string) $column ) ) return 'column name refused';
+		if ( $exists ) return 'column already exists';
+		if ( strpos( $def, ';' ) !== false ) return 'one statement only';
+		if ( ! preg_match( '/^`' . preg_quote( $column, '/' ) . '`\s+\S/', $def ) ) return 'not a column definition for that column';
+		if ( preg_match( '/\b(FOREIGN\s+KEY|REFERENCES|PRIMARY\s+KEY|UNIQUE\s+KEY|CONSTRAINT)\b/i', $def ) ) return 'unsupported column option';
+		// one column only: a comma can legitimately sit inside a type (decimal(10,2)), an enum/set list, or a
+		// COMMENT string, but never before a second top-level ALTER clause such as DROP/RENAME/CHANGE/ADD
+		if ( preg_match( '/,\s*\b(DROP|RENAME|MODIFY|CHANGE|ADD|ALTER|ENGINE|ALGORITHM|LOCK|CONVERT|PARTITION)\b/i', $def ) ) return 'one column only';
+		return null;
+	}
+
 	// same read-modify-write as record_set_inserted: keep the value the option had before this job touched it
 	private static function record_option_before( $job, $name ) {
 		$dir = self::job_dir( $job );

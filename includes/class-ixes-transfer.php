@@ -74,7 +74,8 @@ class IXES_Transfer {
 		$tables = [];
 		foreach ( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) as $t ) {
 			if ( strpos( $t, $wpdb->prefix . 'ixes_' ) === 0 ) continue;
-			$tables[] = [ 'name' => $t, 'pk' => self::pk_of( $t ), 'rows' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$t}`" ) ];
+			// columns too, so a pull can tell a plugin added one here without a second request per table
+			$tables[] = [ 'name' => $t, 'pk' => self::pk_of( $t ), 'rows' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$t}`" ), 'columns' => self::local_columns( $t ) ];
 		}
 		return [
 			'wp_version'      => get_bloginfo( 'version' ),
@@ -85,7 +86,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
@@ -316,6 +317,67 @@ class IXES_Transfer {
 	// validate a primary key name against the real columns; sanitize_key() would lowercase `ID`
 	public static function safe_pk( $table, $pk ) {
 		return in_array( (string) $pk, self::local_columns( $table ), true ) ? (string) $pk : null;
+	}
+
+	public static function create_table_sql( $table ) {
+		global $wpdb;
+		$row = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
+		return $row ? (string) $row[1] : null;
+	}
+
+	/**
+	 * Column name => its own definition line (no trailing comma), read off a `SHOW CREATE TABLE`. MySQL puts one
+	 * column or key per line; a line is a column only when it opens with a backtick name, which PRIMARY KEY/KEY/
+	 * CONSTRAINT lines never do.
+	 */
+	public static function column_defs_from_create( $sql ) {
+		$out = [];
+		foreach ( preg_split( '/\r?\n/', (string) $sql ) as $line ) {
+			$line = rtrim( trim( $line ), ',' );
+			if ( preg_match( '/^`([A-Za-z0-9_]+)`\s+\S/', $line, $m ) ) $out[ $m[1] ] = $line;
+		}
+		return $out;
+	}
+
+	/** A pull found a table the remote has that this side lacks (a plugin's own table); create it from the remote's own CREATE TABLE. */
+	public static function create_missing_table( $table, $sql ) {
+		global $wpdb;
+		$why = IXES_Applier::create_table_refusal( $table, $sql, $wpdb->prefix, self::valid_table( $table ) );
+		if ( $why ) return new WP_Error( 'bad_create', $why );
+		if ( $wpdb->query( $sql ) === false ) return new WP_Error( 'create_failed', "cannot create {$table}: {$wpdb->last_error}" );
+		return true;
+	}
+
+	/** A pull found a column the remote has that this side's copy of an existing table lacks (a plugin added one there). */
+	public static function add_missing_column( $table, $column, $def ) {
+		global $wpdb;
+		$why = IXES_Applier::add_column_refusal( $table, $column, $def, $wpdb->prefix, in_array( $column, self::local_columns( $table ), true ) );
+		if ( $why ) return new WP_Error( 'bad_column', $why );
+		if ( $wpdb->query( "ALTER TABLE `{$table}` ADD COLUMN {$def}" ) === false ) return new WP_Error( 'alter_failed', "table {$table}: cannot add column {$column}: {$wpdb->last_error}" );
+		unset( self::$local_columns[ $table ] );
+		return true;
+	}
+
+	/**
+	 * On resume, a fresh table skips import_begin() and keeps its tmp table from the earlier attempt, so a schema
+	 * fix made to the real table in between (by hand, or by add_missing_column() on a later pull) never reaches it.
+	 * Bring the tmp table's columns up to the real one's before rows resume.
+	 */
+	public static function reconcile_tmp( $table ) {
+		global $wpdb;
+		$tmp = self::tmp_name( $table );
+		if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $tmp ) ) ) return true; // nothing was left to resume into
+		$real = $wpdb->get_col( "SHOW COLUMNS FROM `{$table}`" );
+		$have = $wpdb->get_col( "SHOW COLUMNS FROM `{$tmp}`" );
+		$missing = array_values( array_diff( $real, $have ) );
+		if ( ! $missing ) return true;
+		$defs = self::column_defs_from_create( (string) self::create_table_sql( $table ) );
+		foreach ( $missing as $col ) {
+			if ( ! isset( $defs[ $col ] ) ) continue; // SHOW COLUMNS and SHOW CREATE TABLE always agree; stay defensive anyway
+			if ( $wpdb->query( "ALTER TABLE `{$tmp}` ADD COLUMN {$defs[ $col ]}" ) === false ) return new WP_Error( 'reconcile_failed', "table {$table}: cannot bring the resumed copy's schema up to date: {$wpdb->last_error}" );
+		}
+		unset( self::$local_columns[ $table ] );
+		return true;
 	}
 
 	public static function import_begin( $table ) {

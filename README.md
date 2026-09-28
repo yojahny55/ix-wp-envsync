@@ -410,6 +410,8 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
 
+Tables that exist only on the remote, typically ones a plugin created for itself after your last pull, are created here first and marked `(new)` in the plan, the same way a push creates tables only your site has. A column a plugin added to an existing table on the remote (Action Scheduler, SEO plugins, anything that runs its own `dbDelta`) is added here too, listed under `SCHEMA` in the plan; a column that exists only here is left as it is, with a warning. Both need 0.7.3 or newer on the remote — against an older one, a table or column it has that this side lacks is skipped, named, with a message to upgrade it.
+
 ### `wp envsync diff <env>`
 
 Shows what a push would do. Reads nothing but hashes over the wire, changes nothing on either side, and saves the plan to the storage folder.
@@ -608,7 +610,7 @@ Agents should read files rather than terminal text:
 
 | File (under `wp-content/envsync-*/`) | Written by | Holds |
 |---|---|---|
-| `plans/<kind>-<env>-latest.json` | `diff`, `push`, `pull` (including `--dry-run`) | The plan as JSON (`schema: 1`): `summary`, `tables`, `plugins`, `themes`, `other`, `conflicts`, `warnings`. Same data as the tables. |
+| `plans/<kind>-<env>-latest.json` | `diff`, `push`, `pull` (including `--dry-run`) | The plan as JSON (`schema: 1`): `summary`, `tables`, `new_tables`, `schema_changes`, `plugins`, `themes`, `other`, `conflicts`, `warnings`. Same data as the tables. |
 | `runs/<kind>-<env>-latest.json` | `push`, `pull` | The outcome: `ok`, `job`, `seconds`, `files`, `bytes`, `rows`, `stale`, `error`. Written on failure too. |
 
 `--format=json` prints the same plan to stdout. Every plan command prints the manifest path in its last line (`manifest: …`).

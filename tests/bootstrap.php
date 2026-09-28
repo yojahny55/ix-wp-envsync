@@ -50,6 +50,8 @@ if ( ! function_exists( 'get_option' ) ) { function get_option( $k, $d = false )
 if ( ! function_exists( 'update_option' ) ) { function update_option( $k, $v, $autoload = null ) { $GLOBALS['ixes_test_options'][ $k ] = $v; return true; } }
 if ( ! function_exists( 'get_transient' ) ) { function get_transient( $k ) { return $GLOBALS['ixes_test_transients'][ $k ] ?? false; } }
 if ( ! defined( 'IXES_VERSION' ) ) define( 'IXES_VERSION', '0.4.0' );
+if ( ! defined( 'ARRAY_A' ) ) define( 'ARRAY_A', 'ARRAY_A' );
+if ( ! defined( 'ARRAY_N' ) ) define( 'ARRAY_N', 'ARRAY_N' );
 if ( ! function_exists( 'home_url' ) ) { function home_url() { return 'http://hub.test'; } }
 
 spl_autoload_register( function ( $class ) {

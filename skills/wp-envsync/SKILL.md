@@ -54,7 +54,7 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `remote_posts`: the number of rows in the remote's posts table. 5 or fewer means a fresh install.
 - `prefix_map`: `null` when both sites use the same table prefix. Otherwise a string such as `"ab12cd_ → wp_"` (remote prefix → hub prefix): the remote translates, and table names in plans are the hub's.
 
-In a push plan, `new_tables` lists tables the push will create on the remote (shown as `(new)` in the table). Mention them to the user.
+In a push plan, `new_tables` lists tables the push will create on the remote (shown as `(new)` in the table). In a pull plan, `new_tables` and `schema_changes` cover the other direction: tables and columns a plugin added on the remote that the pull creates or adds here (shown as `(new)` and under `SCHEMA`). Mention them to the user. Against a remote older than 0.7.3, a table or column it has that this side lacks is skipped instead, named in a `skip:` line.
 
 ## What to do for each `next.command`
 

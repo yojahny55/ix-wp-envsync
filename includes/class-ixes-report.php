@@ -16,7 +16,7 @@ class IXES_Report {
 			'direction' => $in['direction'], 'baseline_at' => $in['baseline_at'], 'first_deploy' => (bool) $in['first_deploy'],
 			'scope' => $in['scope'], 'scope_full' => (bool) $in['scope_full'],
 			'summary' => [ 'files' => count( $in['files'] ), 'delete' => count( $in['deletes'] ), 'bytes' => null, 'rows' => 0, 'conflicts' => count( $in['conflicts'] ) ],
-			'tables' => [], 'new_tables' => array_values( (array) ( $in['new_tables'] ?? [] ) ), 'plugins' => [], 'themes' => [], 'other' => [], 'conflicts' => $in['conflicts'], 'warnings' => $in['warnings'],
+			'tables' => [], 'new_tables' => array_values( (array) ( $in['new_tables'] ?? [] ) ), 'schema_changes' => (array) ( $in['schema_changes'] ?? [] ), 'plugins' => [], 'themes' => [], 'other' => [], 'conflicts' => $in['conflicts'], 'warnings' => $in['warnings'],
 			// tables dropped on the side that receives: [ name, rows, why ] ('baseline', 'mirror', 'asked')
 			'drop_tables' => array_values( (array) ( $in['drop_tables'] ?? [] ) ),
 		];
@@ -132,7 +132,7 @@ class IXES_Report {
 		return self::build( [
 			'kind' => 'pull', 'env' => $plan['env'], 'url' => (string) $plan['info']['url'], 'created' => $plan['created'], 'direction' => 'pull',
 			'baseline_at' => $bl->meta( 'created_at' ), 'first_deploy' => false, 'scope' => $sc->label(), 'scope_full' => $sc->is_full(),
-			'tables' => $tables, 'rows' => array_sum( array_column( $plan['tables'], 'rows' ) ),
+			'tables' => $tables, 'new_tables' => array_keys( (array) ( $plan['new_tables'] ?? [] ) ), 'schema_changes' => (array) ( $plan['schema_changes'] ?? [] ), 'rows' => array_sum( array_column( $plan['tables'], 'rows' ) ),
 			'files' => $plan['files']['transfer'], 'deletes' => $plan['files']['delete'], 'sizes' => $plan['sizes'] ?? null,
 			'before' => $local, 'source' => $remote,
 			'active_before' => $local_active, 'active_after' => $opts_in ? (array) ( $plan['info']['active_plugins'] ?? [] ) : $local_active,
@@ -188,7 +188,11 @@ class IXES_Report {
 			$o[] = ''; $o[] = 'DATABASE';
 			$o[] = $push
 				? self::table( [ 'table', 'push', 'insert', 'delete', 'remote-wins', 'kept-remote' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'] ]; }, $r['tables'] ) )
-				: self::table( [ 'table', 'rows' ], array_map( function ( $t ) { return [ $t['name'], $t['rows'] ]; }, $r['tables'] ) );
+				: self::table( [ 'table', 'rows' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['rows'] ]; }, $r['tables'] ) );
+		}
+		if ( ! empty( $r['schema_changes'] ) ) {
+			$o[] = ''; $o[] = 'SCHEMA';
+			foreach ( $r['schema_changes'] as $table => $cols ) foreach ( array_keys( $cols ) as $col ) $o[] = "  {$table}.{$col}  (new column)";
 		}
 		$has_del = $s['delete'] > 0;
 		foreach ( [ 'plugins' => 'plugin', 'themes' => 'theme' ] as $k => $label ) {
