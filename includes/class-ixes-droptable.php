@@ -187,7 +187,7 @@ class IXES_Droptable {
 		$pk = IXES_Transfer::pk_of( $table ); $last = null; $off = 0;
 		while ( $ok ) {
 			$page = $pk
-				? $wpdb->get_results( $last === null ? "SELECT * FROM `{$table}` ORDER BY `{$pk}` LIMIT 5000" : $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` > %s ORDER BY `{$pk}` LIMIT 5000", $last ), ARRAY_A )
+				? $wpdb->get_results( $last === null ? "SELECT * FROM `{$table}` ORDER BY `{$pk}` LIMIT 5000" : "SELECT * FROM `{$table}` WHERE `{$pk}` > " . IXES_Transfer::key_literal( $last ) . " ORDER BY `{$pk}` LIMIT 5000", ARRAY_A )
 				: $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` LIMIT 5000 OFFSET %d", $off ), ARRAY_A );
 			$page = (array) $page;
 			if ( ! $page ) break;

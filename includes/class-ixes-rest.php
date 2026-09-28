@@ -68,14 +68,18 @@ class IXES_Rest {
 		return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), array_map( 'strval', array_values( (array) ( $p['extra'] ?? [] ) ) ) );
 	}
 
-	/** A page answer for a hub that asked for byte cells: a varbinary key cursor goes out wrapped, and comes back as 'from'. */
-	private static function wrap_next( $r, array $p ) {
-		if ( ! empty( $p['cells'] ) && is_array( $r ) && IXES_Hasher::is_bytes( $r['next'] ?? null ) ) $r['next'] = [ 'b64' => base64_encode( $r['next'] ) ];
+	/**
+	 * A page answer's cursor: a binary key goes out wrapped for every hub, whether it asked for byte cells or not.
+	 * Raw, wp_json_encode() turns its bytes into '?', the hub sends that back, and `k > '?..'` answers the same page
+	 * forever. Any hub just echoes the cursor back as 'from', where cursor_in() unwraps it.
+	 */
+	public static function cursor_out( $r ) {
+		if ( is_array( $r ) && IXES_Hasher::is_bytes( $r['next'] ?? null ) ) $r['next'] = [ 'b64' => base64_encode( $r['next'] ) ];
 		return $r;
 	}
 
 	/** The hub's 'from' cursor, unwrapped. */
-	private static function from( array $p ) {
+	public static function cursor_in( array $p ) {
 		$f = $p['from'] ?? null;
 		if ( ! is_array( $f ) ) return $f;
 		$d = IXES_Hasher::cells_in( [ $f ] );
@@ -84,9 +88,9 @@ class IXES_Rest {
 
 	public static function hash_rows( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		$from = self::from( $p );
+		$from = self::cursor_in( $p );
 		if ( is_wp_error( $from ) ) return $from;
-		return self::wrap_next( IXES_Transfer::hash_rows( self::table( $p['table'] ?? '' ), $from, (int) ( $p['limit'] ?? 5000 ), self::pairs( $p ), sanitize_key( $p['algo'] ?? 'sha1' ), ! empty( $p['cells'] ) ), $p );
+		return self::cursor_out( IXES_Transfer::hash_rows( self::table( $p['table'] ?? '' ), $from, (int) ( $p['limit'] ?? 5000 ), self::pairs( $p ), sanitize_key( $p['algo'] ?? 'sha1' ), ! empty( $p['cells'] ) ) );
 	}
 	/**
 	 * The first page of several tables' row hashes in one request, keyed by the hub's table names.
@@ -103,7 +107,7 @@ class IXES_Rest {
 			$name = sanitize_text_field( (string) $name );
 			$r = IXES_Transfer::hash_rows( self::table( $name ), null, $budget, $pairs, $algo, ! empty( $p['cells'] ) );
 			if ( is_wp_error( $r ) ) return $r;
-			$out[ $name ] = self::wrap_next( $r, $p );
+			$out[ $name ] = self::cursor_out( $r );
 			$budget -= max( 1, count( $r['rows'] ) );
 		}
 		return [ 'tables' => (object) $out ];
@@ -130,9 +134,9 @@ class IXES_Rest {
 	}
 	public static function dump( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		$from = self::from( $p );
+		$from = self::cursor_in( $p );
 		if ( is_wp_error( $from ) ) return $from;
-		return self::wrap_next( IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $from, (int) ( $p['limit'] ?? 5000 ), (int) ( $p['bytes'] ?? 0 ), ! empty( $p['cells'] ) ), $p );
+		return self::cursor_out( IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $from, (int) ( $p['limit'] ?? 5000 ), (int) ( $p['bytes'] ?? 0 ), ! empty( $p['cells'] ) ) );
 	}
 	public static function file_get( WP_REST_Request $req ) {
 		$p   = $req->get_json_params();

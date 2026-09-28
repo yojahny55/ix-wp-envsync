@@ -69,14 +69,17 @@ class IXES_Planner {
 			$remote = []; $byte_keys = ! empty( $byte_key_tables[ $name ] );
 			if ( isset( $pre[ $name ] ) ) $remote = $pre[ $name ];
 			elseif ( empty( $t['new'] ) ) {
-				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ] + $cells, function ( $res ) use ( &$remote, &$byte_keys, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); if ( ! empty( $res['byte_keys'] ) ) $byte_keys = true; } );
+				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ] + $cells, function ( $res ) use ( &$remote, &$byte_keys, $pk ) {
+					if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] );
+					if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; return false; } // skipped below: no need for the rest
+				} );
 				if ( is_wp_error( $r ) ) return $r;
 			}
 			$local = []; $next = null;
 			do {
 				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo, $bytes );
 				if ( $pk ) $local += $res['rows']; else $local = array_merge( $local, $res['rows'] );
-				if ( ! empty( $res['byte_keys'] ) ) $byte_keys = true;
+				if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; break; }
 				$next = $res['next'];
 			} while ( $next !== null );
 			$skip = self::byte_key_skip( $plan, $name, $pk, $byte_keys );
@@ -225,14 +228,18 @@ class IXES_Planner {
 			foreach ( $got as $n => $r ) {
 				$out[ $n ] = (array) ( $r['rows'] ?? [] );
 				if ( ! empty( $r['byte_keys'] ) ) $byte_keys[ $n ] = true;
-				if ( isset( $r['next'] ) && $r['next'] !== null ) $more[ $n ] = $r['next'];
+				// a table with byte keys is skipped by the caller: no need for the rest of it
+				if ( isset( $r['next'] ) && $r['next'] !== null && empty( $byte_keys[ $n ] ) ) $more[ $n ] = $r['next'];
 			}
 			$queue = array_values( array_diff( $queue, array_keys( $got ) ) );
 		}
 		// a table the batch cut short continues page by page from where it stopped
 		foreach ( $more as $n => $from ) {
 			$pk = $has_pk[ $n ];
-			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ] + $cells, function ( $res ) use ( &$out, &$byte_keys, $n, $pk ) { if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] ); if ( ! empty( $res['byte_keys'] ) ) $byte_keys[ $n ] = true; } );
+			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ] + $cells, function ( $res ) use ( &$out, &$byte_keys, $n, $pk ) {
+				if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] );
+				if ( ! empty( $res['byte_keys'] ) ) { $byte_keys[ $n ] = true; return false; }
+			} );
 			if ( is_wp_error( $r ) ) return $r;
 		}
 		return $out;

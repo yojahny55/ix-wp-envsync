@@ -130,7 +130,7 @@ class IXES_Transfer {
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$pk = self::pk_of( $table );
 		if ( $pk ) {
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` > %s ORDER BY `{$pk}` LIMIT %d", $from_pk === null ? '' : $from_pk, $limit ), ARRAY_A );
+			$rows = $wpdb->get_results( "SELECT * FROM `{$table}` WHERE `{$pk}` > " . self::key_literal( $from_pk === null ? '' : $from_pk ) . " ORDER BY `{$pk}` LIMIT " . (int) $limit, ARRAY_A );
 			$more = count( $rows ) === $limit;
 			$page = self::budget_page( $rows, (int) $byte_budget );
 			$rows = $page['rows']; $more = $more || $page['cut'];
@@ -156,6 +156,16 @@ class IXES_Transfer {
 		}
 		if ( $bytes ) $rows = array_map( [ 'IXES_Hasher', 'cells_out' ], $rows );
 		return [ 'rows' => $rows, 'next' => $next ];
+	}
+
+	/**
+	 * A key cursor as a SQL literal: a binary key as hex, so no invalid UTF-8 ever sits inside the query text
+	 * (wpdb may strip or refuse it on a table whose collation it does not trust); anything else quoted as before.
+	 */
+	public static function key_literal( $v ) {
+		global $wpdb;
+		if ( IXES_Hasher::is_bytes( $v ) ) return '0x' . bin2hex( $v );
+		return $wpdb->prepare( '%s', (string) $v );
 	}
 
 	/** Columns of a CREATE TABLE whose type holds raw bytes: binary, varbinary, the blobs, bit. */
