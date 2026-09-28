@@ -8,4 +8,10 @@ class CliSynopsisTest extends TestCase {
 		$this->assertNotEmpty( $m[1] );
 		foreach ( $m[1] as $placeholder ) $this->assertMatchesRegularExpression( '/^[a-z0-9_-]+$/', $placeholder );
 	}
+
+	/** Without a blank line between two options WP-CLI reads them as one, so --parallel's "default: 4" became --timeout's: every request timed out after 4 s. */
+	public function test_options_are_separated_by_a_blank_line() {
+		preg_match_all( '/^\s*\*\s*:[^\n]*\n\s*\*\s*\[--/m', file_get_contents( __DIR__ . '/../includes/class-ixes-cli.php' ), $m );
+		$this->assertSame( [], $m[0] );
+	}
 }
