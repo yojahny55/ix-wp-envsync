@@ -86,7 +86,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
@@ -304,6 +304,28 @@ class IXES_Transfer {
 		return [ 'data' => base64_encode( $data ), 'size' => strlen( $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
 	}
 
+	/**
+	 * Many small files for one /file/batch answer, in IXES_Batch's format. Each item carries the sha256 of the
+	 * bytes sent; a path refused here, gone, or grown past $max since the plan carries 'err' and no bytes.
+	 */
+	public static function file_batch( array $paths, $max = 2 * IXES_Batch::MAX_BYTES ) {
+		$items = []; $bytes = 0;
+		foreach ( $paths as $rel ) {
+			$rel  = (string) $rel;
+			$safe = self::safe_rel( $rel );
+			if ( ! $safe || self::excluded_path( $safe, IXES_Env::default_excludes() ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'bad_path' ], '' ]; continue; }
+			$p = WP_CONTENT_DIR . '/' . $safe;
+			if ( ! is_file( $p ) || ! is_readable( $p ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'not_found' ], '' ]; continue; }
+			// grown since the plan: the hub fetches it alone, in chunks
+			if ( $bytes + (int) filesize( $p ) > $max ) { $items[] = [ [ 'path' => $rel, 'err' => 'later' ], '' ]; continue; }
+			$data = @file_get_contents( $p );
+			if ( $data === false ) { $items[] = [ [ 'path' => $rel, 'err' => 'io' ], '' ]; continue; }
+			$bytes += strlen( $data );
+			$items[] = [ [ 'path' => $rel, 'sha256' => hash( 'sha256', $data ) ], $data ];
+		}
+		return IXES_Batch::encode( $items );
+	}
+
 	// ---------- hub side ----------
 
 	public static function tmp_name( $table ) {
@@ -512,6 +534,16 @@ class IXES_Transfer {
 			if ( ! @rename( $tmp, $dest ) ) { @unlink( $tmp ); return new WP_Error( 'io', self::io_hint( "cannot replace {$rel}", $dir ) ); }
 		}
 		return true;
+	}
+
+	/** Copies an already hash-verified local file (from a wordpress.org seed) into place. No chunking: the whole file is on disk already. */
+	public static function seed_file( $rel, $src ) {
+		$rel = self::safe_rel( $rel );
+		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return false;
+		$dest = WP_CONTENT_DIR . '/' . $rel;
+		$dir  = dirname( $dest );
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return false;
+		return (bool) @copy( $src, $dest );
 	}
 
 	/** @return bool true when the file is gone (or was never there) */

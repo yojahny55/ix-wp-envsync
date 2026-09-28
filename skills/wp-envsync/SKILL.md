@@ -81,6 +81,8 @@ wp --path=<site> envsync pull prod --yes       # after approval
 
 The dry run lists tables and rows, files to transfer, **files to delete**, and URL rewrites. Report the delete count: those files exist only locally and will be removed. If it looks large, add `--details` to see the counts per folder.
 
+A pull tries downloads.wordpress.org first for any plugin or theme file the remote's own version matches there — much faster than a slow remote. A line like `seeded 3,077 files (98.2 MB) from wordpress.org; 200 files left to transfer` means the rest still comes from the remote. It never changes the result, only where the bytes come from; a mismatch always falls back to the remote. Add `--no-seed` if the user wants everything to come from the remote regardless (e.g. auditing exactly what the remote serves).
+
 ### Ship local changes
 
 ```bash
@@ -180,9 +182,9 @@ All commands take `--path=<site>`.
 | `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--timeout=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
 | `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=]` | Apply changes to the remote |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
@@ -228,6 +230,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 3. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
 
 A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
+
+**A slow file transfer** (the plan's `TRANSFER` line says "one request each"): the remote runs a plugin older than 0.8.0, so every file costs a full WordPress boot there. Tell the user to upload the current zip to the remote; from 0.8.0 small files travel in compressed batches, `--parallel=<n>` at a time (default 4). If a host limits concurrent PHP requests and batches fail with 503 or 429, retry with `--parallel=1` or `2`.
 
 **`403 Forbidden` on `/job/step`** (plain text, not a WordPress error): the host's firewall blocked a database batch, usually because of serialized PHP objects in plugin rows. Retry and plugins-off will not help. Tell the user to upload plugin 0.5.5 or newer to the remote, which sends steps compressed. Then run `unlock <env>` and push again.
 

@@ -289,7 +289,7 @@ A `pull` in exactly the default scope records the baseline for that scope, so th
 
 If `pull` drops partway through, just run the same command again. It picks up where it left off; answer `y` when it asks to resume. `--fresh` throws that progress away and starts the pull over instead.
 
-The resume state lives at `wp-content/envsync-*/pull-<env>.json`. It's written automatically while the pull runs and removed once it finishes.
+Files already written and verified are not fetched again, even when parallel batches finished out of order. The resume state lives at `wp-content/envsync-*/pull-<env>.json`. It's written automatically while the pull runs and removed once it finishes.
 
 ---
 
@@ -406,11 +406,23 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 - `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
+- `--no-seed` — never try downloads.wordpress.org for plugin/theme files (see [Seeding from wordpress.org](#seeding-from-wordpressorg) below). Default: `ENVSYNC_NO_SEED`, else seeding is on.
 - `--timeout=<seconds>` — HTTP timeout for this pull, overriding the environment's own `--timeout` (`env add`).
+- `--parallel=<n>` — file requests in flight at once, 1 to 16 (default 4). `1` sends them one after another. See [How files travel](#how-files-travel).
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
 
 Tables that exist only on the remote, typically ones a plugin created for itself after your last pull, are created here first and marked `(new)` in the plan, the same way a push creates tables only your site has. A column a plugin added to an existing table on the remote (Action Scheduler, SEO plugins, anything that runs its own `dbDelta`) is added here too, listed under `SCHEMA` in the plan; a column that exists only here is left as it is, with a warning. Both need 0.7.3 or newer on the remote — against an older one, a table or column it has that this side lacks is skipped, named, with a message to upgrade it.
+
+### Seeding from wordpress.org
+
+For every plugin or theme with files queued to transfer, at a version the remote reports, a pull first tries the matching zip on `downloads.wordpress.org` (or, when that exact version is no longer archived there but happens to be the current release, the unversioned zip). Each file inside is re-hashed and compared against the remote's own hash; only an exact match is used, so the result is byte-identical to pulling everything from the remote. Anything that doesn't match — a different build, a premium or unlisted plugin, a 404, a wordpress.org outage — just keeps coming from the remote, silently. This happens before the file transfer is batched and parallelized (see [How files travel](#how-files-travel)) and before it is frozen for a resumable job, so a seeded file never needs to be re-fetched on resume. On a slow remote this can cut a pull from hours to minutes, since wordpress.org is usually far faster than a small host.
+
+```
+seeded 3,077 files (98.2 MB) from wordpress.org; 200 files left to transfer
+```
+
+`--dry-run` prints the same line and the plan's file count already reflects it, so you see the real savings before running anything. Disable it with `--no-seed` on the command, or by default with `define( 'ENVSYNC_NO_SEED', true );` in `wp-config.php`.
 
 ### `wp envsync diff <env>`
 
@@ -435,6 +447,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--mirror` — with `--force` only. Also deletes, within the scope, the rows, files and tables only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
 - `--drop-tables=<tables>` — comma list of tables only the remote has (with or without the prefix) to drop there although the baseline does not know them. See [Dropped tables](#dropped-tables).
 - `--backup-dir=<dir>` — where the hub writes its `.sql` copy of every table the push drops.
+- `--parallel=<n>` — file batches in flight at once, 1 to 16 (default 4). See [How files travel](#how-files-travel).
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
@@ -444,7 +457,23 @@ Before applying, the remote snapshots every row and file the plan touches, and g
 
 Database steps go up deflated as binary, the same way as files. Host firewalls such as Hostinger's score the serialized PHP objects inside plugin rows (Action Scheduler jobs, many options) as an attack, and block a plain JSON batch with `403 Forbidden`. Compressed bytes are not pattern-matched. Both sides need 0.5.5 or newer for this; against an older remote the hub sends plain JSON.
 
-Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks.
+Small files (up to 512 KB) go up in batches of up to 4 MB per request, so a first deploy of thousands of plugin files takes a few dozen requests instead of thousands. Larger files go in resumable chunks. From 0.8.0 the batches go compressed and several at a time; see [How files travel](#how-files-travel).
+
+### How files travel
+
+Every request to the remote boots WordPress there first, which on a small host costs one to two seconds before any work starts. Sending files one per request therefore spends most of its time waiting: a pull of about a thousand small plugin files measured 2.7 seconds per file, although each connection moved around 110 KB/s.
+
+From 0.8.0, in both directions:
+
+- Small files (up to 512 KB) travel in batches: up to 400 files and 4 MB per request, smaller when there are few files, so every parallel request has work.
+- Batches are deflated. PHP and JS shrink to about a quarter, and a host firewall that pattern-matches plain request bodies never sees the code inside, the same reason database steps are compressed.
+- `--parallel=<n>` requests run at once (default 4). `--parallel=1` sends them one after another.
+- Each file carries the SHA-256 of its bytes. The receiving side checks every file of a batch before it writes any of them, writes each through a temporary file, and refuses any path it was not asked for, outside wp-content, or excluded. A damaged batch is fetched again on its own.
+- Larger files, and a file that grew past its batch since the plan, keep the chunked single-file path.
+
+Both sides need 0.8.0 or newer. Against an older remote the hub falls back on its own: a pull fetches one file per request, a push sends plain batches one at a time. The plan says which way the files will go, with a `TRANSFER` line, and names the version to upload when the remote is older. `status` flags a remote older than the hub.
+
+Batches finish in any order. A pull records every file that was written and verified, not a position in the list, so an interrupted pull resumes with exactly the files that did not land.
 
 Rows are paged by count and by an ~4 MB byte budget, whichever is hit first, so a page of a handful of very wide rows (a table with a lot of post content or serialized options) doesn't outgrow the transfer either. On each side, `INSERT`/`REPLACE` statements built from an incoming page are themselves split to stay under ~75% of that site's own `max_allowed_packet` (read once per sync), so a database with a small packet limit never drops the connection with "MySQL server has gone away" no matter how the other side paged.
 
