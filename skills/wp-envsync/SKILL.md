@@ -81,6 +81,8 @@ wp --path=<site> envsync pull prod --yes       # after approval
 
 The dry run lists tables and rows, files to transfer, **files to delete**, and URL rewrites. Report the delete count: those files exist only locally and will be removed. If it looks large, add `--details` to see the counts per folder.
 
+A pull tries downloads.wordpress.org first for any plugin or theme file the remote's own version matches there — much faster than a slow remote. A line like `seeded 3,077 files (98.2 MB) from wordpress.org; 200 files left to transfer` means the rest still comes from the remote. It never changes the result, only where the bytes come from; a mismatch always falls back to the remote. Add `--no-seed` if the user wants everything to come from the remote regardless (e.g. auditing exactly what the remote serves).
+
 ### Ship local changes
 
 ```bash
@@ -180,7 +182,7 @@ All commands take `--path=<site>`.
 | `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--timeout=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
 | `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Preview a push. Changes nothing. |
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |

@@ -141,5 +141,9 @@ class FewerRequestsTest extends TestCase {
 		$this->assertSame( [], IXES_Transfer::all_files( [], [ 'plugins/linked/' ] ) );
 		$this->assertSame( [], IXES_Transfer::all_files( [], [ 'plugins/linked/sub/' ] ) );
 		$this->assertSame( $full, IXES_Transfer::all_files( [], [ 'plugins/' ] ) );
+		// cleanup: WP_CONTENT_DIR here is shared across this whole test run, and another test asserts
+		// an exact file listing over it, so this fixture must not survive whichever order runs first
+		@unlink( "$d/plugins/linked" );
+		@unlink( "$d/real/sub/a.php" ); @rmdir( "$d/real/sub" ); @rmdir( "$d/real" );
 	}
 }
