@@ -129,11 +129,11 @@ class IXES_Droptable {
 	 * each row hashed as the hub sees it.
 	 * @return array|WP_Error
 	 */
-	public static function hashes( $table, array $pairs, $algo ) {
+	public static function hashes( $table, array $pairs, $algo, $bytes = false ) {
 		$out = []; $next = null;
 		$pk = IXES_Transfer::pk_of( $table );
 		do {
-			$r = IXES_Transfer::hash_rows( $table, $next, 5000, $pairs, $algo );
+			$r = IXES_Transfer::hash_rows( $table, $next, 5000, $pairs, $algo, $bytes );
 			if ( is_wp_error( $r ) ) return $r;
 			if ( $pk ) $out += $r['rows']; else foreach ( $r['rows'] as $h ) $out[] = $h;
 			$next = $r['next'];
@@ -192,7 +192,7 @@ class IXES_Droptable {
 			$page = (array) $page;
 			if ( ! $page ) break;
 			foreach ( $page as $row ) {
-				$line = json_encode( $row );
+				$line = json_encode( IXES_Hasher::cells_out( $row ) ); // byte cells wrapped; restore_file() unwraps them
 				if ( $line === false ) { $ok = false; break; } // bytes JSON cannot carry: the copy would not be the table
 				if ( ! self::put( $j, $line . "\n" ) ) { $ok = false; break; }
 			}
@@ -232,7 +232,8 @@ class IXES_Droptable {
 		$lost = 0;
 		while ( ( $line = fgets( $h ) ) !== false ) {
 			$row = json_decode( $line, true );
-			if ( ! is_array( $row ) || ! $wpdb->insert( $table, $row ) ) $lost++;
+			$row = is_array( $row ) ? IXES_Hasher::cells_in( $row ) : null;
+			if ( $row === null || ! ( IXES_Transfer::has_bytes( $row ) ? IXES_Transfer::write_row( $table, $row ) : $wpdb->insert( $table, $row ) ) ) $lost++;
 		}
 		fclose( $h );
 		return $lost ? new WP_Error( 'restore_failed', "{$table} recreated, but {$lost} row(s) did not go back; the copy is {$jsonl}" ) : true;
@@ -251,7 +252,8 @@ class IXES_Droptable {
 			$vals = [];
 			foreach ( $chunk as $row ) {
 				$cells = [];
-				foreach ( $cols as $c ) $cells[] = $row[ $c ] === null ? 'NULL' : "'" . str_replace( [ '\\', "'", "\n", "\r", "\0" ], [ '\\\\', "\\'", '\\n', '\\r', '\\0' ], (string) $row[ $c ] ) . "'";
+				// bytes that are not valid UTF-8 as a hex literal: quoted, a utf8mb4 client reloading the file may reject or mangle them
+				foreach ( $cols as $c ) $cells[] = $row[ $c ] === null ? 'NULL' : ( IXES_Hasher::is_bytes( $row[ $c ] ) ? '0x' . bin2hex( $row[ $c ] ) : "'" . str_replace( [ '\\', "'", "\n", "\r", "\0" ], [ '\\\\', "\\'", '\\n', '\\r', '\\0' ], (string) $row[ $c ] ) . "'" );
 				$vals[] = '(' . implode( ',', $cells ) . ')';
 			}
 			$o .= "INSERT INTO `{$table}` (`" . implode( '`,`', $cols ) . '`) VALUES ' . implode( ",\n", $vals ) . ";\n";

@@ -27,7 +27,12 @@ class IXES_Planner {
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
 		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
 		$ex = IXES_Pull::excludes( $env );
-		$plan = [ 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror, 'drop_tables' => [], 'kept_tables' => [] ];
+		// both sides hash byte cells as raw bytes only when the remote can and the baseline agrees; otherwise as before
+		$caps  = (array) ( $info['caps'] ?? [] );
+		$bytes = IXES_Hasher::bytes_mode( $caps, ! $two_way, $two_way ? null : $bl->meta( 'bytes_hash' ) );
+		$cells = $bytes ? [ 'cells' => 1 ] : [];
+		$byte_warn = in_array( IXES_Hasher::CAP, $caps, true ) && ! $bytes ? [ "the {$env['name']} baseline predates 0.9.3: rows with binary cells are compared as before until the next pull" ] : [];
+		$plan = [ 'bytes_hash' => $bytes, 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror, 'drop_tables' => [], 'kept_tables' => [] ];
 		$mirror_warn = [];
 
 		// tables only this site has (a plugin's own tables on a first deploy): the push creates them, then fills them
@@ -50,7 +55,7 @@ class IXES_Planner {
 		foreach ( $candidates as $t ) {
 			if ( empty( $t['new'] ) && $scope->table_in( $t['name'] ) && IXES_Transfer::valid_table( $t['name'] ) ) $cheap[] = $t;
 		}
-		$pre = self::remote_hashes( $c, $cheap, (array) ( $info['caps'] ?? [] ), $algo, $extra_prod );
+		$pre = self::remote_hashes( $c, $cheap, $caps, $algo, $extra_prod, $bytes );
 		if ( is_wp_error( $pre ) ) return $pre;
 		foreach ( $candidates as $t ) {
 			if ( ! $scope->table_in( $t['name'] ) ) continue;
@@ -60,15 +65,18 @@ class IXES_Planner {
 			// the remote names the pk column; only trust it if it is a real local column (it goes into SQL in apply())
 			$pk = $t['pk'] === null ? null : IXES_Transfer::safe_pk( $name, $t['pk'] );
 			if ( $t['pk'] !== null && ! $pk ) return new WP_Error( 'bad_pk', "remote reports unknown pk column '{$t['pk']}' for {$name}" );
+			// row hashes are keyed by the primary key, and JSON keys cannot carry raw bytes: two keys would collapse
+			// into one, and an insert's "no row there yet" check would miss the prod row it then overwrites
+			if ( $pk && in_array( $pk, IXES_Transfer::byte_columns( (string) IXES_Transfer::create_table_sql( $name ) ), true ) ) { $byte_warn[] = "{$name}: its primary key {$pk} is binary, which a push cannot compare row by row; skipped"; continue; }
 			$remote = [];
 			if ( isset( $pre[ $name ] ) ) $remote = $pre[ $name ];
 			elseif ( empty( $t['new'] ) ) {
-				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ], function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
+				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ] + $cells, function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
 				if ( is_wp_error( $r ) ) return $r;
 			}
 			$local = []; $next = null;
 			do {
-				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo );
+				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo, $bytes );
 				if ( $pk ) $local += $res['rows']; else $local = array_merge( $local, $res['rows'] );
 				$next = $res['next'];
 			} while ( $next !== null );
@@ -100,7 +108,8 @@ class IXES_Planner {
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] || ! empty( $d['set_delete'] ) ) $plan['tables'][ $name ] = $d;
 		}
-		$plan['warnings'] = array_merge( $scope->family_warnings( $in_scope ), $mirror_warn, $drop_warn );
+		$byte_warn = array_merge( $byte_warn, IXES_Transfer::byte_warnings( $caps, $in_scope, $env['name'] ) );
+		$plan['warnings'] = array_merge( $scope->family_warnings( $in_scope ), $mirror_warn, $drop_warn, $byte_warn );
 
 		$plan['files'] = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
 		$plan['remote_file_hashes'] = [];
@@ -147,14 +156,14 @@ class IXES_Planner {
 		if ( ! in_array( 'drop_table', (array) ( $info['caps'] ?? [] ), true ) ) {
 			return [ 'dropping ' . count( $sel['drop'] ) . " table(s) needs plugin 0.7.0 or newer on {$env['name']}; they stay: " . implode( ', ', array_keys( $sel['drop'] ) ) ];
 		}
-		$hashes = self::remote_hashes( $c, array_values( array_intersect_key( $only, $sel['drop'] ) ), (array) ( $info['caps'] ?? [] ), $algo, $extra );
+		$hashes = self::remote_hashes( $c, array_values( array_intersect_key( $only, $sel['drop'] ) ), (array) ( $info['caps'] ?? [] ), $algo, $extra, ! empty( $plan['bytes_hash'] ) );
 		if ( is_wp_error( $hashes ) ) return $hashes;
 		$warn = [];
 		foreach ( $sel['drop'] as $n => $why ) {
 			$pk = $only[ $n ]['pk'] ?? null;
 			if ( ! isset( $hashes[ $n ] ) ) {
 				$h = [];
-				$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS ], function ( $res ) use ( &$h, $pk ) { if ( $pk ) $h += $res['rows']; else $h = array_merge( $h, $res['rows'] ); } );
+				$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS ] + ( ! empty( $plan['bytes_hash'] ) ? [ 'cells' => 1 ] : [] ), function ( $res ) use ( &$h, $pk ) { if ( $pk ) $h += $res['rows']; else $h = array_merge( $h, $res['rows'] ); } );
 				if ( is_wp_error( $r ) ) return $r;
 				$hashes[ $n ] = $h;
 			}
@@ -179,9 +188,11 @@ class IXES_Planner {
 	 * and fetched one by one, so their hashes are never all held at once.
 	 * @return array|WP_Error
 	 */
-	public static function remote_hashes( IXES_Client $c, array $tables, array $caps, $algo, array $extra ) {
+	/** $bytes: have the remote hash byte cells as raw bytes (see IXES_Hasher::bytes_mode()). */
+	public static function remote_hashes( IXES_Client $c, array $tables, array $caps, $algo, array $extra, $bytes = false ) {
 		$out = []; $queue = []; $more = []; $has_pk = [];
 		$batch = in_array( 'hash_batch', $caps, true );
+		$cells = $bytes && in_array( IXES_Hasher::CAP, $caps, true ) ? [ 'cells' => 1 ] : [];
 		foreach ( $tables as $t ) {
 			if ( ! isset( $t['rows'] ) ) continue;
 			$n = (string) $t['name'];
@@ -191,7 +202,7 @@ class IXES_Planner {
 		}
 		while ( $queue ) {
 			$ask = array_slice( $queue, 0, self::BATCH_TABLES );
-			$res = $c->post( '/hash/tables', [ 'tables' => $ask, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS ] );
+			$res = $c->post( '/hash/tables', [ 'tables' => $ask, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS ] + $cells );
 			if ( is_wp_error( $res ) ) return $res;
 			$got = array_intersect_key( (array) ( $res['tables'] ?? [] ), array_flip( $ask ) );
 			// the remote always answers at least the first table it was asked for; anything else would loop forever
@@ -205,7 +216,7 @@ class IXES_Planner {
 		// a table the batch cut short continues page by page from where it stopped
 		foreach ( $more as $n => $from ) {
 			$pk = $has_pk[ $n ];
-			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ], function ( $res ) use ( &$out, $n, $pk ) { if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] ); } );
+			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ] + $cells, function ( $res ) use ( &$out, $n, $pk ) { if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] ); } );
 			if ( is_wp_error( $r ) ) return $r;
 		}
 		return $out;

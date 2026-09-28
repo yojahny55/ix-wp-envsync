@@ -209,6 +209,8 @@ class IXES_Client {
 		return $this->caps;
 	}
 	public function set_caps( array $caps ) { $this->caps = $caps; }
+	/** The remote carries byte cells losslessly (0.9.3): the hub then asks for them with 'cells' and hashes them as raw bytes. */
+	public function cells() { return in_array( IXES_Hasher::CAP, $this->caps(), true ); }
 	private function binary() { return in_array( 'binary', $this->caps(), true ); }
 	/** The remote serves /file/batch and takes deflated push batches (0.8.0). */
 	public function batch_files() { return $this->binary() && in_array( 'file_batch', $this->caps(), true ); }

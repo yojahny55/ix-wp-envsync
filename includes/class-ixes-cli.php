@@ -378,12 +378,16 @@ class IXES_CLI {
 		$pk = IXES_Transfer::pk_of( $table );
 		$local  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` = %s", $id ), ARRAY_A );
 		$remote = null;
-		$d = $c->post( '/dump', [ 'table' => $table, 'from' => $id - 1, 'limit' => 1 ] );
-		if ( ! is_wp_error( $d ) && $d['rows'] && (string) $d['rows'][0][ $pk ] === (string) $id ) $remote = $d['rows'][0];
+		$d = $c->post( '/dump', [ 'table' => $table, 'from' => $id - 1, 'limit' => 1 ] + ( $c->cells() ? [ 'cells' => 1 ] : [] ) );
+		$rows = is_wp_error( $d ) ? [] : IXES_Hasher::rows_in( (array) ( $d['rows'] ?? [] ) );
+		if ( ! is_wp_error( $rows ) && $rows && (string) $rows[0][ $pk ] === (string) $id ) $remote = $rows[0];
 		$lp = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() ); $rp = $c->remote_pairs();
 		foreach ( array_unique( array_merge( array_keys( (array) $local ), array_keys( (array) $remote ) ) ) as $col ) {
 			$l = IXES_Hasher::normalize( $local[ $col ] ?? null, $lp ); $r = IXES_Hasher::normalize( $remote[ $col ] ?? null, $rp );
 			if ( $l === $r ) continue;
+			// raw bytes shown as hex: printed as is they garble the terminal
+			if ( IXES_Hasher::is_bytes( $l ) ) $l = '0x' . bin2hex( $l );
+			if ( IXES_Hasher::is_bytes( $r ) ) $r = '0x' . bin2hex( $r );
 			WP_CLI::line( WP_CLI::colorize( "%Y{$col}%n" ) );
 			WP_CLI::line( WP_CLI::colorize( '%R- remote: %n' ) . mb_strimwidth( (string) $r, 0, 300, '…' ) );
 			WP_CLI::line( WP_CLI::colorize( '%G+ local:  %n' ) . mb_strimwidth( (string) $l, 0, 300, '…' ) );

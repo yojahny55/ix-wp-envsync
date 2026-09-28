@@ -216,6 +216,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 
 **`503 … no available server`**: the host's proxy (Traefik on Coolify) has no healthy container for the site. WordPress never saw the request. Retrying will not help. Tell the user to restart the container in Coolify and to check that the site files are on a persistent volume. If the remote runs a plugin older than 0.4.2, maintenance mode during a push fails the health check and causes exactly this, so the remote needs the new zip first.
 
+**`binary column(s) … may not travel intact`** (a plan warning), or **`Duplicate entry … for key 'PRIMARY'`** on a pull: the table has a `varbinary`/`blob` column and the remote runs a plugin older than 0.9.3, so bytes that are not valid UTF-8 arrive as `?`. Tell the user to upload the current zip to that site and run the sync again. A pull leaves the remote's data alone; a push to an old remote can write `?` into those cells there, so upgrade it before pushing such a table.
+
 **`old_remote` / "creates N table(s) the remote lacks"**: the push has to create plugin tables, and the remote plugin is older than 0.5.1. Tell the user to upload the current zip to that site first. Nothing was changed.
 
 **`503 … no available server`, including from `rescue`**: the host's proxy (Traefik on Coolify) has no healthy container, usually because the health check requests a PHP page that now crashes. Nothing you run can reach the site. Tell the user to point the Coolify health check at a static file (`/license.txt`), or disable it, and restart the container. Then use `rescue`. Also ask for the container log's `PHP Fatal error` line; it names the plugin and file that crash.
