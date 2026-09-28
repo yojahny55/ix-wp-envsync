@@ -34,6 +34,12 @@ class BinCellsWpdb {
 	public function get_row( $q, $t = null ) { return null; }
 	public function get_results( $q, $t = null ) {
 		if ( preg_match( '/SHOW KEYS FROM `([^`]+)`/', $q, $m ) ) return array_map( function ( $c ) { return [ 'Column_name' => $c ]; }, $this->pk[ $m[1] ] ?? [] );
+		if ( preg_match( "/SELECT \\* FROM `([^`]+)` WHERE `([^`]+)` > '(.*)' ORDER BY `[^`]+` LIMIT (\\d+)$/s", $q, $m ) ) {
+			$from = stripslashes( $m[3] ); $col = $m[2];
+			$rows = array_values( array_filter( $this->rows[ $m[1] ] ?? [], function ( $r ) use ( $col, $from ) { return strcmp( (string) $r[ $col ], $from ) > 0; } ) );
+			usort( $rows, function ( $a, $b ) use ( $col ) { return strcmp( (string) $a[ $col ], (string) $b[ $col ] ); } );
+			return array_slice( $rows, 0, (int) $m[4] );
+		}
 		if ( preg_match( '/SELECT \* FROM `([^`]+)` LIMIT (\d+) OFFSET (\d+)/', $q, $m ) ) return array_slice( array_values( $this->rows[ $m[1] ] ?? [] ), (int) $m[3], (int) $m[2] );
 		return [];
 	}
@@ -77,6 +83,12 @@ class BinCellsWpdb {
 		}
 		return $out;
 	}
+}
+
+/** /hash/tables and /hash/rows answered from a script, for IXES_Planner::remote_hashes(). */
+class BinCellsHashClient extends IXES_Client {
+	public $answers = [];
+	public function post( $route, $body, $opts = [] ) { return array_shift( $this->answers ); }
 }
 
 class BinaryCellsTest extends TestCase {
@@ -236,5 +248,69 @@ class BinaryCellsTest extends TestCase {
 		foreach ( $this->db->sql as $q ) $this->assertMatchesRegularExpression( '/^INSERT INTO `wp_bot_hourly_ip` .+,0x330866f[ef],/', $q );
 		$step['rows'] = [ [ 'hour' => '1', 'kind' => 'k', 'ip' => [ 'b64' => '***' ], 'hits' => '0' ] ];
 		$this->assertInstanceOf( WP_Error::class, IXES_Applier::job_step( $step ) );
+	}
+
+	private function baseline( $meta = null ) {
+		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-t-' . uniqid() . '.sqlite' );
+		$bl->reset(); $bl->meta( 'created_at', time() );
+		if ( $meta !== null ) $bl->meta( 'bytes_hash', $meta );
+		return $bl;
+	}
+
+	public function test_scoped_pull_over_an_older_baseline_keeps_hashing_the_old_way() {
+		$bl = $this->baseline(); // full baseline from before 0.9.3: no bytes_hash
+		IXES_Pull::record_hash_mode( $bl, false, true ); // --tables pull, remote now has the cap
+		$this->assertNull( $bl->meta( 'bytes_hash' ) );
+		$this->assertFalse( IXES_Pull::hash_mode( $bl ), 'its rows join a baseline the planner compares the old way' );
+	}
+
+	public function test_scoped_pull_from_an_older_remote_keeps_a_bytes_baseline() {
+		$bl = $this->baseline( 'yes' );
+		IXES_Pull::record_hash_mode( $bl, false, false );
+		$this->assertSame( 'yes', $bl->meta( 'bytes_hash' ), 'the tables it did not touch still hold raw-byte hashes' );
+		$this->assertTrue( IXES_Pull::hash_mode( $bl ) );
+	}
+
+	public function test_a_baseline_pull_records_the_remote_mode() {
+		$bl = $this->baseline();
+		IXES_Pull::record_hash_mode( $bl, true, true );
+		$this->assertTrue( IXES_Pull::hash_mode( $bl ) );
+		IXES_Pull::record_hash_mode( $bl, true, false );
+		$this->assertFalse( IXES_Pull::hash_mode( $bl ) );
+	}
+
+	private function single_key_table( array $keys ) {
+		$this->db->table( 'wp_digests', [ 'k', 'v' ], [ 'k' ] );
+		foreach ( $keys as $i => $k ) $this->db->insert( 'wp_digests', [ 'k' => $k, 'v' => (string) $i ] );
+	}
+
+	public function test_an_ascii_varbinary_key_is_hashed_and_pushed_as_before() {
+		$this->single_key_table( [ 'a3f1', 'b7c2' ] );
+		$r = IXES_Transfer::hash_rows( 'wp_digests', null, 10, [], 'sha1', true );
+		$this->assertCount( 2, $r['rows'] );
+		$this->assertArrayNotHasKey( 'byte_keys', $r );
+		$plan = [ 'new_tables' => [] ];
+		$this->assertNull( IXES_Planner::byte_key_skip( $plan, 'wp_digests', 'k', ! empty( $r['byte_keys'] ) ) );
+	}
+
+	public function test_a_key_that_is_not_utf8_skips_the_table_and_its_creation() {
+		$this->single_key_table( [ "\xff\x01", 'ok' ] );
+		$r = IXES_Transfer::hash_rows( 'wp_digests', null, 10, [], 'sha1', true );
+		$this->assertCount( 2, $r['rows'] );
+		$this->assertTrue( $r['byte_keys'] );
+		$plan = [ 'new_tables' => [ 'wp_digests' => 'CREATE TABLE `wp_digests` (...)', 'wp_other' => 'CREATE TABLE `wp_other` (...)' ] ];
+		$w = IXES_Planner::byte_key_skip( $plan, 'wp_digests', 'k', true );
+		$this->assertStringContainsString( 'skipped, and not created there', $w );
+		$this->assertSame( [ 'wp_other' ], array_keys( $plan['new_tables'] ) );
+		$this->assertNull( IXES_Planner::byte_key_skip( $plan, 'wp_nokey', null, true ), 'a table without a key is compared as a set' );
+	}
+
+	public function test_remote_hashes_passes_on_which_tables_carry_byte_keys() {
+		$c = new BinCellsHashClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ) ] );
+		$c->answers = [ [ 'tables' => [ 'wp_a' => [ 'rows' => [ 'x' => 'h' ], 'next' => null, 'byte_keys' => true ], 'wp_b' => [ 'rows' => [ 'y' => 'h' ], 'next' => null ] ] ] ];
+		$keys = [];
+		$out = IXES_Planner::remote_hashes( $c, [ [ 'name' => 'wp_a', 'pk' => 'k', 'rows' => 1 ], [ 'name' => 'wp_b', 'pk' => 'k', 'rows' => 1 ] ], [ 'hash_batch', IXES_Hasher::CAP ], 'sha1', [], true, $keys );
+		$this->assertSame( [ 'wp_a', 'wp_b' ], array_keys( $out ) );
+		$this->assertSame( [ 'wp_a' => true ], $keys );
 	}
 }

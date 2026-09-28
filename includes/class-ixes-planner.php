@@ -55,7 +55,8 @@ class IXES_Planner {
 		foreach ( $candidates as $t ) {
 			if ( empty( $t['new'] ) && $scope->table_in( $t['name'] ) && IXES_Transfer::valid_table( $t['name'] ) ) $cheap[] = $t;
 		}
-		$pre = self::remote_hashes( $c, $cheap, $caps, $algo, $extra_prod, $bytes );
+		$byte_key_tables = [];
+		$pre = self::remote_hashes( $c, $cheap, $caps, $algo, $extra_prod, $bytes, $byte_key_tables );
 		if ( is_wp_error( $pre ) ) return $pre;
 		foreach ( $candidates as $t ) {
 			if ( ! $scope->table_in( $t['name'] ) ) continue;
@@ -65,21 +66,21 @@ class IXES_Planner {
 			// the remote names the pk column; only trust it if it is a real local column (it goes into SQL in apply())
 			$pk = $t['pk'] === null ? null : IXES_Transfer::safe_pk( $name, $t['pk'] );
 			if ( $t['pk'] !== null && ! $pk ) return new WP_Error( 'bad_pk', "remote reports unknown pk column '{$t['pk']}' for {$name}" );
-			// row hashes are keyed by the primary key, and JSON keys cannot carry raw bytes: two keys would collapse
-			// into one, and an insert's "no row there yet" check would miss the prod row it then overwrites
-			if ( $pk && in_array( $pk, IXES_Transfer::byte_columns( (string) IXES_Transfer::create_table_sql( $name ) ), true ) ) { $byte_warn[] = "{$name}: its primary key {$pk} is binary, which a push cannot compare row by row; skipped"; continue; }
-			$remote = [];
+			$remote = []; $byte_keys = ! empty( $byte_key_tables[ $name ] );
 			if ( isset( $pre[ $name ] ) ) $remote = $pre[ $name ];
 			elseif ( empty( $t['new'] ) ) {
-				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ] + $cells, function ( $res ) use ( &$remote, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); } );
+				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ] + $cells, function ( $res ) use ( &$remote, &$byte_keys, $pk ) { if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] ); if ( ! empty( $res['byte_keys'] ) ) $byte_keys = true; } );
 				if ( is_wp_error( $r ) ) return $r;
 			}
 			$local = []; $next = null;
 			do {
 				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo, $bytes );
 				if ( $pk ) $local += $res['rows']; else $local = array_merge( $local, $res['rows'] );
+				if ( ! empty( $res['byte_keys'] ) ) $byte_keys = true;
 				$next = $res['next'];
 			} while ( $next !== null );
+			$skip = self::byte_key_skip( $plan, $name, $pk, $byte_keys );
+			if ( $skip !== null ) { $byte_warn[] = $skip; continue; }
 
 			if ( $pk ) {
 				$d = IXES_Differ::diff( $two_way ? [] : $bl->rows( $name ), $local, $remote );
@@ -179,6 +180,20 @@ class IXES_Planner {
 		return $warn;
 	}
 
+	/**
+	 * Row hashes are keyed by the primary key, and JSON keys cannot carry raw bytes: two keys would collapse into one,
+	 * and an insert's "no row there yet" check would miss the prod row it then overwrites. Only a key value that really
+	 * is not valid UTF-8 counts ($byte_keys, from IXES_Transfer::hash_rows()): an ASCII digest in a varbinary key
+	 * travels fine. A skipped table the push would have created is not created either.
+	 * @return string|null the warning, when the table is skipped
+	 */
+	public static function byte_key_skip( array &$plan, $name, $pk, $byte_keys ) {
+		if ( ! $pk || ! $byte_keys ) return null;
+		$new = isset( $plan['new_tables'][ $name ] );
+		unset( $plan['new_tables'][ $name ] );
+		return "{$name}: primary key {$pk} holds bytes that are not valid UTF-8, which a push cannot compare row by row; skipped" . ( $new ? ', and not created there' : '' );
+	}
+
 	const BATCH_ROWS   = 5000;
 	const BATCH_TABLES = 50;
 
@@ -189,7 +204,7 @@ class IXES_Planner {
 	 * @return array|WP_Error
 	 */
 	/** $bytes: have the remote hash byte cells as raw bytes (see IXES_Hasher::bytes_mode()). */
-	public static function remote_hashes( IXES_Client $c, array $tables, array $caps, $algo, array $extra, $bytes = false ) {
+	public static function remote_hashes( IXES_Client $c, array $tables, array $caps, $algo, array $extra, $bytes = false, &$byte_keys = [] ) {
 		$out = []; $queue = []; $more = []; $has_pk = [];
 		$batch = in_array( 'hash_batch', $caps, true );
 		$cells = $bytes && in_array( IXES_Hasher::CAP, $caps, true ) ? [ 'cells' => 1 ] : [];
@@ -209,6 +224,7 @@ class IXES_Planner {
 			if ( ! $got ) return new WP_Error( 'hash_batch', 'the remote answered a table batch without any of its tables' );
 			foreach ( $got as $n => $r ) {
 				$out[ $n ] = (array) ( $r['rows'] ?? [] );
+				if ( ! empty( $r['byte_keys'] ) ) $byte_keys[ $n ] = true;
 				if ( isset( $r['next'] ) && $r['next'] !== null ) $more[ $n ] = $r['next'];
 			}
 			$queue = array_values( array_diff( $queue, array_keys( $got ) ) );
@@ -216,7 +232,7 @@ class IXES_Planner {
 		// a table the batch cut short continues page by page from where it stopped
 		foreach ( $more as $n => $from ) {
 			$pk = $has_pk[ $n ];
-			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ] + $cells, function ( $res ) use ( &$out, $n, $pk ) { if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] ); } );
+			$r = $c->paged( '/hash/rows', [ 'table' => $n, 'algo' => $algo, 'extra' => $extra, 'limit' => self::BATCH_ROWS, 'from' => $from ] + $cells, function ( $res ) use ( &$out, &$byte_keys, $n, $pk ) { if ( $pk ) $out[ $n ] += $res['rows']; else $out[ $n ] = array_merge( $out[ $n ], $res['rows'] ); if ( ! empty( $res['byte_keys'] ) ) $byte_keys[ $n ] = true; } );
 			if ( is_wp_error( $r ) ) return $r;
 		}
 		return $out;

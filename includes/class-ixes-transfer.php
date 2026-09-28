@@ -218,14 +218,16 @@ class IXES_Transfer {
 		$d  = self::dump( $table, $from_pk, $limit );
 		if ( is_wp_error( $d ) ) return $d;
 		$pk = self::pk_of( $table );
-		$out = [];
+		$out = []; $byte_keys = false;
 		$is_options = ( $table === $wpdb->options );
 		foreach ( $d['rows'] as $r ) {
 			if ( $is_options && IXES_Env::option_excluded( $r['option_name'] ) ) continue;
 			$h = IXES_Hasher::hash_row( $r, $pairs, $algo, $bytes );
 			if ( $pk ) $out[ $r[ $pk ] ] = $h; else $out[] = $h;
+			if ( $pk && IXES_Hasher::is_bytes( $r[ $pk ] ) ) $byte_keys = true;
 		}
-		return [ 'rows' => $out, 'next' => $d['next'] ];
+		// a key JSON cannot carry: the hub must not compare this table by key (see IXES_Planner::build())
+		return [ 'rows' => $out, 'next' => $d['next'] ] + ( $byte_keys ? [ 'byte_keys' => true ] : [] );
 	}
 
 	/** This plugin's own directory, relative to wp-content, with a trailing slash. */

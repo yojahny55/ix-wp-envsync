@@ -176,6 +176,20 @@ class IXES_Pull {
 	 * A table this side wrote to since the baseline stays (with a warning), as does any table the baseline does not know.
 	 * @return array [ drop_local: table => [why, pk, rows, expect], warnings ]
 	 */
+	/**
+	 * How rows a pull writes into the baseline hash byte cells: the mode that baseline recorded. A baseline pull
+	 * records its own at the start (run()), so a resume reads it back the same; a scoped pull over an older
+	 * baseline keeps hashing the old way, or its rows would never match the rest of that baseline's comparisons.
+	 */
+	public static function hash_mode( $bl ) {
+		return $bl->meta( 'bytes_hash' ) === 'yes';
+	}
+
+	/** A new baseline records how its byte cells are hashed; a pull refreshing part of one keeps that baseline's mode. */
+	public static function record_hash_mode( $bl, $as_baseline, $cells ) {
+		if ( $as_baseline ) $bl->meta( 'bytes_hash', $cells ? 'yes' : 'no' );
+	}
+
 	/** How this env's existing baseline hashes byte cells, for comparing this side against it (IXES_Hasher::bytes_mode()). */
 	private static function bytes_hash( array $env, array $info ) {
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
@@ -352,9 +366,7 @@ class IXES_Pull {
 			if ( $as_baseline ) $bl->reset();
 			// decided once: a resumed pull finishes the way it started, whatever the environment says by then
 			$bl->meta( 'pull_as_baseline', $as_baseline ? 'yes' : 'no' );
-			// how this pull hashes byte cells: raw bytes when the remote sends them intact. A pull that only refreshes
-			// part of an older baseline may not claim the rest was hashed that way
-			if ( $as_baseline || ! $c->cells() ) $bl->meta( 'bytes_hash', $c->cells() ? 'yes' : 'no' );
+			self::record_hash_mode( $bl, $as_baseline, $c->cells() );
 			$path  = IXES_Planner::save( $plan, 'pull' );
 			$state = IXES_PullState::start( $env['name'], $path, (string) ( $plan['info']['plugin'] ?? '' ), (array) ( $plan['scope'] ?? [] ) );
 		}
@@ -397,8 +409,9 @@ class IXES_Pull {
 			}
 			$pk = $t['pk'];
 			$row_err = null;
-			$bytes = $c->cells();
-			$ask = [ 'table' => $name, 'limit' => 5000, 'from' => $from, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ] + ( $bytes ? [ 'cells' => 1 ] : [] );
+			// the wire always carries bytes intact when the remote can; the hashes follow the baseline they join
+			$bytes = self::hash_mode( $bl );
+			$ask = [ 'table' => $name, 'limit' => 5000, 'from' => $from, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ] + ( $c->cells() ? [ 'cells' => 1 ] : [] );
 			$r = $c->paged( '/dump', $ask, function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, $bytes, &$row_err ) {
 				if ( $row_err ) return;
 				$rows = IXES_Hasher::rows_in( (array) $res['rows'] );
