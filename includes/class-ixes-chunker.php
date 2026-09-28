@@ -16,7 +16,8 @@ class IXES_Chunker {
 	}
 
 	public static function retryable( $code ) {
-		return $code === null || in_array( (int) $code, [ 408, 413, 502, 503, 504 ], true );
+		// 429: a host that caps concurrent requests answers parallel batches with it; a later wave gets through
+		return $code === null || in_array( (int) $code, [ 408, 413, 429, 502, 503, 504 ], true );
 	}
 
 	public function size() { return $this->size; }

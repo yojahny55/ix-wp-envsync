@@ -249,4 +249,52 @@ class ClientLoopTest extends TestCase {
 		$this->assertInstanceOf( WP_Error::class, $e );
 		$this->assertStringContainsString( 'upload 0.6.0 or newer to the remote', $e->get_error_message() );
 	}
+
+	// ---- --timeout precedence (env add's own value, and the per-run override) ----
+
+	public function test_effective_timeout_is_120_without_an_env_value() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ) ] );
+		$this->assertSame( 120, $c->effective_timeout() );
+	}
+	public function test_effective_timeout_uses_the_env_value() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'timeout' => 300 ] );
+		$this->assertSame( 300, $c->effective_timeout() );
+	}
+	public function test_plain_requests_use_the_env_timeout_when_set() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'timeout' => 300 ] );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$this->assertSame( 300, $c->calls[0]['timeout'] );
+	}
+	public function test_an_explicit_opts_timeout_still_wins_over_the_env_value() {
+		// send_file's per-chunk step always asks for the client's default timeout via post(), not a custom one;
+		// info() is the one call site that takes its own $timeout argument, exercised below.
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'timeout' => 300 ] );
+		$c->script = [ function () { return [ 'response' => [ 'code' => 200 ], 'headers' => [], 'body' => json_encode( [ 'plugin' => '0.4.0' ] ) ]; } ];
+		$c->info( 5 );
+		$this->assertSame( 5, $c->calls[0]['timeout'], 'a caller-supplied timeout always wins, even over a larger env value' );
+	}
+	public function test_info_without_an_explicit_timeout_defaults_to_30() {
+		$c = $this->client();
+		$c->script = [ function () { return [ 'response' => [ 'code' => 200 ], 'headers' => [], 'body' => json_encode( [ 'plugin' => '0.4.0' ] ) ]; } ];
+		$c->info();
+		$this->assertSame( 30, $c->calls[0]['timeout'] );
+	}
+	public function test_info_without_an_explicit_timeout_uses_the_larger_env_value() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'timeout' => 300 ] );
+		$c->script = [ function () { return [ 'response' => [ 'code' => 200 ], 'headers' => [], 'body' => json_encode( [ 'plugin' => '0.4.0' ] ) ]; } ];
+		$c->info();
+		$this->assertSame( 300, $c->calls[0]['timeout'], 'the env timeout is larger than the 30s default, so it wins' );
+	}
+	public function test_rescue_defaults_to_60_but_a_larger_env_value_wins() {
+		$c = $this->client();
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->rescue( 'status' );
+		$this->assertSame( 60, $c->calls[0]['timeout'] );
+
+		$c2 = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'timeout' => 300 ] );
+		$c2->script = [ function () { return self::ok_json(); } ];
+		$c2->rescue( 'status' );
+		$this->assertSame( 300, $c2->calls[0]['timeout'] );
+	}
 }

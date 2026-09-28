@@ -68,6 +68,15 @@ class PrefixTest extends TestCase {
 		$this->assertNull( IXES_Applier::create_table_refusal( 'ab_things', $out, 'ab_', false ) );
 	}
 
+	public function test_sql_out_rewrites_the_other_way_for_a_pull() {
+		$m = $this->remote(); // local = ab_ (this remote's own), peer = wp_ (the hub)
+		$sql = "CREATE TABLE `ab_things` (\n  `id` bigint(20) NOT NULL,\n  `post_id` bigint(20),\n  PRIMARY KEY (`id`),\n  CONSTRAINT `fk` FOREIGN KEY (`post_id`) REFERENCES `ab_posts` (`ID`)\n) ENGINE=InnoDB";
+		$out = $m->sql_out( $sql );
+		$this->assertStringStartsWith( 'CREATE TABLE `wp_things` (', $out );
+		$this->assertStringContainsString( 'REFERENCES `wp_posts` (`ID`)', $out );
+		$this->assertSame( $sql, $m->sql_in( $out ), 'round-trips back through sql_in' );
+	}
+
 	public function test_step_in_translates_rows_and_refuses_orphans() {
 		$m = $this->remote();
 		$p = $m->step_in( [ 'kind' => 'rows', 'job' => 'j', 'table' => 'wp_usermeta', 'pk' => 'umeta_id', 'rows' => [

@@ -29,12 +29,12 @@ class IXES_Status {
 				$s = IXES_PullState::load( $name );
 				if ( ! $s ) return null;
 				$plan = is_file( (string) $s->get( 'plan' ) ) ? json_decode( file_get_contents( $s->get( 'plan' ) ), true ) : null;
-				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->get( 'files_done' ), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null ];
+				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->files_count(), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null ];
 			},
 		];
 	}
 
-	public static function build( $env_name = null, callable $info_for = null, array $ctx = null ) {
+	public static function build( $env_name = null, ?callable $info_for = null, ?array $ctx = null ) {
 		$ctx = ( $ctx ?: [] ) + self::defaults();
 		if ( $info_for === null ) $info_for = function ( array $env ) { return ( new IXES_Client( $env ) )->info( IXES_Status::INFO_TIMEOUT ); };
 		$envs = $ctx['envs'];

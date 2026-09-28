@@ -21,6 +21,10 @@ class IXES_Env {
 		if ( ! preg_match( '/^[0-9a-f]{64}$/', $env['token'] ) ) throw new InvalidArgumentException( 'token must be 64 hex chars' );
 		if ( isset( $env['basic_auth'] ) && strpos( (string) $env['basic_auth'], ':' ) === false ) throw new InvalidArgumentException( 'basic-auth must be user:pass' );
 		if ( ! in_array( $env['label'], [ 'prod', 'staging', 'local' ], true ) ) throw new InvalidArgumentException( 'label must be prod|staging|local' );
+		if ( isset( $env['timeout'] ) ) {
+			if ( ! is_numeric( $env['timeout'] ) || (int) $env['timeout'] < 1 ) throw new InvalidArgumentException( 'timeout must be a positive number of seconds' );
+			$env['timeout'] = (int) $env['timeout'];
+		}
 		$env['url'] = untrailingslashit( $env['url'] );
 		$all = self::all();
 		$all[ $env['name'] ] = $env;

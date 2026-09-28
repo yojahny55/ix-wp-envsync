@@ -3,12 +3,79 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class IXES_Transfer {
 
+	// a page of dumped rows never asks for more than this many serialized bytes, on top of the row 'limit':
+	// a local MariaDB with a 16M max_allowed_packet still choked on a 5000-row page of wp_posts
+	const DUMP_BYTE_BUDGET = 4194304; // ~4 MB
+
+	private static $max_packet = null;
+
+	/** MySQL's own limit on one statement/packet here. Cached per request; 1 MiB (MySQL's historic default) if the query fails. */
+	public static function max_allowed_packet() {
+		if ( self::$max_packet === null ) {
+			global $wpdb;
+			$v = $wpdb ? (int) $wpdb->get_var( 'SELECT @@max_allowed_packet' ) : 0;
+			self::$max_packet = $v > 0 ? $v : 1048576;
+		}
+		return self::$max_packet;
+	}
+	/** Tests only: the cached max_allowed_packet survives across tests otherwise. */
+	public static function forget_max_allowed_packet() { self::$max_packet = null; }
+
+	/** 75% of max_allowed_packet: room for the query text and connector overhead around the raw cell bytes. */
+	public static function packet_budget() { return (int) floor( self::max_allowed_packet() * 0.75 ); }
+
+	/** Rough size of one row once it becomes SQL cells (quotes, comma, NULL) -- close enough to size a statement by. */
+	public static function row_bytes( array $row ) {
+		$n = 2; // surrounding parens
+		foreach ( $row as $v ) $n += ( $v === null ? 4 : strlen( (string) $v ) + 2 ) + 1; // 'value' + separator
+		return $n;
+	}
+
+	/**
+	 * Splits $items into groups whose size stays at or under $budget, so one INSERT/REPLACE (or one HTTP step)
+	 * built from a group never asks for more than $budget allows. A single item over budget goes out alone:
+	 * there is no smaller unit to fall back to. $sizer( $item ): byte size of one item; default row_bytes()
+	 * (a rough estimate for a row array). Pass 'strlen' when $items are already the literal strings that will
+	 * make up the statement -- that is exact, where row_bytes() on the source row would undercount whatever
+	 * escaping or rewriting happens between the row and the string.
+	 * @return array[] item groups, order preserved
+	 */
+	public static function row_batches( array $items, $budget, ?callable $sizer = null ) {
+		$sizer = $sizer ?: [ __CLASS__, 'row_bytes' ];
+		$budget = max( 1, (int) $budget );
+		$out = []; $batch = []; $size = 0;
+		foreach ( $items as $item ) {
+			$n = $sizer( $item );
+			if ( $batch && $size + $n > $budget ) { $out[] = $batch; $batch = []; $size = 0; }
+			$batch[] = $item; $size += $n;
+		}
+		if ( $batch ) $out[] = $batch;
+		return $out;
+	}
+
+	/**
+	 * Trims $rows to a byte budget: once the next row would cross it, the page stops there. Never empties a
+	 * non-empty page -- one row over budget still goes out alone.
+	 * @return array{rows:array,cut:bool} cut: true when the budget, not $rows itself, ended the page
+	 */
+	public static function budget_page( array $rows, $byte_budget ) {
+		if ( $byte_budget <= 0 ) return [ 'rows' => $rows, 'cut' => false ];
+		$size = 0; $out = [];
+		foreach ( $rows as $row ) {
+			$n = self::row_bytes( $row );
+			if ( $out && $size + $n > $byte_budget ) return [ 'rows' => $out, 'cut' => true ];
+			$out[] = $row; $size += $n;
+		}
+		return [ 'rows' => $out, 'cut' => false ];
+	}
+
 	public static function info() {
 		global $wpdb;
 		$tables = [];
 		foreach ( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) as $t ) {
 			if ( strpos( $t, $wpdb->prefix . 'ixes_' ) === 0 ) continue;
-			$tables[] = [ 'name' => $t, 'pk' => self::pk_of( $t ), 'rows' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$t}`" ) ];
+			// columns too, so a pull can tell a plugin added one here without a second request per table
+			$tables[] = [ 'name' => $t, 'pk' => self::pk_of( $t ), 'rows' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$t}`" ), 'columns' => self::local_columns( $t ) ];
 		}
 		return [
 			'wp_version'      => get_bloginfo( 'version' ),
@@ -19,7 +86,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch' ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [] ),
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
 			'auth_via'        => IXES_Rest::auth_via(),
@@ -54,17 +121,26 @@ class IXES_Transfer {
 		return false;
 	}
 
-	public static function dump( $table, $from_pk, $limit ) {
+	/** $byte_budget (0 = off): a page also stops once its rows' estimated size crosses it, whichever comes first; an
+	 *  old remote that does not read this parameter simply keeps paging by row count alone (still safe: the hub's
+	 *  own import_rows() splits its INSERT/REPLACE statements regardless of how big a page it was handed). */
+	public static function dump( $table, $from_pk, $limit, $byte_budget = 0 ) {
 		global $wpdb;
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
 		$pk = self::pk_of( $table );
 		if ( $pk ) {
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` > %s ORDER BY `{$pk}` LIMIT %d", $from_pk === null ? '' : $from_pk, $limit ), ARRAY_A );
-			$next = count( $rows ) === $limit ? end( $rows )[ $pk ] : null;
+			$more = count( $rows ) === $limit;
+			$page = self::budget_page( $rows, (int) $byte_budget );
+			$rows = $page['rows']; $more = $more || $page['cut'];
+			$next = ( $more && $rows ) ? end( $rows )[ $pk ] : null;
 		} else {
 			$off  = (int) $from_pk;
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` LIMIT %d OFFSET %d", $limit, $off ), ARRAY_A );
-			$next = count( $rows ) === $limit ? $off + $limit : null;
+			$more = count( $rows ) === $limit;
+			$page = self::budget_page( $rows, (int) $byte_budget );
+			$rows = $page['rows']; $more = $more || $page['cut'];
+			$next = $more ? $off + count( $rows ) : null;
 		}
 		// never transfer environment-local options (siteurl/home/cron/transients/ixes_*)
 		if ( $table === $wpdb->options ) {
@@ -215,6 +291,28 @@ class IXES_Transfer {
 		return [ 'data' => base64_encode( $data ), 'size' => strlen( $data ), 'total' => filesize( $p ), 'sha256' => $sha ];
 	}
 
+	/**
+	 * Many small files for one /file/batch answer, in IXES_Batch's format. Each item carries the sha256 of the
+	 * bytes sent; a path refused here, gone, or grown past $max since the plan carries 'err' and no bytes.
+	 */
+	public static function file_batch( array $paths, $max = 2 * IXES_Batch::MAX_BYTES ) {
+		$items = []; $bytes = 0;
+		foreach ( $paths as $rel ) {
+			$rel  = (string) $rel;
+			$safe = self::safe_rel( $rel );
+			if ( ! $safe || self::excluded_path( $safe, IXES_Env::default_excludes() ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'bad_path' ], '' ]; continue; }
+			$p = WP_CONTENT_DIR . '/' . $safe;
+			if ( ! is_file( $p ) || ! is_readable( $p ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'not_found' ], '' ]; continue; }
+			// grown since the plan: the hub fetches it alone, in chunks
+			if ( $bytes + (int) filesize( $p ) > $max ) { $items[] = [ [ 'path' => $rel, 'err' => 'later' ], '' ]; continue; }
+			$data = @file_get_contents( $p );
+			if ( $data === false ) { $items[] = [ [ 'path' => $rel, 'err' => 'io' ], '' ]; continue; }
+			$bytes += strlen( $data );
+			$items[] = [ [ 'path' => $rel, 'sha256' => hash( 'sha256', $data ) ], $data ];
+		}
+		return IXES_Batch::encode( $items );
+	}
+
 	// ---------- hub side ----------
 
 	public static function tmp_name( $table ) {
@@ -243,6 +341,67 @@ class IXES_Transfer {
 		return in_array( (string) $pk, self::local_columns( $table ), true ) ? (string) $pk : null;
 	}
 
+	public static function create_table_sql( $table ) {
+		global $wpdb;
+		$row = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
+		return $row ? (string) $row[1] : null;
+	}
+
+	/**
+	 * Column name => its own definition line (no trailing comma), read off a `SHOW CREATE TABLE`. MySQL puts one
+	 * column or key per line; a line is a column only when it opens with a backtick name, which PRIMARY KEY/KEY/
+	 * CONSTRAINT lines never do.
+	 */
+	public static function column_defs_from_create( $sql ) {
+		$out = [];
+		foreach ( preg_split( '/\r?\n/', (string) $sql ) as $line ) {
+			$line = rtrim( trim( $line ), ',' );
+			if ( preg_match( '/^`([A-Za-z0-9_]+)`\s+\S/', $line, $m ) ) $out[ $m[1] ] = $line;
+		}
+		return $out;
+	}
+
+	/** A pull found a table the remote has that this side lacks (a plugin's own table); create it from the remote's own CREATE TABLE. */
+	public static function create_missing_table( $table, $sql ) {
+		global $wpdb;
+		$why = IXES_Applier::create_table_refusal( $table, $sql, $wpdb->prefix, self::valid_table( $table ) );
+		if ( $why ) return new WP_Error( 'bad_create', $why );
+		if ( $wpdb->query( $sql ) === false ) return new WP_Error( 'create_failed', "cannot create {$table}: {$wpdb->last_error}" );
+		return true;
+	}
+
+	/** A pull found a column the remote has that this side's copy of an existing table lacks (a plugin added one there). */
+	public static function add_missing_column( $table, $column, $def ) {
+		global $wpdb;
+		$why = IXES_Applier::add_column_refusal( $table, $column, $def, $wpdb->prefix, in_array( $column, self::local_columns( $table ), true ) );
+		if ( $why ) return new WP_Error( 'bad_column', $why );
+		if ( $wpdb->query( "ALTER TABLE `{$table}` ADD COLUMN {$def}" ) === false ) return new WP_Error( 'alter_failed', "table {$table}: cannot add column {$column}: {$wpdb->last_error}" );
+		unset( self::$local_columns[ $table ] );
+		return true;
+	}
+
+	/**
+	 * On resume, a fresh table skips import_begin() and keeps its tmp table from the earlier attempt, so a schema
+	 * fix made to the real table in between (by hand, or by add_missing_column() on a later pull) never reaches it.
+	 * Bring the tmp table's columns up to the real one's before rows resume.
+	 */
+	public static function reconcile_tmp( $table ) {
+		global $wpdb;
+		$tmp = self::tmp_name( $table );
+		if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $tmp ) ) ) return true; // nothing was left to resume into
+		$real = $wpdb->get_col( "SHOW COLUMNS FROM `{$table}`" );
+		$have = $wpdb->get_col( "SHOW COLUMNS FROM `{$tmp}`" );
+		$missing = array_values( array_diff( $real, $have ) );
+		if ( ! $missing ) return true;
+		$defs = self::column_defs_from_create( (string) self::create_table_sql( $table ) );
+		foreach ( $missing as $col ) {
+			if ( ! isset( $defs[ $col ] ) ) continue; // SHOW COLUMNS and SHOW CREATE TABLE always agree; stay defensive anyway
+			if ( $wpdb->query( "ALTER TABLE `{$tmp}` ADD COLUMN {$defs[ $col ]}" ) === false ) return new WP_Error( 'reconcile_failed', "table {$table}: cannot bring the resumed copy's schema up to date: {$wpdb->last_error}" );
+		}
+		unset( self::$local_columns[ $table ] );
+		return true;
+	}
+
 	public static function import_begin( $table ) {
 		global $wpdb;
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
@@ -263,20 +422,24 @@ class IXES_Transfer {
 		foreach ( $cols as $c ) {
 			if ( ! in_array( $c, $local, true ) ) return new WP_Error( 'bad_columns', "table {$table}: remote column '{$c}' does not exist locally" );
 		}
-		$inserted = 0;
-		foreach ( array_chunk( $rows, 500 ) as $batch ) {
-			$vals = [];
-			foreach ( $batch as $r ) {
-				$cells = [];
-				foreach ( $cols as $c ) {
-					$v = isset( $r[ $c ] ) ? $r[ $c ] : null;
-					if ( $v === null ) { $cells[] = 'NULL'; continue; }
-					$v = IXES_Hasher::normalize( $v, $pairs );
-					$cells[] = "'" . esc_sql( (string) $v ) . "'";
-				}
-				$vals[] = '(' . implode( ',', $cells ) . ')';
+		// build every row's literal SQL fragment first: esc_sql() (quotes/backslashes double) and the URL/path
+		// rewrite in normalize() can both grow a value well past its raw length, and a batch sized on the raw
+		// rows undercounts exactly the wide, quote-heavy rows (serialized arrays, JSON) this splitting is for
+		$frags = [];
+		foreach ( $rows as $r ) {
+			$cells = [];
+			foreach ( $cols as $c ) {
+				$v = isset( $r[ $c ] ) ? $r[ $c ] : null;
+				if ( $v === null ) { $cells[] = 'NULL'; continue; }
+				$v = IXES_Hasher::normalize( $v, $pairs );
+				$cells[] = "'" . esc_sql( (string) $v ) . "'";
 			}
-			$sql = ( $replace ? 'REPLACE' : 'INSERT' ) . " INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $vals );
+			$frags[] = '(' . implode( ',', $cells ) . ')';
+		}
+		$inserted = 0;
+		// one statement per batch, sized to this MariaDB's own max_allowed_packet by the fragments' real bytes
+		foreach ( self::row_batches( $frags, self::packet_budget(), 'strlen' ) as $batch ) {
+			$sql = ( $replace ? 'REPLACE' : 'INSERT' ) . " INTO `{$tmp}` (`" . implode( '`,`', $cols ) . "`) VALUES " . implode( ',', $batch );
 			$ok  = $wpdb->query( $sql );
 			if ( $ok === false ) return new WP_Error( 'import_failed', "table {$table}: " . $wpdb->last_error );
 			$inserted += count( $batch );
@@ -443,7 +606,7 @@ class IXES_Transfer {
 		return [ $files, $bytes ];
 	}
 
-	public static function offset_auto_increment( array $imported = null ) {
+	public static function offset_auto_increment( ?array $imported = null ) {
 		global $wpdb;
 		$map = [ $wpdb->posts => 'ID', $wpdb->postmeta => 'meta_id', $wpdb->terms => 'term_id', $wpdb->term_taxonomy => 'term_taxonomy_id', $wpdb->comments => 'comment_ID', $wpdb->users => 'ID' ];
 		foreach ( $map as $t => $pk ) {

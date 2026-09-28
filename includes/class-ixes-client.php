@@ -3,6 +3,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class IXES_Client {
 	const CHUNK_JSON_SIZE = 2097152;
+	const DEFAULT_TIMEOUT = 120;
+	const BATCH_TIMEOUT = 300; // floor for one batch request: a 4 MB batch of media that does not compress, on a slow link
 
 	private $env; private $info = null; private $caps = null;
 	private $prefix_header = '';
@@ -15,11 +17,26 @@ class IXES_Client {
 	protected function transport( $url, array $args ) { return wp_remote_request( $url, $args ); }
 	protected function sleep_s( $s ) { sleep( (int) $s ); }
 
+	/** This env's own --timeout (env add), or 0 when it never set one. */
+	private function raw_timeout() { return max( 0, (int) ( $this->env['timeout'] ?? 0 ) ); }
+
+	/** raw_timeout(), else the built-in default. A caller's own $opts['timeout'] always wins over this. */
+	public function effective_timeout() {
+		$t = $this->raw_timeout();
+		return $t > 0 ? $t : self::DEFAULT_TIMEOUT;
+	}
+
 	/**
 	 * $opts: raw_body (string, sent as octet-stream), accept ('json'|'binary'), headers (array), step (string, signed).
 	 * Binary 2xx responses return [ 'body' => string, 'headers' => array ]; everything else returns decoded JSON or WP_Error.
 	 */
 	private function request( $method, $route, $body = null, array $opts = [] ) {
+		list( $url, $args ) = $this->prepare( $method, $route, $body, $opts );
+		return $this->parse( $this->transport( $url, $args ), $route, $opts );
+	}
+
+	/** @return array [ url, wp_remote_request args ], signed on its own ts and body, so concurrent requests all verify */
+	private function prepare( $method, $route, $body, array $opts ) {
 		$path = '/' . IXES_Rest::NS . $route;
 		$ts   = time();
 		$step = isset( $opts['step'] ) ? (string) $opts['step'] : '';
@@ -39,10 +56,13 @@ class IXES_Client {
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
 		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
-		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? 120 ), 'redirection' => 0, 'headers' => $headers ];
+		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
 		// ponytail: ?rest_route= works with any permalink structure; /wp-json/ 301s on plain permalinks and drops the Authorization header
-		$res = $this->transport( $opts['url'] ?? $this->env['url'] . '/?rest_route=' . $path, $args );
+		return [ $opts['url'] ?? $this->env['url'] . '/?rest_route=' . $path, $args ];
+	}
+
+	private function parse( $res, $route, array $opts ) {
 		if ( is_wp_error( $res ) ) return $res;
 		$code = wp_remote_retrieve_response_code( $res );
 		if ( $code >= 300 && $code < 400 ) return new WP_Error( 'remote_redirect', 'remote redirected to ' . wp_remote_retrieve_header( $res, 'location' ) . '; register the final URL with env add' );
@@ -72,6 +92,56 @@ class IXES_Client {
 		return is_array( $json ) ? $json : [];
 	}
 
+	/**
+	 * Several requests at once. $wire: key => [ url, args ] from prepare(); returns key => response array or WP_Error.
+	 * Overridden by tests. Requests ships with every supported WordPress: namespaced from 6.2, the old global class before.
+	 */
+	protected function transport_multi( array $wire ) {
+		$cls = class_exists( '\WpOrg\Requests\Requests' ) ? '\WpOrg\Requests\Requests' : ( class_exists( 'Requests' ) ? 'Requests' : null );
+		$out = [];
+		// a proxy, blocked external hosts or a filter on the HTTP API only take effect through wp_remote_request: keep that path
+		$proxy = class_exists( 'WP_HTTP_Proxy' ) ? new WP_HTTP_Proxy() : null;
+		$wp_http_only = ( $proxy && $proxy->is_enabled() ) || ( defined( 'WP_HTTP_BLOCK_EXTERNAL' ) && WP_HTTP_BLOCK_EXTERNAL )
+			|| ( function_exists( 'has_filter' ) && ( has_filter( 'pre_http_request' ) || has_filter( 'http_request_args' ) ) );
+		if ( ! $cls || ! class_exists( 'WP_HTTP_Requests_Response' ) || $wp_http_only ) {
+			foreach ( $wire as $k => $w ) $out[ $k ] = $this->transport( $w[0], $w[1] );
+			return $out;
+		}
+		$reqs = [];
+		foreach ( $wire as $k => $w ) {
+			list( $url, $a ) = $w;
+			$reqs[ $k ] = [ 'url' => $url, 'type' => $a['method'], 'headers' => $a['headers'], 'data' => $a['body'] ?? '', 'options' => [
+				'timeout' => $a['timeout'], 'connect_timeout' => min( 10, $a['timeout'] ), 'follow_redirects' => false,
+				'useragent' => 'WordPress/' . get_bloginfo( 'version' ) . '; ' . home_url( '/' ),
+				// wp_remote_request's own default: WordPress's CA bundle, unless a filter turned verification off
+				'verify' => apply_filters( 'https_ssl_verify', true, $url ) ? ABSPATH . WPINC . '/certificates/ca-bundle.crt' : false,
+			] ];
+		}
+		foreach ( $cls::request_multiple( $reqs ) as $k => $r ) {
+			$out[ $k ] = $r instanceof Exception ? new WP_Error( 'http_request_failed', $r->getMessage() ) : ( new WP_HTTP_Requests_Response( $r ) )->to_array();
+		}
+		return $out;
+	}
+
+	/**
+	 * $reqs: key => [ method, route, body, opts ]. Up to $parallel go out together; 1 sends them one by one, as before 0.8.0.
+	 * @return array key => what request() returns
+	 */
+	public function many( array $reqs, $parallel ) {
+		$out = [];
+		if ( (int) $parallel <= 1 || count( $reqs ) < 2 ) {
+			foreach ( $reqs as $k => $r ) $out[ $k ] = $this->request( $r[0], $r[1], $r[2], $r[3] ?? [] );
+			return $out;
+		}
+		foreach ( array_chunk( $reqs, max( 1, (int) $parallel ), true ) as $set ) {
+			$wire = [];
+			foreach ( $set as $k => $r ) $wire[ $k ] = $this->prepare( $r[0], $r[1], $r[2], $r[3] ?? [] );
+			$res = $this->transport_multi( $wire );
+			foreach ( $set as $k => $r ) $out[ $k ] = $this->parse( $res[ $k ] ?? new WP_Error( 'http_request_failed', 'no response' ), $r[1], $r[3] ?? [] );
+		}
+		return $out;
+	}
+
 	public function get( $route )                    { return $this->request( 'GET', $route ); }
 
 	/** A plain page request to the site, as a visitor (through Basic Auth when the env has it): for smoke tests. */
@@ -90,7 +160,9 @@ class IXES_Client {
 
 	public function info( $timeout = null ) {
 		if ( $this->info === null ) {
-			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] ) );
+			// /info is a light call: 30s covers it even on a slow host, but a deliberately larger --timeout still wins
+			$t = $timeout !== null ? (int) $timeout : max( 30, $this->raw_timeout() );
+			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, [ 'timeout' => $t ] ) );
 			// remember where rescue.php lives while the remote still answers: it is needed exactly when it no longer does
 			$u = is_array( $this->info ) ? (string) ( $this->info['rescue_url'] ?? '' ) : '';
 			if ( $u !== '' && $u !== ( $this->env['rescue_url'] ?? '' ) && isset( $this->env['name'] ) && function_exists( 'update_option' ) ) {
@@ -128,7 +200,7 @@ class IXES_Client {
 
 	/** Talk to rescue.php, which answers even when a plugin fatals on every normal request. */
 	public function rescue( $action, array $extra = [] ) {
-		return $this->request( 'POST', '/rescue', [ 'action' => $action ] + $extra, [ 'url' => $this->rescue_url(), 'timeout' => 60 ] );
+		return $this->request( 'POST', '/rescue', [ 'action' => $action ] + $extra, [ 'url' => $this->rescue_url(), 'timeout' => max( 60, $this->raw_timeout() ) ] );
 	}
 
 	/** Remote capability list from /info; [] for a 0.2 remote. */
@@ -138,6 +210,9 @@ class IXES_Client {
 	}
 	public function set_caps( array $caps ) { $this->caps = $caps; }
 	private function binary() { return in_array( 'binary', $this->caps(), true ); }
+	/** The remote serves /file/batch and takes deflated push batches (0.8.0). */
+	public function batch_files() { return $this->binary() && in_array( 'file_batch', $this->caps(), true ); }
+	private function deflate() { return function_exists( 'gzdeflate' ) && function_exists( 'gzinflate' ); }
 
 	public function remote_pairs() {
 		$i = $this->info();
@@ -172,7 +247,7 @@ class IXES_Client {
 	 * Pull one file chunk by chunk. $write( $offset, $data, $final, $sha256 ) returns true or WP_Error.
 	 * @return true|WP_Error
 	 */
-	public function fetch_file( $rel, callable $write, callable $on_bytes = null ) {
+	public function fetch_file( $rel, callable $write, ?callable $on_bytes = null ) {
 		$ch = new IXES_Chunker( $this->binary() ? 2097152 : self::CHUNK_JSON_SIZE );
 		$offset = 0;
 		while ( true ) {
@@ -207,10 +282,10 @@ class IXES_Client {
 	 * @param array $items list of [ meta (path, sha256, expect?, algo?), bytes ]
 	 */
 	public function send_batch( $job, array $items ) {
-		$body = IXES_Batch::encode( $items );
+		$req = $this->batch_step( $job, $items );
 		$ch = new IXES_Chunker();
 		while ( true ) {
-			$r = $this->post( '/job/step', null, [ 'raw_body' => $body, 'step' => wp_json_encode( [ 'job' => $job, 'kind' => 'files' ] ) ] );
+			$r = $this->request( $req[0], $req[1], $req[2], $req[3] );
 			if ( ! is_wp_error( $r ) ) return $r;
 			if ( ! $ch->fail( self::err_code( $r ) ) ) {
 				return new WP_Error( 'transfer', 'batch of ' . count( $items ) . " files starting at {$items[0][0]['path']}: gave up after {$ch->attempts()} attempts: " . $r->get_error_message() );
@@ -223,7 +298,7 @@ class IXES_Client {
 	 * Push one file chunk by chunk through /job/step. $first_meta (expect, algo) is merged into the offset-0 step.
 	 * @return array{ok:bool,refused:bool}|WP_Error
 	 */
-	public function send_file( $job, $rel, $abs, array $first_meta, callable $on_bytes = null ) {
+	public function send_file( $job, $rel, $abs, array $first_meta, ?callable $on_bytes = null ) {
 		$sha = hash_file( 'sha256', $abs ); $total = filesize( $abs );
 		$ch  = new IXES_Chunker( $this->binary() ? 2097152 : self::CHUNK_JSON_SIZE );
 		$fh  = fopen( $abs, 'rb' );
@@ -249,5 +324,74 @@ class IXES_Client {
 			if ( $final ) { fclose( $fh ); return [ 'ok' => true, 'refused' => false ]; }
 			$offset += strlen( $data );
 		}
+	}
+
+	/** A 'files' push step for many(); deflated when the remote inflates it (0.8.0). */
+	private function batch_step( $job, array $items ) {
+		// 'packed' is how a remote says it has gzinflate; one without zlib still takes plain batches
+		$z = $this->batch_files() && $this->deflate() && in_array( 'packed', $this->caps(), true );
+		$step = [ 'job' => $job, 'kind' => 'files' ] + ( $z ? [ 'enc' => 'deflate' ] : [] );
+		return [ 'POST', '/job/step', null, [ 'raw_body' => $z ? gzdeflate( IXES_Batch::encode( $items ), 6 ) : IXES_Batch::encode( $items ), 'step' => wp_json_encode( $step ), 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ) ] ];
+	}
+
+	/**
+	 * Push batches, $parallel requests at a time. $items_for( $key ) reads one batch's files only when it goes out;
+	 * $on_done( $key, $response ) runs once per batch that landed, before any error is returned.
+	 * @return true|WP_Error
+	 */
+	public function send_batches( $job, array $keys, $parallel, callable $items_for, callable $on_done ) {
+		$first = [];
+		// an older remote gets them one at a time, as it always did
+		return $this->waves( $keys, $this->batch_files() ? $parallel : 1, function ( $k ) use ( $job, $items_for, &$first ) {
+			$items = $items_for( $k );
+			$first[ $k ] = count( $items ) . ' files starting at ' . $items[0][0]['path'];
+			return $this->batch_step( $job, $items );
+		}, $on_done, function ( $k ) use ( &$first ) { return 'batch of ' . $first[ $k ]; } );
+	}
+
+	/**
+	 * Pull batches through /file/batch, $parallel requests at a time. $on_batch( $key, items ) gets each batch
+	 * already checked by IXES_Batch::open(); whatever it returns (true or WP_Error) is final for that batch.
+	 * @param array $batches key => list of rel paths
+	 * @return true|WP_Error
+	 */
+	public function fetch_batches( array $batches, $parallel, callable $on_batch ) {
+		$z = $this->deflate();
+		return $this->waves( array_keys( $batches ), $parallel, function ( $k ) use ( $batches, $z ) {
+			return [ 'POST', '/file/batch', [ 'paths' => array_values( $batches[ $k ] ), 'deflate' => $z ], [ 'accept' => 'binary', 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ) ] ];
+		}, function ( $k, $res ) use ( $batches, $on_batch ) {
+			if ( ! isset( $res['headers'] ) ) return new WP_Error( 'bad_batch', 'batch answer is not binary' );
+			$items = IXES_Batch::open( (string) $res['body'], (string) ( $res['headers']['x-envsync-enc'] ?? '' ), $batches[ $k ] );
+			return is_wp_error( $items ) ? $items : $on_batch( $k, $items );
+		}, function ( $k ) use ( $batches ) { return 'batch of ' . count( $batches[ $k ] ) . ' files starting at ' . reset( $batches[ $k ] ); } );
+	}
+
+	/**
+	 * Send one request per key, $parallel at a time, each batch retried on its own (IXES_Chunker budget and backoff).
+	 * $on_ok may answer a WP_Error: retried when its code is in IXES_Batch::RETRY, final otherwise.
+	 * A fatal error is returned only after every other answer of its wave went through $on_ok, so what landed is recorded.
+	 */
+	private function waves( array $keys, $parallel, callable $req_for, callable $on_ok, callable $label ) {
+		$queue = array_values( $keys ); $tries = []; $err = null;
+		while ( $queue && ! $err ) {
+			$wave = array_splice( $queue, 0, max( 1, (int) $parallel ) );
+			$reqs = [];
+			foreach ( $wave as $k ) $reqs[ $k ] = $req_for( $k );
+			$res  = $this->many( $reqs, $parallel );
+			$wait = 0;
+			foreach ( $wave as $k ) {
+				$r = $res[ $k ];
+				$sent = ! is_wp_error( $r );
+				if ( $sent ) $r = $on_ok( $k, $r );
+				if ( ! is_wp_error( $r ) ) continue;
+				// a write that failed here (disk, ownership, a refused path) is not the network's fault: no retry
+				if ( $sent && ! in_array( $r->get_error_code(), IXES_Batch::RETRY, true ) ) { if ( ! $err ) $err = $r; continue; }
+				if ( ! isset( $tries[ $k ] ) ) $tries[ $k ] = new IXES_Chunker();
+				if ( $tries[ $k ]->fail( $sent ? null : self::err_code( $r ) ) ) { $queue[] = $k; $wait = max( $wait, $tries[ $k ]->backoff() ); continue; }
+				if ( ! $err ) $err = new WP_Error( 'transfer', $label( $k ) . ": gave up after {$tries[ $k ]->attempts()} attempts: " . $r->get_error_message() );
+			}
+			if ( $wait && $queue && ! $err ) $this->sleep_s( $wait );
+		}
+		return $err ?: true;
 	}
 }
