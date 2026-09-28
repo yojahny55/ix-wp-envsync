@@ -15,7 +15,7 @@ class IXES_Prefix {
 
 	/** The translation for the request being served, or null when both sides share a prefix (always null on the hub). */
 	public static function current() { return self::$current; }
-	public static function set_current( IXES_Prefix $p = null ) { self::$current = $p; }
+	public static function set_current( ?IXES_Prefix $p = null ) { self::$current = $p; }
 	public static function valid( $prefix ) { return is_string( $prefix ) && preg_match( '/\A[A-Za-z0-9_]+\z/', $prefix ) === 1; }
 
 	public function local() { return $this->local; }
@@ -30,9 +30,14 @@ class IXES_Prefix {
 	public function row_in( $bare, array $row ) { return self::row( $bare, $row, $this->peer, $this->local ); }
 	public function row_out( $bare, array $row ) { return self::row( $bare, $row, $this->local, $this->peer ); }
 
-	public function sql_in( $sql ) {
-		$re = '/\b(CREATE TABLE|REFERENCES)(\s+)`' . preg_quote( $this->peer, '/' ) . '([A-Za-z0-9_]*)`/i';
-		return preg_replace_callback( $re, function ( $m ) { return $m[1] . $m[2] . '`' . $this->local . $m[3] . '`'; }, (string) $sql );
+	/** A step arriving in the peer's names (a push writing here): peer prefix in the SQL -> ours. */
+	public function sql_in( $sql ) { return self::swap_sql( $sql, $this->peer, $this->local ); }
+	/** Our own schema going out (a pull reading from here): our prefix in the SQL -> the peer's. */
+	public function sql_out( $sql ) { return self::swap_sql( $sql, $this->local, $this->peer ); }
+
+	private static function swap_sql( $sql, $from, $to ) {
+		$re = '/\b(CREATE TABLE|REFERENCES)(\s+)`' . preg_quote( $from, '/' ) . '([A-Za-z0-9_]*)`/i';
+		return preg_replace_callback( $re, function ( $m ) use ( $to ) { return $m[1] . $m[2] . '`' . $to . $m[3] . '`'; }, (string) $sql );
 	}
 
 	/** A job step in the hub's names -> this site's. Orphan rows are dropped and named in 'prefix_refused'. */

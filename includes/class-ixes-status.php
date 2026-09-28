@@ -34,7 +34,7 @@ class IXES_Status {
 		];
 	}
 
-	public static function build( $env_name = null, callable $info_for = null, array $ctx = null ) {
+	public static function build( $env_name = null, ?callable $info_for = null, ?array $ctx = null ) {
 		$ctx = ( $ctx ?: [] ) + self::defaults();
 		if ( $info_for === null ) $info_for = function ( array $env ) { return ( new IXES_Client( $env ) )->info( IXES_Status::INFO_TIMEOUT ); };
 		$envs = $ctx['envs'];

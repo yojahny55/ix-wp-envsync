@@ -3,7 +3,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class IXES_Client {
 	const CHUNK_JSON_SIZE = 2097152;
-	const BATCH_TIMEOUT = 300; // a 4 MB batch of media that does not compress, on a slow link
+	const DEFAULT_TIMEOUT = 120;
+	const BATCH_TIMEOUT = 300; // floor for one batch request: a 4 MB batch of media that does not compress, on a slow link
 
 	private $env; private $info = null; private $caps = null;
 	private $prefix_header = '';
@@ -15,6 +16,15 @@ class IXES_Client {
 	/** Overridden by tests. */
 	protected function transport( $url, array $args ) { return wp_remote_request( $url, $args ); }
 	protected function sleep_s( $s ) { sleep( (int) $s ); }
+
+	/** This env's own --timeout (env add), or 0 when it never set one. */
+	private function raw_timeout() { return max( 0, (int) ( $this->env['timeout'] ?? 0 ) ); }
+
+	/** raw_timeout(), else the built-in default. A caller's own $opts['timeout'] always wins over this. */
+	public function effective_timeout() {
+		$t = $this->raw_timeout();
+		return $t > 0 ? $t : self::DEFAULT_TIMEOUT;
+	}
 
 	/**
 	 * $opts: raw_body (string, sent as octet-stream), accept ('json'|'binary'), headers (array), step (string, signed).
@@ -46,7 +56,7 @@ class IXES_Client {
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
 		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
-		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? 120 ), 'redirection' => 0, 'headers' => $headers ];
+		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
 		// ponytail: ?rest_route= works with any permalink structure; /wp-json/ 301s on plain permalinks and drops the Authorization header
 		return [ $opts['url'] ?? $this->env['url'] . '/?rest_route=' . $path, $args ];
@@ -150,7 +160,9 @@ class IXES_Client {
 
 	public function info( $timeout = null ) {
 		if ( $this->info === null ) {
-			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, $timeout === null ? [] : [ 'timeout' => $timeout ] ) );
+			// /info is a light call: 30s covers it even on a slow host, but a deliberately larger --timeout still wins
+			$t = $timeout !== null ? (int) $timeout : max( 30, $this->raw_timeout() );
+			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, [ 'timeout' => $t ] ) );
 			// remember where rescue.php lives while the remote still answers: it is needed exactly when it no longer does
 			$u = is_array( $this->info ) ? (string) ( $this->info['rescue_url'] ?? '' ) : '';
 			if ( $u !== '' && $u !== ( $this->env['rescue_url'] ?? '' ) && isset( $this->env['name'] ) && function_exists( 'update_option' ) ) {
@@ -188,7 +200,7 @@ class IXES_Client {
 
 	/** Talk to rescue.php, which answers even when a plugin fatals on every normal request. */
 	public function rescue( $action, array $extra = [] ) {
-		return $this->request( 'POST', '/rescue', [ 'action' => $action ] + $extra, [ 'url' => $this->rescue_url(), 'timeout' => 60 ] );
+		return $this->request( 'POST', '/rescue', [ 'action' => $action ] + $extra, [ 'url' => $this->rescue_url(), 'timeout' => max( 60, $this->raw_timeout() ) ] );
 	}
 
 	/** Remote capability list from /info; [] for a 0.2 remote. */
@@ -235,7 +247,7 @@ class IXES_Client {
 	 * Pull one file chunk by chunk. $write( $offset, $data, $final, $sha256 ) returns true or WP_Error.
 	 * @return true|WP_Error
 	 */
-	public function fetch_file( $rel, callable $write, callable $on_bytes = null ) {
+	public function fetch_file( $rel, callable $write, ?callable $on_bytes = null ) {
 		$ch = new IXES_Chunker( $this->binary() ? 2097152 : self::CHUNK_JSON_SIZE );
 		$offset = 0;
 		while ( true ) {
@@ -286,7 +298,7 @@ class IXES_Client {
 	 * Push one file chunk by chunk through /job/step. $first_meta (expect, algo) is merged into the offset-0 step.
 	 * @return array{ok:bool,refused:bool}|WP_Error
 	 */
-	public function send_file( $job, $rel, $abs, array $first_meta, callable $on_bytes = null ) {
+	public function send_file( $job, $rel, $abs, array $first_meta, ?callable $on_bytes = null ) {
 		$sha = hash_file( 'sha256', $abs ); $total = filesize( $abs );
 		$ch  = new IXES_Chunker( $this->binary() ? 2097152 : self::CHUNK_JSON_SIZE );
 		$fh  = fopen( $abs, 'rb' );
@@ -319,7 +331,7 @@ class IXES_Client {
 		// 'packed' is how a remote says it has gzinflate; one without zlib still takes plain batches
 		$z = $this->batch_files() && $this->deflate() && in_array( 'packed', $this->caps(), true );
 		$step = [ 'job' => $job, 'kind' => 'files' ] + ( $z ? [ 'enc' => 'deflate' ] : [] );
-		return [ 'POST', '/job/step', null, [ 'raw_body' => $z ? gzdeflate( IXES_Batch::encode( $items ), 6 ) : IXES_Batch::encode( $items ), 'step' => wp_json_encode( $step ), 'timeout' => self::BATCH_TIMEOUT ] ];
+		return [ 'POST', '/job/step', null, [ 'raw_body' => $z ? gzdeflate( IXES_Batch::encode( $items ), 6 ) : IXES_Batch::encode( $items ), 'step' => wp_json_encode( $step ), 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ) ] ];
 	}
 
 	/**
@@ -346,7 +358,7 @@ class IXES_Client {
 	public function fetch_batches( array $batches, $parallel, callable $on_batch ) {
 		$z = $this->deflate();
 		return $this->waves( array_keys( $batches ), $parallel, function ( $k ) use ( $batches, $z ) {
-			return [ 'POST', '/file/batch', [ 'paths' => array_values( $batches[ $k ] ), 'deflate' => $z ], [ 'accept' => 'binary', 'timeout' => self::BATCH_TIMEOUT ] ];
+			return [ 'POST', '/file/batch', [ 'paths' => array_values( $batches[ $k ] ), 'deflate' => $z ], [ 'accept' => 'binary', 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ) ] ];
 		}, function ( $k, $res ) use ( $batches, $on_batch ) {
 			if ( ! isset( $res['headers'] ) ) return new WP_Error( 'bad_batch', 'batch answer is not binary' );
 			$items = IXES_Batch::open( (string) $res['body'], (string) ( $res['headers']['x-envsync-enc'] ?? '' ), $batches[ $k ] );

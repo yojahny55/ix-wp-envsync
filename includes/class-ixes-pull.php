@@ -44,7 +44,7 @@ class IXES_Pull {
 		return $manifest;
 	}
 
-	public static function plan( array $env, IXES_Client $c, IXES_Scope $scope = null ) {
+	public static function plan( array $env, IXES_Client $c, ?IXES_Scope $scope = null ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
@@ -66,18 +66,57 @@ class IXES_Pull {
 		}
 		$tables_in_scope = array_values( array_filter( $info['tables'], function ( $t ) use ( $scope ) { return $scope->table_in( $t['name'] ); } ) );
 		list( $drop_local, $drop_warn ) = self::plan_drops( $env, $info, $scope, $algo );
+		list( $new_tables, $schema_changes, $schema_warn ) = self::plan_schema( $c, $info, $tables_in_scope );
 		return [
 			'created' => time(),
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
 			'tables' => $tables_in_scope,
+			'new_tables' => $new_tables, 'schema_changes' => $schema_changes,
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
 			// null: a pre-0.5.1 remote that does not report sizes
 			'sizes' => $sizes === null ? null : array_intersect_key( $sizes, array_flip( $transfer ) ),
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
 			'scope' => $scope->to_array(),
-			'warnings' => array_merge( $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ), $drop_warn ),
+			'warnings' => array_merge( $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ), $drop_warn, $schema_warn ),
 			'drop_local' => $drop_local,
 		];
+	}
+
+	/**
+	 * Tables the remote has that this side lacks (a plugin's own table), and columns the remote has that a local
+	 * table lacks (a plugin added one there): both need the remote's own CREATE TABLE text, fetched only for the
+	 * tables that need it. A remote too old to report per-table columns (no 'schema' cap) is left exactly as
+	 * before: those tables are skipped at run time, named, with a message to upgrade it.
+	 * @return array [ new_tables (name => sql), schema_changes (name => [ column => def ]), warnings ]
+	 */
+	public static function plan_schema( IXES_Client $c, array $info, array $tables_in_scope ) {
+		if ( ! in_array( 'schema', (array) ( $info['caps'] ?? [] ), true ) ) return [ [], [], [] ];
+		$need = []; $col_need = []; $warn = [];
+		foreach ( $tables_in_scope as $t ) {
+			$name = (string) $t['name'];
+			if ( ! IXES_Transfer::valid_table( $name ) ) { $need[] = $name; continue; }
+			if ( ! isset( $t['columns'] ) ) continue; // defensive; the 'schema' cap always carries it
+			$local = IXES_Transfer::local_columns( $name );
+			$missing = array_values( array_diff( (array) $t['columns'], $local ) );
+			if ( $missing ) { $need[] = $name; $col_need[ $name ] = $missing; }
+			$extra = array_diff( $local, (array) $t['columns'] );
+			if ( $extra ) $warn[] = "{$name}: local column(s) " . implode( ', ', $extra ) . ' not on the remote; left as is';
+		}
+		if ( ! $need ) return [ [], [], $warn ];
+		$res = $c->post( '/schema', [ 'tables' => $need ] );
+		if ( is_wp_error( $res ) ) { $warn[] = 'schema: ' . $res->get_error_message() . '; new tables and columns are skipped'; return [ [], [], $warn ]; }
+		$sql_by_table = (array) ( $res['tables'] ?? [] );
+		$new_tables = []; $schema_changes = [];
+		foreach ( $need as $name ) {
+			$sql = $sql_by_table[ $name ] ?? null;
+			if ( ! is_string( $sql ) || $sql === '' ) continue;
+			if ( ! IXES_Transfer::valid_table( $name ) ) { $new_tables[ $name ] = $sql; continue; }
+			$defs = IXES_Transfer::column_defs_from_create( $sql );
+			$add = [];
+			foreach ( $col_need[ $name ] as $col ) if ( isset( $defs[ $col ] ) ) $add[ $col ] = $defs[ $col ];
+			if ( $add ) $schema_changes[ $name ] = $add;
+		}
+		return [ $new_tables, $schema_changes, $warn ];
 	}
 
 	/**
@@ -159,7 +198,7 @@ class IXES_Pull {
 	 * $write( rel, offset, bytes, final, sha256 ) defaults to IXES_Transfer::write_file_chunk.
 	 * @return array|WP_Error [ skipped => rel list ]
 	 */
-	public static function pull_files( IXES_Client $c, array $plan, IXES_PullState $state, IXES_Progress $progress, $parallel = 1, callable $write = null ) {
+	public static function pull_files( IXES_Client $c, array $plan, IXES_PullState $state, IXES_Progress $progress, $parallel = 1, ?callable $write = null ) {
 		$write = $write ?: [ 'IXES_Transfer', 'write_file_chunk' ];
 		$list  = array_values( (array) $plan['files']['transfer'] );
 		$idx   = array_flip( $list );
@@ -237,7 +276,7 @@ class IXES_Pull {
 	 * @param IXES_Progress|null  $progress  null = one line per table/file through $log
 	 * @param int                 $parallel  file requests in flight at once; 1 = one after another
 	 */
-	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, IXES_Progress $progress = null, $parallel = 1 ) {
+	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, ?IXES_Progress $progress = null, $parallel = 1 ) {
 		global $wpdb;
 		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$pairs = $plan['pairs'];
@@ -265,20 +304,36 @@ class IXES_Pull {
 		foreach ( $plan['tables'] as $t ) {
 			$name = $t['name'];
 			if ( in_array( $name, $done, true ) ) continue;
+			if ( ! IXES_Transfer::valid_table( $name ) ) {
+				if ( ! isset( $plan['new_tables'][ $name ] ) ) { $progress->note( "skip: {$name} does not exist locally; {$env['name']} needs plugin " . IXES_VERSION . ' or newer to create it during pull' ); continue; }
+				$cr = IXES_Transfer::create_missing_table( $name, $plan['new_tables'][ $name ] );
+				if ( is_wp_error( $cr ) ) { $progress->note( 'skip: ' . $cr->get_error_message() ); continue; }
+				$progress->note( "created {$name}" );
+			}
+			foreach ( (array) ( $plan['schema_changes'][ $name ] ?? [] ) as $col => $def ) {
+				if ( in_array( $col, IXES_Transfer::local_columns( $name ), true ) ) continue; // already added: an earlier attempt, or this table was just created above
+				$ac = IXES_Transfer::add_missing_column( $name, $col, $def );
+				if ( is_wp_error( $ac ) ) { $progress->note( 'warning: ' . $ac->get_error_message() ); continue; }
+				$progress->note( "{$name}: added column {$col}" );
+			}
 			$from = null;
 			// a null cursor for the resume table means the last page was written but table_done()
 			// never got to save (killed in between): the tmp table already holds every row, and for
 			// a no-PK table (plain INSERT, no REPLACE) re-running from "start" would duplicate them all.
 			// Fall through to the fresh-table branch below so import_begin()/delete_table() restart it clean.
-			if ( $resume === $name && $state->get( 'cursor' ) !== null ) { $from = $state->get( 'cursor' ); $progress->note( "table {$name} (resuming at {$from})" ); }
-			else {
+			if ( $resume === $name && $state->get( 'cursor' ) !== null ) {
+				$from = $state->get( 'cursor' );
+				$rc = IXES_Transfer::reconcile_tmp( $name );
+				if ( is_wp_error( $rc ) ) return $rc;
+				$progress->note( "table {$name} (resuming at {$from})" );
+			} else {
 				$b = IXES_Transfer::import_begin( $name );
 				if ( is_wp_error( $b ) ) { $progress->note( 'skip: ' . $b->get_error_message() ); continue; }
 				$bl->delete_table( $name );
 			}
 			$pk = $t['pk'];
 			$row_err = null;
-			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'from' => $from ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, &$row_err ) {
+			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'from' => $from, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, &$row_err ) {
 				if ( $row_err ) return;
 				$ins = IXES_Transfer::import_rows( $name, $res['rows'], $pairs, (bool) $pk );
 				if ( is_wp_error( $ins ) ) { $row_err = $ins; return; }

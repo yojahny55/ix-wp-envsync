@@ -380,6 +380,7 @@ Options for `add`:
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
+- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
@@ -405,9 +406,12 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 - `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
+- `--timeout=<seconds>` — HTTP timeout for this pull, overriding the environment's own `--timeout` (`env add`).
 - `--parallel=<n>` — file requests in flight at once, 1 to 16 (default 4). `1` sends them one after another. See [How files travel](#how-files-travel).
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
+
+Tables that exist only on the remote, typically ones a plugin created for itself after your last pull, are created here first and marked `(new)` in the plan, the same way a push creates tables only your site has. A column a plugin added to an existing table on the remote (Action Scheduler, SEO plugins, anything that runs its own `dbDelta`) is added here too, listed under `SCHEMA` in the plan; a column that exists only here is left as it is, with a warning. Both need 0.7.3 or newer on the remote — against an older one, a table or column it has that this side lacks is skipped, named, with a message to upgrade it.
 
 ### `wp envsync diff <env>`
 
@@ -420,6 +424,7 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--timeout=<seconds>` — HTTP timeout for this diff, overriding the environment's own `--timeout` (`env add`).
 
 ### `wp envsync push <env>`
 
@@ -435,6 +440,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--timeout=<seconds>` — HTTP timeout for this push, overriding the environment's own `--timeout` (`env add`).
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
 
@@ -457,6 +463,8 @@ From 0.8.0, in both directions:
 Both sides need 0.8.0 or newer. Against an older remote the hub falls back on its own: a pull fetches one file per request, a push sends plain batches one at a time. The plan says which way the files will go, with a `TRANSFER` line, and names the version to upload when the remote is older. `status` flags a remote older than the hub.
 
 Batches finish in any order. A pull records every file that was written and verified, not a position in the list, so an interrupted pull resumes with exactly the files that did not land.
+
+Rows are paged by count and by an ~4 MB byte budget, whichever is hit first, so a page of a handful of very wide rows (a table with a lot of post content or serialized options) doesn't outgrow the transfer either. On each side, `INSERT`/`REPLACE` statements built from an incoming page are themselves split to stay under ~75% of that site's own `max_allowed_packet` (read once per sync), so a database with a small packet limit never drops the connection with "MySQL server has gone away" no matter how the other side paged.
 
 Options are matched by row ID, but on a fresh remote those IDs are often taken by WordPress's own transients. A pushed option whose ID is held by a transient or other excluded option there is placed by its name instead. It is not reported as "changed on prod". Upgrade both sides to 0.5.3 before a first deploy.
 
@@ -620,7 +628,7 @@ Agents should read files rather than terminal text:
 
 | File (under `wp-content/envsync-*/`) | Written by | Holds |
 |---|---|---|
-| `plans/<kind>-<env>-latest.json` | `diff`, `push`, `pull` (including `--dry-run`) | The plan as JSON (`schema: 1`): `summary`, `tables`, `plugins`, `themes`, `other`, `conflicts`, `warnings`. Same data as the tables. |
+| `plans/<kind>-<env>-latest.json` | `diff`, `push`, `pull` (including `--dry-run`) | The plan as JSON (`schema: 1`): `summary`, `tables`, `new_tables`, `schema_changes`, `plugins`, `themes`, `other`, `conflicts`, `warnings`. Same data as the tables. |
 | `runs/<kind>-<env>-latest.json` | `push`, `pull` | The outcome: `ok`, `job`, `seconds`, `files`, `bytes`, `rows`, `stale`, `error`. Written on failure too. |
 
 `--format=json` prints the same plan to stdout. Every plan command prints the manifest path in its last line (`manifest: …`).

@@ -17,6 +17,7 @@ class IXES_Rest {
 		$r( '/hash/rows',  'POST', [ __CLASS__, 'hash_rows' ] );
 		$r( '/hash/tables', 'POST', [ __CLASS__, 'hash_tables' ] );
 		$r( '/hash/files', 'POST', [ __CLASS__, 'hash_files' ] );
+		$r( '/schema',     'POST', [ __CLASS__, 'schema' ] );
 		$r( '/dump',       'POST', [ __CLASS__, 'dump' ] );
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
 		$r( '/file/batch', 'POST', [ __CLASS__, 'file_batch' ] );
@@ -96,9 +97,24 @@ class IXES_Rest {
 		$roots = array_values( array_filter( array_map( 'strval', (array) ( $p['roots'] ?? [] ) ) ) );
 		return IXES_Transfer::file_manifest( $p['cursor'] ?? null, (int) ( $p['limit'] ?? 2000 ), array_merge( IXES_Env::default_excludes(), (array) ( $p['excludes'] ?? [] ) ), sanitize_key( $p['algo'] ?? 'sha1' ), ! empty( $p['sizes'] ), $roots );
 	}
+	/** CREATE TABLE text for tables a pull needs: ones this side has that the hub lacks, or whose columns it lacks. Keyed by the hub's own names. */
+	public static function schema( WP_REST_Request $req ) {
+		$p   = $req->get_json_params();
+		$map = IXES_Prefix::current();
+		$out = [];
+		foreach ( array_slice( array_values( (array) ( $p['tables'] ?? [] ) ), 0, 200 ) as $name ) {
+			$name  = sanitize_text_field( (string) $name );
+			$local = self::table( $name );
+			if ( $local === '' || ! IXES_Transfer::valid_table( $local ) ) continue;
+			$sql = IXES_Transfer::create_table_sql( $local );
+			if ( $sql === null ) continue;
+			$out[ $name ] = $map ? $map->sql_out( $sql ) : $sql;
+		}
+		return [ 'tables' => (object) $out ];
+	}
 	public static function dump( WP_REST_Request $req ) {
 		$p = $req->get_json_params();
-		return IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ) );
+		return IXES_Transfer::dump( self::table( $p['table'] ?? '' ), $p['from'] ?? null, (int) ( $p['limit'] ?? 5000 ), (int) ( $p['bytes'] ?? 0 ) );
 	}
 	public static function file_get( WP_REST_Request $req ) {
 		$p   = $req->get_json_params();
