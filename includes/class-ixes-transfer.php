@@ -360,6 +360,16 @@ class IXES_Transfer {
 		return true;
 	}
 
+	/** Copies an already hash-verified local file (from a wordpress.org seed) into place. No chunking: the whole file is on disk already. */
+	public static function seed_file( $rel, $src ) {
+		$rel = self::safe_rel( $rel );
+		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return false;
+		$dest = WP_CONTENT_DIR . '/' . $rel;
+		$dir  = dirname( $dest );
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return false;
+		return (bool) @copy( $src, $dest );
+	}
+
 	/** @return bool true when the file is gone (or was never there) */
 	public static function delete_file( $rel ) {
 		$rel = self::safe_rel( $rel );

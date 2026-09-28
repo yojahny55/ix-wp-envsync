@@ -405,8 +405,19 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 - `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
+- `--no-seed` — never try downloads.wordpress.org for plugin/theme files (see [Seeding from wordpress.org](#seeding-from-wordpressorg) below). Default: `ENVSYNC_NO_SEED`, else seeding is on.
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
+
+### Seeding from wordpress.org
+
+For every plugin or theme with files queued to transfer, at a version the remote reports, a pull first tries the matching zip on `downloads.wordpress.org` (or, when that exact version is no longer archived there but happens to be the current release, the unversioned zip). Each file inside is re-hashed and compared against the remote's own hash; only an exact match is used, so the result is byte-identical to pulling everything from the remote. Anything that doesn't match — a different build, a premium or unlisted plugin, a 404, a wordpress.org outage — just keeps coming from the remote, silently. On a slow remote this can cut a pull from hours to minutes, since wordpress.org is usually far faster than a small host.
+
+```
+seeded 3,077 files (98.2 MB) from wordpress.org; 200 files left to transfer
+```
+
+`--dry-run` prints the same line and the plan's file count already reflects it, so you see the real savings before running anything. Disable it with `--no-seed` on the command, or by default with `define( 'ENVSYNC_NO_SEED', true );` in `wp-config.php`.
 
 ### `wp envsync diff <env>`
 

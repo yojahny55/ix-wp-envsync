@@ -44,7 +44,7 @@ class IXES_Pull {
 		return $manifest;
 	}
 
-	public static function plan( array $env, IXES_Client $c, IXES_Scope $scope = null ) {
+	public static function plan( array $env, IXES_Client $c, IXES_Scope $scope = null, array $seed_opts = [] ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
@@ -53,7 +53,7 @@ class IXES_Pull {
 		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );
-		$remote = []; $local = []; $transfer = []; $delete = []; $sizes = [];
+		$remote = []; $local = []; $transfer = []; $delete = []; $sizes = []; $seed = null;
 		if ( $scope->files_wanted() ) {
 			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'sizes' => true, 'roots' => $scope->roots() ], function ( $res ) use ( &$remote, &$sizes ) { $remote += $res['files']; if ( isset( $res['sizes'] ) && $sizes !== null ) $sizes += $res['sizes']; else $sizes = null; }, 'cursor' );
 			if ( is_wp_error( $r ) ) return $r;
@@ -63,6 +63,9 @@ class IXES_Pull {
 			foreach ( array_keys( $local ) as $rel ) if ( ! $scope->path_in( $rel ) ) unset( $local[ $rel ] );
 			$transfer = array_keys( array_diff_assoc( $remote, $local ) ); sort( $transfer, SORT_STRING );
 			$delete   = array_keys( array_diff_key( $local, $remote ) );
+			// null: a pre-0.5.1 remote that does not report sizes
+			if ( $sizes !== null ) $sizes = array_intersect_key( $sizes, array_flip( $transfer ) );
+			list( $transfer, $sizes, $seed ) = self::seed_transfer( $info, $transfer, $remote, $sizes, $algo, $seed_opts );
 		}
 		$tables_in_scope = array_values( array_filter( $info['tables'], function ( $t ) use ( $scope ) { return $scope->table_in( $t['name'] ); } ) );
 		list( $drop_local, $drop_warn ) = self::plan_drops( $env, $info, $scope, $algo );
@@ -71,13 +74,60 @@ class IXES_Pull {
 			'env' => $env['name'], 'algo' => $algo, 'info' => $info,
 			'tables' => $tables_in_scope,
 			'files' => [ 'transfer' => $transfer, 'delete' => $delete, 'remote' => $remote ],
-			// null: a pre-0.5.1 remote that does not report sizes
-			'sizes' => $sizes === null ? null : array_intersect_key( $sizes, array_flip( $transfer ) ),
+			'sizes' => $sizes,
+			'seed' => $seed,
 			'pairs' => self::pairs( $env, $info ), 'excludes' => $ex, 'extra_replace' => (array) $env['extra_replace'],
 			'scope' => $scope->to_array(),
 			'warnings' => array_merge( $scope->family_warnings( array_column( $tables_in_scope, 'name' ) ), $drop_warn ),
 			'drop_local' => $drop_local,
 		];
+	}
+
+	/**
+	 * Tries downloads.wordpress.org for every plugin/theme with files queued for transfer at a version
+	 * the remote reports, and drops from the transfer list whatever matches the remote's own hash. This
+	 * only ever VERIFIES -- nothing is written to wp-content here, so building the plan (including for a
+	 * dry run, or one the user then declines) never touches disk. A confirmed, non-resumed pull redoes
+	 * the download and the actual copy in apply_seed(), once it is safe to write. A remote that never
+	 * answers, a 404 for a premium/unknown slug, or a corrupt zip all just fall back silently to the
+	 * normal transfer -- wordpress.org is a shortcut here, never a second source of truth.
+	 * @return array [ transfer, sizes, seed summary|null ]
+	 */
+	public static function seed_transfer( array $info, array $transfer, array $remote, $sizes, $algo, array $opts ) {
+		if ( ! $transfer || ! IXES_Seed::enabled( $opts ) ) return [ $transfer, $sizes, null ];
+		$cands = IXES_Seed::candidates( $transfer, (array) ( $info['inventory'] ?? [] ) );
+		if ( ! $cands ) return [ $transfer, $sizes, null ];
+		$fetch = $opts['fetch'] ?? function ( $u ) { return wp_remote_get( $u, [ 'timeout' => 60, 'sslverify' => true ] ); };
+		$res = IXES_Seed::run( $cands, $remote, $algo, $fetch, false );
+		if ( ! $res['matched'] ) return [ $transfer, $sizes, null ];
+		$paths = array_keys( $res['matched'] );
+		// kept so apply_seed() can put a path's size back if the second download ever fails to reproduce it
+		$seed_sizes = [];
+		if ( $sizes !== null ) foreach ( $paths as $rel ) $seed_sizes[ $rel ] = (int) ( $sizes[ $rel ] ?? 0 );
+		$left = array_values( array_diff( $transfer, $paths ) );
+		if ( $sizes !== null ) $sizes = array_intersect_key( $sizes, array_flip( $left ) );
+		return [ $left, $sizes, [ 'files' => count( $paths ), 'bytes' => $res['bytes'], 'left' => count( $left ), 'paths' => $paths, 'sizes' => $seed_sizes ] ];
+	}
+
+	/**
+	 * Re-downloads and actually copies into place the paths seed_transfer() already verified in the plan.
+	 * Called only for a fresh (non-resumed), confirmed pull, so nothing lands in wp-content before the
+	 * user agreed to the pull. Whatever fails this second time round (I/O, or the zip changing between
+	 * the two downloads) goes back into the transfer list rather than being silently dropped.
+	 */
+	public static function apply_seed( array $plan, array $opts = [] ) {
+		$paths = (array) ( $plan['seed']['paths'] ?? [] );
+		if ( ! $paths ) return $plan;
+		$cands = IXES_Seed::candidates( $paths, (array) ( $plan['info']['inventory'] ?? [] ) );
+		$fetch = $opts['fetch'] ?? function ( $u ) { return wp_remote_get( $u, [ 'timeout' => 60, 'sslverify' => true ] ); };
+		$res = IXES_Seed::run( $cands, $plan['files']['remote'], $plan['algo'], $fetch, true );
+		$missed = array_values( array_diff( $paths, array_keys( $res['matched'] ) ) );
+		if ( $missed ) {
+			$plan['files']['transfer'] = array_values( array_unique( array_merge( $plan['files']['transfer'], $missed ) ) );
+			sort( $plan['files']['transfer'], SORT_STRING );
+			if ( is_array( $plan['sizes'] ) ) foreach ( $missed as $rel ) $plan['sizes'][ $rel ] = (int) ( $plan['seed']['sizes'][ $rel ] ?? 0 );
+		}
+		return $plan;
 	}
 
 	/**
@@ -173,6 +223,8 @@ class IXES_Pull {
 		$partial = ! $scope->is_full();
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		if ( $state === null ) {
+			// only now -- confirmed, not a dry run, not a resume -- is it safe to actually write seeded files
+			$plan = self::apply_seed( $plan );
 			// a pull in the environment's default scope is that environment's whole sync, so it records a baseline for that
 			// scope, unless a full baseline exists: then it only refreshes part of it, as any narrower pull does
 			$full = $bl->exists() && (string) $bl->meta( 'baseline_scope' ) === '';

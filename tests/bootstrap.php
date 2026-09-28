@@ -46,6 +46,7 @@ if ( ! function_exists( 'wp_remote_retrieve_body' ) ) { function wp_remote_retri
 if ( ! function_exists( 'wp_remote_retrieve_header' ) ) { function wp_remote_retrieve_header( $r, $h ) { return $r['headers'][ strtolower( $h ) ] ?? ''; } }
 if ( ! function_exists( 'wp_remote_retrieve_headers' ) ) { function wp_remote_retrieve_headers( $r ) { return $r['headers'] ?? []; } }
 
+if ( ! function_exists( 'wp_mkdir_p' ) ) { function wp_mkdir_p( $dir ) { return is_dir( $dir ) || mkdir( $dir, 0777, true ); } }
 if ( ! function_exists( 'get_option' ) ) { function get_option( $k, $d = false ) { return $GLOBALS['ixes_test_options'][ $k ] ?? $d; } }
 if ( ! function_exists( 'get_transient' ) ) { function get_transient( $k ) { return $GLOBALS['ixes_test_transients'][ $k ] ?? false; } }
 if ( ! defined( 'IXES_VERSION' ) ) define( 'IXES_VERSION', '0.4.0' );

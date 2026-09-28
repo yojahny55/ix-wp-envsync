@@ -219,6 +219,9 @@ class IXES_CLI {
 	 *
 	 * [--backup-dir=<dir>]
 	 * : Where to write the .sql copy of every table the pull drops here. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
+	 *
+	 * [--no-seed]
+	 * : Never try downloads.wordpress.org for plugin/theme files that would otherwise come from a slow remote. Default: ENVSYNC_NO_SEED, else seeding is on.
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
@@ -246,11 +249,14 @@ class IXES_CLI {
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
 		}
-		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc, $env ) ) );
+		// plan() only ever verifies wordpress.org candidates (never writes), so this is identical for a dry run
+		$seed_opts = [ 'no_seed' => ! empty( $assoc['no-seed'] ) ];
+		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc, $env ), $seed_opts ) );
 		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_pull_plan( $plan );
 		$manifest = $this->show_report( $report, $assoc );
 		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
+		if ( $plan['seed'] ) WP_CLI::log( sprintf( 'seeded %d files (%s) from wordpress.org; %d files left to transfer', $plan['seed']['files'], IXES_Report::size( $plan['seed']['bytes'] ), $plan['seed']['left'] ) );
 		WP_CLI::log( 'REWRITE' );
 		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "  {$p[0]}  →  {$p[1]}" );
 		WP_CLI::log( 'EXCLUDED  ' . implode( ', ', $plan['excludes'] ) );
