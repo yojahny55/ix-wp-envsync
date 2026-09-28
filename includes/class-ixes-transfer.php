@@ -175,8 +175,21 @@ class IXES_Transfer {
 	/** This plugin's own directory, relative to wp-content, with a trailing slash. */
 	public static function own_dir() {
 		if ( ! defined( 'IXES_FILE' ) ) return '';
-		$root = untrailingslashit( str_replace( '\\', '/', WP_CONTENT_DIR ) );
-		$dir  = untrailingslashit( str_replace( '\\', '/', dirname( IXES_FILE ) ) );
+		return self::rel_dir( WP_CONTENT_DIR, dirname( IXES_FILE ) );
+	}
+
+	/** $dir relative to $root with a trailing slash, '' when it lies outside. */
+	public static function rel_dir( $root, $dir ) {
+		// `wp --path=.` makes WP_CONTENT_DIR "/site/./wp-content" while __FILE__ is resolved: without
+		// normalising, the plugin stopped excluding itself and a pull deleted its own files
+		$norm = function ( $p ) {
+			$p = str_replace( '\\', '/', $p );
+			$r = @realpath( $p );
+			if ( $r !== false ) $p = str_replace( '\\', '/', $r );
+			return rtrim( preg_replace( '#/(?:\./)+#', '/', $p . '/' ), '/' );
+		};
+		$root = $norm( $root );
+		$dir  = $norm( $dir );
 		if ( strpos( $dir, $root . '/' ) !== 0 ) return '';
 		return substr( $dir, strlen( $root ) + 1 ) . '/';
 	}
