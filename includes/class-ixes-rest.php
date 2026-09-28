@@ -19,6 +19,7 @@ class IXES_Rest {
 		$r( '/hash/files', 'POST', [ __CLASS__, 'hash_files' ] );
 		$r( '/dump',       'POST', [ __CLASS__, 'dump' ] );
 		$r( '/file/get',   'POST', [ __CLASS__, 'file_get' ] );
+		$r( '/file/batch', 'POST', [ __CLASS__, 'file_batch' ] );
 		$r( '/dirs',       'POST', function () { return IXES_Transfer::dir_sizes(); } );
 		foreach ( [ 'start', 'step', 'finish', 'abort', 'unlock' ] as $op ) {
 			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
@@ -110,16 +111,28 @@ class IXES_Rest {
 		// serve_binary(). WP_REST_Server::serve_request() sends $result->get_headers() (including
 		// ours below) via PHP's header() before that filter runs, and header() replaces the
 		// earlier default 'Content-Type: application/json' with the last value set for that name.
+		return self::binary_response( $r['bin'], [ 'X-Envsync-Total' => (string) $r['total'], 'X-Envsync-Size' => (string) $r['size'], 'X-Envsync-Sha256' => $r['sha256'] ] );
+	}
+
+	private static function binary_response( $bytes, array $headers ) {
 		$res = new WP_REST_Response( null, 200 );
 		$res->header( 'Content-Type', 'application/octet-stream' );
-		$res->header( 'Content-Length', (string) $r['size'] );
-		$res->header( 'X-Envsync-Total', (string) $r['total'] );
-		$res->header( 'X-Envsync-Size', (string) $r['size'] );
-		$res->header( 'X-Envsync-Sha256', $r['sha256'] );
+		$res->header( 'Content-Length', (string) strlen( $bytes ) );
+		foreach ( $headers as $k => $v ) $res->header( $k, $v );
 		$res->header( 'Cache-Control', 'no-cache' );
-		$res->set_data( $r['bin'] );
+		$res->set_data( $bytes );
 		$res->ixes_binary = true; // marker read by serve_binary()
 		return $res;
+	}
+
+	/** Many small files in one answer (0.8.0): a pull pays the remote's WordPress boot once per batch, not once per file. */
+	public static function file_batch( WP_REST_Request $req ) {
+		$p = $req->get_json_params();
+		$paths = array_values( array_filter( (array) ( $p['paths'] ?? [] ), 'is_string' ) );
+		if ( ! $paths || count( $paths ) > IXES_Batch::MAX_ITEMS ) return new WP_Error( 'bad_batch', 'between 1 and ' . IXES_Batch::MAX_ITEMS . ' paths per batch', [ 'status' => 400 ] );
+		$raw = IXES_Transfer::file_batch( $paths );
+		$z   = ! empty( $p['deflate'] ) && function_exists( 'gzdeflate' );
+		return self::binary_response( $z ? gzdeflate( $raw, 6 ) : $raw, [ 'X-Envsync-Enc' => $z ? 'deflate' : 'identity', 'X-Envsync-Items' => (string) count( $paths ) ] );
 	}
 
 	/** Emit a binary file_get response as raw bytes instead of JSON; headers were already sent by the server. */

@@ -151,6 +151,77 @@ class IXES_Pull {
 		return $out;
 	}
 
+	/**
+	 * The plan's transfer list, minus what $state already holds. Against a 0.8.0 remote small files come
+	 * in batches, $parallel requests at a time; big files, files grown past a batch, and everything from an
+	 * older remote come one by one through /file/get as before. Every file is marked in $state only once it
+	 * is written and verified, so a resume never skips one that did not land, whatever order batches finish in.
+	 * $write( rel, offset, bytes, final, sha256 ) defaults to IXES_Transfer::write_file_chunk.
+	 * @return array|WP_Error [ skipped => rel list ]
+	 */
+	public static function pull_files( IXES_Client $c, array $plan, IXES_PullState $state, IXES_Progress $progress, $parallel = 1, callable $write = null ) {
+		$write = $write ?: [ 'IXES_Transfer', 'write_file_chunk' ];
+		$list  = array_values( (array) $plan['files']['transfer'] );
+		$idx   = array_flip( $list );
+		$left  = [];
+		foreach ( $list as $i => $rel ) if ( ! $state->file_done( $i ) ) $left[] = $rel;
+		$sizes = $plan['sizes'] ?? null;
+		$progress->stage( 'Files', is_array( $sizes ) ? array_sum( array_intersect_key( $sizes, array_flip( $left ) ) ) : null, count( $left ) );
+		$skipped = []; $one_by_one = $left;
+		if ( $left && is_array( $sizes ) && $c->batch_files() ) {
+			$want = [];
+			foreach ( $left as $rel ) $want[ $rel ] = (int) ( $sizes[ $rel ] ?? PHP_INT_MAX );
+			$packed = IXES_Batch::pack( $want, IXES_Batch::budget( array_sum( array_filter( $want, function ( $n ) { return $n <= IXES_Batch::SMALL; } ) ), $parallel ) );
+			$one_by_one = $packed['large'];
+			$r = $c->fetch_batches( $packed['batches'], $parallel, function ( $k, array $items ) use ( $write, $idx, $state, $progress, &$skipped, &$one_by_one ) {
+				$landed = []; $err = null;
+				foreach ( $items as $it ) {
+					list( $m, $bytes ) = $it; $rel = (string) $m['path'];
+					if ( ! $err && ! isset( $m['err'] ) ) {
+						$w = call_user_func( $write, $rel, 0, $bytes, true, (string) $m['sha256'] );
+						if ( ! is_wp_error( $w ) ) { $landed[] = $idx[ $rel ]; $progress->bytes( strlen( $bytes ) ); $progress->item( $rel ); continue; }
+						$m['err'] = $w->get_error_code() === 'bad_path' ? 'bad_path' : 'write';
+						if ( $m['err'] === 'write' ) { $err = $w; continue; }
+					}
+					if ( $err ) continue;
+					// a path either side refuses is a policy difference between plugin versions, not a failed transfer
+					if ( $m['err'] === 'bad_path' ) { $skipped[] = $rel; $landed[] = $idx[ $rel ]; continue; }
+					if ( $m['err'] === 'later' ) { $one_by_one[] = $rel; continue; }
+					$err = new WP_Error( 'transfer', "{$rel}: " . ( $m['err'] === 'not_found' ? 'gone from the remote since the plan; run pull again with --fresh' : 'the remote could not read it' ) );
+				}
+				// what landed stays landed even when the rest of this batch failed
+				if ( $landed ) $state->files_mark( $landed );
+				return $err ?: true;
+			} );
+			if ( is_wp_error( $r ) ) return $r;
+			sort( $one_by_one, SORT_STRING );
+		}
+		$on_bytes = function ( $b ) use ( $progress ) { $progress->bytes( $b ); };
+		foreach ( $one_by_one as $rel ) {
+			$r = $c->fetch_file( $rel, function ( $offset, $data, $final, $sha ) use ( $rel, $write ) {
+				return call_user_func( $write, $rel, $offset, $data, $final, $sha );
+			}, $on_bytes );
+			// A path this side refuses is a policy difference between the two plugin
+			// versions, not a transfer failure: skip it rather than abort the pull.
+			if ( is_wp_error( $r ) && $r->get_error_code() === 'bad_path' ) { $skipped[] = $rel; $state->files_mark( [ $idx[ $rel ] ] ); continue; }
+			if ( is_wp_error( $r ) ) return $r;
+			$state->files_mark( [ $idx[ $rel ] ] );
+			$progress->item( $rel );
+		}
+		return [ 'skipped' => $skipped ];
+	}
+
+	/** One line for the plan: how files will travel, and what the remote needs for the fast way. '' when nothing is to move. */
+	public static function transfer_note( IXES_Client $c, $n, $parallel, $push = false ) {
+		if ( $n <= 0 ) return '';
+		if ( $c->batch_files() ) return "TRANSFER  {$n} file(s): small ones batched and compressed, {$parallel} request(s) at a time";
+		$i = $c->info();
+		$v = is_array( $i ) ? (string) ( $i['plugin'] ?? '' ) : '';
+		// pushes have batched small files since 0.5.1, one batch at a time
+		$how = $push && in_array( 'batch', $c->caps(), true ) ? 'small ones batched, one request at a time' : 'one request each';
+		return "TRANSFER  {$n} file(s) {$how}: the remote runs " . ( $v !== '' ? $v : 'an older plugin' ) . '; upload 0.8.0 or newer there for batched, compressed, parallel transfer';
+	}
+
 	/** Drop everything an interrupted pull left behind. */
 	public static function discard( array $env ) {
 		$s = IXES_PullState::load( $env['name'] );
@@ -164,8 +235,9 @@ class IXES_Pull {
 	/**
 	 * @param IXES_PullState|null $state  null = fresh pull; an instance = resume from it (plan must be the saved one)
 	 * @param IXES_Progress|null  $progress  null = one line per table/file through $log
+	 * @param int                 $parallel  file requests in flight at once; 1 = one after another
 	 */
-	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, IXES_Progress $progress = null ) {
+	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, IXES_Progress $progress = null, $parallel = 1 ) {
 		global $wpdb;
 		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$pairs = $plan['pairs'];
@@ -247,26 +319,10 @@ class IXES_Pull {
 		if ( $dr['dropped'] ) $progress->note( 'dropped here: ' . implode( ', ', $dr['dropped'] ) . '; copies: ' . implode( ', ', $dr['backups'] ) );
 		if ( $dr['restored'] ) $progress->note( 'warning: the site broke after dropping tables (' . implode( ', ', array_map( function ( $u, $w ) { return "{$u}: {$w}"; }, array_keys( $dr['restored'] ), $dr['restored'] ) ) . '); they were restored. Copies: ' . implode( ', ', $dr['backups'] ) );
 
-		$skipped = [];
-		$start = (int) $state->get( 'files_done' );
-		$left  = array_slice( $plan['files']['transfer'], $start );
-		$sizes = $plan['sizes'] ?? null;
-		$progress->stage( 'Files', is_array( $sizes ) ? array_sum( array_intersect_key( $sizes, array_flip( $left ) ) ) : null, count( $left ) );
-		$on_bytes = function ( $b ) use ( $progress ) { $progress->bytes( $b ); };
-		foreach ( $plan['files']['transfer'] as $i => $rel ) {
-			if ( $i < $start ) continue;
-			$r = $c->fetch_file( $rel, function ( $offset, $data, $final, $sha ) use ( $rel ) {
-				return IXES_Transfer::write_file_chunk( $rel, $offset, $data, $final, $sha );
-			}, $on_bytes );
-			// A path this side refuses is a policy difference between the two plugin
-			// versions, not a transfer failure: skip it rather than abort the pull.
-			if ( is_wp_error( $r ) && $r->get_error_code() === 'bad_path' ) { $skipped[] = $rel; $state->files_done( $i + 1 ); continue; }
-			if ( is_wp_error( $r ) ) return $r;
-			$state->files_done( $i + 1 );
-			$progress->item( $rel );
-		}
+		$f = self::pull_files( $c, $plan, $state, $progress, max( 1, (int) $parallel ) );
+		if ( is_wp_error( $f ) ) return $f;
 		$progress->end();
-		if ( $skipped ) $progress->note( 'skipped ' . count( $skipped ) . ' excluded path(s) offered by the remote, e.g. ' . $skipped[0] );
+		if ( $f['skipped'] ) $progress->note( 'skipped ' . count( $f['skipped'] ) . ' excluded path(s) offered by the remote, e.g. ' . $f['skipped'][0] );
 		$undeleted = 0;
 		foreach ( $plan['files']['delete'] as $rel ) if ( ! IXES_Transfer::delete_file( $rel ) ) $undeleted++;
 		if ( $undeleted ) $progress->note( "warning: {$undeleted} stale file(s) could not be deleted (check ownership under wp-content)" );

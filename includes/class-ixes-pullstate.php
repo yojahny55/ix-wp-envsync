@@ -48,6 +48,42 @@ class IXES_PullState {
 		$this->d['table'] = null; $this->d['cursor'] = null; $this->save();
 	}
 	public function files_done( $n ) { $this->d['files_done'] = (int) $n; $this->save(); }
+
+	/**
+	 * Parallel batches land out of order. files_done stays the contiguous prefix of the sorted transfer list
+	 * (what 0.7 and older read); files beyond it that already landed are kept as merged [from, to) ranges.
+	 * Only a file written and verified may be marked: a resume skips exactly these.
+	 */
+	public function files_mark( array $indices ) {
+		$r = (array) ( $this->d['files_ranges'] ?? [] );
+		foreach ( $indices as $i ) $r[] = [ (int) $i, (int) $i + 1 ];
+		usort( $r, function ( $a, $b ) { return $a[0] - $b[0]; } );
+		$done = (int) $this->d['files_done']; $out = [];
+		foreach ( $r as $x ) {
+			if ( $x[1] <= $done ) continue;
+			if ( $x[0] <= $done ) { $done = $x[1]; continue; }
+			$n = count( $out );
+			if ( $n && $x[0] <= $out[ $n - 1 ][1] ) $out[ $n - 1 ][1] = max( $out[ $n - 1 ][1], $x[1] );
+			else $out[] = $x;
+		}
+		// a range may now touch the grown prefix
+		while ( $out && $out[0][0] <= $done ) { $done = max( $done, $out[0][1] ); array_shift( $out ); }
+		$this->d['files_done'] = $done; $this->d['files_ranges'] = $out;
+		$this->save();
+	}
+
+	public function file_done( $i ) {
+		if ( $i < (int) $this->d['files_done'] ) return true;
+		foreach ( (array) ( $this->d['files_ranges'] ?? [] ) as $x ) if ( $i >= $x[0] && $i < $x[1] ) return true;
+		return false;
+	}
+
+	/** Files landed so far, prefix and ranges together. */
+	public function files_count() {
+		$n = (int) $this->d['files_done'];
+		foreach ( (array) ( $this->d['files_ranges'] ?? [] ) as $x ) $n += $x[1] - $x[0];
+		return $n;
+	}
 	/** Marks the tmp-table commit (RENAME TABLE) as done, so a rerun does not attempt it again. */
 	public function committed() { $this->d['committed'] = true; $this->save(); }
 	public function clear() { $f = self::path( $this->d['env'] ); if ( is_file( $f ) ) unlink( $f ); }
@@ -56,7 +92,7 @@ class IXES_PullState {
 		$where = $this->d['table']
 			? "stopped in {$this->d['table']}" . ( $this->d['cursor'] !== null ? " at row {$this->d['cursor']}" : '' )
 			: 'finished tables';
-		return sprintf( 'An interrupted pull of %s from %s %s, %d/%d files done.', $this->d['env'], wp_date( 'Y-m-d H:i T', (int) $this->d['started'] ), $where, (int) $this->d['files_done'], (int) $files_total );
+		return sprintf( 'An interrupted pull of %s from %s %s, %d/%d files done.', $this->d['env'], wp_date( 'Y-m-d H:i T', (int) $this->d['started'] ), $where, $this->files_count(), (int) $files_total );
 	}
 
 	/** '' when the pull can be resumed, otherwise a one-line reason. */

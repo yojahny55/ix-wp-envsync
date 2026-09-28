@@ -249,7 +249,13 @@ class IXES_Applier {
 		}
 
 		if ( $kind === 'files' ) {
-			$items = IXES_Batch::decode( (string) ( $p['bin'] ?? '' ) );
+			$raw = (string) ( $p['bin'] ?? '' );
+			// 0.8.0 hubs deflate the batch: code in a plain body is what host firewalls pattern-match
+			if ( ( $p['enc'] ?? '' ) === 'deflate' ) {
+				$raw = function_exists( 'gzinflate' ) ? @gzinflate( $raw, IXES_Batch::INFLATE_MAX ) : false;
+				if ( $raw === false ) return new WP_Error( 'bad_batch', 'batch does not inflate', [ 'status' => 400 ] );
+			}
+			$items = IXES_Batch::decode( $raw );
 			if ( is_wp_error( $items ) ) return $items;
 			$refused = [];
 			foreach ( $items as $it ) {
@@ -533,7 +539,8 @@ class IXES_Applier {
 		return $file;
 	}
 
-	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, IXES_Progress $progress = null, callable $on_error = null ) {
+	/** @param int $parallel file batches in flight at once against a 0.8.0 remote; 1 = one after another */
+	public static function apply( array $env, IXES_Client $c, array $plan, callable $log, IXES_Progress $progress = null, callable $on_error = null, $parallel = 1 ) {
 		global $wpdb;
 		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$info = $c->info();
@@ -598,21 +605,34 @@ class IXES_Applier {
 		$meta_for = function ( $rel ) use ( $file_hashes, $plan ) { return array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : []; };
 		$sizes = [];
 		foreach ( $present as $rel ) $sizes[ $rel ] = (int) filesize( WP_CONTENT_DIR . '/' . $rel );
-		$packed = in_array( 'batch', $caps, true ) ? IXES_Batch::pack( $sizes ) : [ 'batches' => [], 'large' => $present ];
-		foreach ( $packed['batches'] as $batch ) {
+		// a 0.8.0 remote gets $parallel batches at once, each sized so all of them have work; older ones one at a time
+		$par = $c->batch_files() ? max( 1, (int) $parallel ) : 1;
+		$packed = in_array( 'batch', $caps, true ) ? IXES_Batch::pack( $sizes, $par > 1 ? IXES_Batch::budget( array_sum( array_filter( $sizes, function ( $n ) { return $n <= IXES_Batch::SMALL; } ) ), $par ) : IXES_Batch::MAX_BYTES ) : [ 'batches' => [], 'large' => $present ];
+		$items_for = function ( $k ) use ( $packed, $meta_for ) {
 			$items = [];
-			foreach ( $batch as $rel ) {
+			foreach ( $packed['batches'][ $k ] as $rel ) {
 				$data = (string) file_get_contents( WP_CONTENT_DIR . '/' . $rel );
 				$items[] = [ [ 'path' => $rel, 'sha256' => hash( 'sha256', $data ) ] + $meta_for( $rel ), $data ];
 			}
-			$r = $call( function () use ( $c, $job, $items ) { return $c->send_batch( $job, $items ); } );
-			if ( is_wp_error( $r ) ) return $fail( $r );
+			return $items;
+		};
+		// batches that landed are not sent again when the error menu says retry
+		$landed = [];
+		$on_done = function ( $k, $r ) use ( $packed, $sizes, $progress, &$stale, &$landed ) {
+			$landed[ $k ] = true;
 			$refused = array_flip( (array) ( $r['refused'] ?? [] ) );
-			foreach ( $batch as $rel ) {
+			foreach ( $packed['batches'][ $k ] as $rel ) {
 				$progress->bytes( $sizes[ $rel ] );
 				if ( isset( $refused[ $rel ] ) ) { $stale[] = "file: {$rel}"; continue; }
 				$progress->item( $rel );
 			}
+			return true;
+		};
+		if ( $packed['batches'] ) {
+			$r = $call( function () use ( $c, $job, $packed, $par, $items_for, $on_done, &$landed ) {
+				return $c->send_batches( $job, array_keys( array_diff_key( $packed['batches'], $landed ) ), $par, $items_for, $on_done );
+			} );
+			if ( is_wp_error( $r ) ) return $fail( $r );
 		}
 		foreach ( $packed['large'] as $rel ) {
 			$r = $call( function () use ( $c, $job, $rel, $meta_for, $on_bytes ) { return $c->send_file( $job, $rel, WP_CONTENT_DIR . '/' . $rel, $meta_for( $rel ), $on_bytes ); } );

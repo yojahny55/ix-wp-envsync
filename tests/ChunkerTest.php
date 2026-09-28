@@ -45,6 +45,7 @@ class ChunkerTest extends TestCase {
 	public function test_retryable_static() {
 		$this->assertTrue( IXES_Chunker::retryable( null ) );
 		$this->assertTrue( IXES_Chunker::retryable( 413 ) );
+		$this->assertTrue( IXES_Chunker::retryable( 429 ) );
 		$this->assertFalse( IXES_Chunker::retryable( 401 ) );
 	}
 }

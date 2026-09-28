@@ -51,6 +51,11 @@ class IXES_CLI {
 		return $r;
 	}
 	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
+	private function parallel( $assoc ) {
+		$n = $assoc['parallel'] ?? 4;
+		if ( ! is_numeric( $n ) || (int) $n < 1 || (int) $n > 16 ) WP_CLI::error( '--parallel takes a number from 1 to 16' );
+		return (int) $n;
+	}
 	private function forget_status() { delete_transient( 'ixes_status_report' ); }
 	private function scope( $assoc, array $env ) {
 		global $wpdb;
@@ -219,10 +224,16 @@ class IXES_CLI {
 	 *
 	 * [--backup-dir=<dir>]
 	 * : Where to write the .sql copy of every table the pull drops here. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
+	 *
+	 * [--parallel=<n>]
+	 * : File requests in flight at once, 1 to 16. Batching and parallel requests need 0.8.0 on the remote; an older one gets one file per request.
+	 * ---
+	 * default: 4
+	 * ---
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
 		$state = IXES_PullState::load( $env['name'] );
 		if ( $state ) {
@@ -236,12 +247,14 @@ class IXES_CLI {
 			);
 			if ( $why ) WP_CLI::error( "cannot resume: {$why}. Run again with --fresh to start over." );
 			WP_CLI::log( $state->describe( count( $plan['files']['transfer'] ) ) );
+			$note = IXES_Pull::transfer_note( $c, count( $plan['files']['transfer'] ) - $state->files_count(), $par );
+			if ( $note !== '' ) WP_CLI::log( $note );
 			$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
 			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
 			$progress = IXES_Progress::for_cli( $assoc );
-			$this->run_recorded( 'pull', $env['name'], IXES_Report::from_pull_plan( $plan ), function () use ( $env, $c, $plan, $state, $progress ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), $state, $progress ); $progress->end(); return $r; } );
+			$this->run_recorded( 'pull', $env['name'], IXES_Report::from_pull_plan( $plan ), function () use ( $env, $c, $plan, $state, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), $state, $progress, $par ); $progress->end(); return $r; } );
 			$this->forget_status();
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
@@ -254,6 +267,8 @@ class IXES_CLI {
 		WP_CLI::log( 'REWRITE' );
 		foreach ( $plan['pairs'] as $p ) WP_CLI::log( "  {$p[0]}  →  {$p[1]}" );
 		WP_CLI::log( 'EXCLUDED  ' . implode( ', ', $plan['excludes'] ) );
+		$note = IXES_Pull::transfer_note( $c, count( $plan['files']['transfer'] ), $par );
+		if ( $note !== '' ) WP_CLI::log( $note );
 		if ( ! empty( $assoc['details'] ) ) {
 			foreach ( [ 'transfer', 'delete' ] as $k ) {
 				$by = [];
@@ -269,7 +284,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
 		$progress = IXES_Progress::for_cli( $assoc );
-		$this->run_recorded( 'pull', $env['name'], $report, function () use ( $env, $c, $plan, $progress ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), null, $progress ); $progress->end(); return $r; } );
+		$this->run_recorded( 'pull', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), null, $progress, $par ); $progress->end(); return $r; } );
 		$this->forget_status();
 		WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 	}
@@ -395,9 +410,15 @@ class IXES_CLI {
 	 *
 	 * [--backup-dir=<dir>]
 	 * : Where the hub writes its .sql copy of every table the push drops. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
+	 *
+	 * [--parallel=<n>]
+	 * : File requests in flight at once, 1 to 16. Batching and parallel requests need 0.8.0 on the remote; an older one gets one file per request.
+	 * ---
+	 * default: 4
+	 * ---
 	 */
 	public function push( $args, $assoc ) {
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
 		$saved = null;
 		if ( ! empty( $assoc['plan'] ) ) {
@@ -426,11 +447,13 @@ class IXES_CLI {
 		$manifest = $this->show_report( $report, $assoc );
 		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
 		WP_CLI::log( "manifest: {$manifest}" );
+		$note = IXES_Pull::transfer_note( $c, count( $plan['files']['push'] ), $par, true );
+		if ( $note !== '' ) WP_CLI::log( $note );
 		if ( IXES_Planner::is_empty( $plan ) ) { WP_CLI::success( 'nothing to push' ); return; }
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
 		$progress = IXES_Progress::for_cli( $assoc );
-		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ) ); $progress->end(); return $r; } );
+		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; } );
 		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );
 		foreach ( (array) ( $r['kept_tables'] ?? [] ) as $t => $why ) WP_CLI::warning( "kept table {$t} on {$env['name']}: {$why}" );
 		if ( ! empty( $r['dropped'] ) ) WP_CLI::log( 'dropped on ' . $env['name'] . ': ' . implode( ', ', $r['dropped'] ) . "\nlocal copies:\n  " . implode( "\n  ", (array) $r['backups'] ) );
