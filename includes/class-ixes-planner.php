@@ -79,7 +79,9 @@ class IXES_Planner {
 			do {
 				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo, $bytes );
 				if ( $pk ) $local += $res['rows']; else $local = array_merge( $local, $res['rows'] );
-				if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; break; }
+				// stop early only when byte_key_skip() will drop the table: without a remote pk the
+				// diff runs keyless, and a truncated $local would miss inserts and mirror-delete the rest
+				if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; if ( $pk ) break; }
 				$next = $res['next'];
 			} while ( $next !== null );
 			$skip = self::byte_key_skip( $plan, $name, $pk, $byte_keys );
