@@ -44,7 +44,7 @@ class IXES_Pull {
 		return $manifest;
 	}
 
-	public static function plan( array $env, IXES_Client $c, IXES_Scope $scope = null ) {
+	public static function plan( array $env, IXES_Client $c, ?IXES_Scope $scope = null ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
@@ -165,7 +165,7 @@ class IXES_Pull {
 	 * @param IXES_PullState|null $state  null = fresh pull; an instance = resume from it (plan must be the saved one)
 	 * @param IXES_Progress|null  $progress  null = one line per table/file through $log
 	 */
-	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, IXES_Progress $progress = null ) {
+	public static function run( array $env, IXES_Client $c, array $plan, callable $log, $state = null, ?IXES_Progress $progress = null ) {
 		global $wpdb;
 		$progress = $progress ?: new IXES_Progress( 'verbose', $log );
 		$pairs = $plan['pairs'];
@@ -206,7 +206,7 @@ class IXES_Pull {
 			}
 			$pk = $t['pk'];
 			$row_err = null;
-			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'from' => $from ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, &$row_err ) {
+			$r = $c->paged( '/dump', [ 'table' => $name, 'limit' => 5000, 'from' => $from, 'bytes' => IXES_Transfer::DUMP_BYTE_BUDGET ], function ( $res ) use ( $name, $pairs, $hash_pairs, $bl, $pk, $plan, $state, &$row_err ) {
 				if ( $row_err ) return;
 				$ins = IXES_Transfer::import_rows( $name, $res['rows'], $pairs, (bool) $pk );
 				if ( is_wp_error( $ins ) ) { $row_err = $ins; return; }

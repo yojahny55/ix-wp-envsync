@@ -12,7 +12,7 @@ class IXES_Progress {
 	private $label = ''; private $total = null; private $items_total = 0;
 	private $items = 0; private $bytes = 0; private $t0 = 0.0; private $bar = null; private $kb_ticked = 0;
 
-	public function __construct( $mode, callable $log, callable $bar_factory = null, callable $clock = null ) {
+	public function __construct( $mode, callable $log, ?callable $bar_factory = null, ?callable $clock = null ) {
 		$this->mode = $mode; $this->log = $log;
 		$this->factory = $bar_factory ?: function ( $label, $count ) { return \WP_CLI\Utils\make_progress_bar( $label, $count ); };
 		$this->clock = $clock ?: 'microtime';
