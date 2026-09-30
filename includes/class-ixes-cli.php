@@ -474,7 +474,7 @@ class IXES_CLI {
 			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
 			// no baseline says whose mu-plugins these are: they go only when --only names them
-			$plan = IXES_Mu::hold_boot( $plan, (array) ( $plan['scope']['only'] ?? [] ) );
+			$plan = IXES_Mu::hold_boot( $plan, (array) ( $plan['scope'] ?? [] ) );
 		}
 		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'push' );

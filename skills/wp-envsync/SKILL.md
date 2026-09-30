@@ -293,7 +293,7 @@ wp --path=<site> envsync env add prod --remove-exclude=cache/              # dro
 - Never pass `--yes` to a plan the user has not approved in this conversation.
 - Do not push to a `prod`-labelled environment without explicit approval in this conversation.
 - Use `--force` only for a first deploy onto a fresh install the user has confirmed. Use `--mirror` only when the user asked for the remote's extra content to be deleted.
-- A plan's `MU-PLUGINS AND DROP-INS` section lists files that load on every request, rescue included. Show it to the user before any push that has one, and ask whether each `new` row belongs on that host. A forced push holds them back unless `--only` names `mu-plugins`.
+- A plan's `MU-PLUGINS AND DROP-INS` section lists files that load on every request, rescue included. Show it to the user before any push that has one, and ask whether each `new` row belongs on that host. A forced push holds them back unless `--only` names `mu-plugins` or `--paths` names the drop-in.
 - Host-specific mu-plugins and plugins (Plesk WP Toolkit, Imunify, WP Engine, Kinsta and others; `env excludes` lists them) are excluded by default. Only `--remove-exclude` one when the user asks and the target runs on that same host.
 - A plan's `DROP TABLES` section drops whole tables (checked, copied to `--backup-dir` and kept for rollback first). Show it to the user before any push or pull that has one. Use `--drop-tables` only for tables the user named.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.

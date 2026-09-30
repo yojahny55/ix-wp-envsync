@@ -172,17 +172,23 @@ class IXES_Mu {
 	 * A forced push (no baseline) sends mu-plugins and drop-ins only when --only names mu-plugins:
 	 * the rest of the site can be rolled back, a crashing mu-plugin takes rollback down with it.
 	 */
-	public static function hold_boot( array $plan, array $only ) {
-		if ( in_array( 'mu-plugins', $only, true ) ) return $plan;
-		$held = 0;
+	public static function hold_boot( array $plan, array $scope ) {
+		// --only=mu-plugins, or files the user named one by one with --paths: what they asked for
+		if ( in_array( 'mu-plugins', (array) ( $scope['only'] ?? [] ), true ) || ! empty( $scope['paths'] ) ) return $plan;
+		$mu = 0; $dropins = [];
 		foreach ( [ 'push', 'delete' ] as $k ) {
 			$keep = [];
 			foreach ( $plan['files'][ $k ] as $rel ) {
-				if ( self::is_boot_path( $rel ) ) { $held++; unset( $plan['remote_file_hashes'][ $rel ] ); } else $keep[] = $rel;
+				if ( ! self::is_boot_path( $rel ) ) { $keep[] = $rel; continue; }
+				unset( $plan['remote_file_hashes'][ $rel ] );
+				if ( in_array( $rel, self::DROPINS, true ) ) $dropins[ $rel ] = true; else $mu++;
 			}
 			$plan['files'][ $k ] = $keep;
 		}
-		if ( $held ) $plan['warnings'][] = "held back {$held} mu-plugin/drop-in file(s): a forced push sends them only with --only naming mu-plugins (e.g. --only=mu-plugins, after checking each one works on this host)";
+		$how = [];
+		if ( $mu ) $how[] = "{$mu} mu-plugin file(s) with --only=mu-plugins";
+		if ( $dropins ) $how[] = 'the drop-ins with --paths=' . implode( ',', array_keys( $dropins ) );
+		if ( $how ) $plan['warnings'][] = 'held back: a forced push sends mu-plugins and drop-ins only when asked. Check each one works on this host, then push ' . implode( ', and ', $how );
 		return $plan;
 	}
 
@@ -192,6 +198,10 @@ class IXES_Mu {
 	public static function write_key( $storage, $token, $allow_http ) {
 		$body = json_encode( [ 'sha256' => hash( 'sha256', (string) $token ), 'allow_http' => (bool) $allow_http ] );
 		$f = $storage . '/' . self::KEY_FILE;
+		// a storage folder left from an older suffix must not keep an older token working
+		foreach ( glob( dirname( $storage ) . '/envsync-*/' . self::KEY_FILE ) ?: [] as $old ) {
+			if ( realpath( dirname( $old ) ) !== realpath( $storage ) ) @unlink( $old );
+		}
 		if ( is_file( $f ) && file_get_contents( $f ) === $body ) return false;
 		return file_put_contents( $f, $body ) !== false;
 	}
@@ -281,19 +291,25 @@ class IXES_Mu {
 
 	/**
 	 * Move a push's staged mu-plugins and drop-ins into place, folders before their loaders.
-	 * $each( $rel ) runs before each move (the applier records what the push created).
+	 * $each( $rel ) runs before each move. $deletes: boot paths the push deletes, held back until now so an
+	 * old loader never runs without the file it requires; they go after the moves, loaders first.
 	 * @return true|WP_Error
 	 */
-	public static function commit_staged( $stage, $content_dir, ?callable $each = null ) {
-		if ( ! is_dir( $stage ) ) return true;
+	public static function commit_staged( $stage, $content_dir, ?callable $each = null, array $deletes = [] ) {
 		$rels = [];
-		foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $stage, FilesystemIterator::SKIP_DOTS ) ) as $f ) {
-			if ( $f->isFile() && substr( $f->getFilename(), -9 ) !== '.ixes-tmp' ) $rels[] = str_replace( '\\', '/', substr( $f->getPathname(), strlen( $stage ) + 1 ) );
+		if ( is_dir( $stage ) ) {
+			foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $stage, FilesystemIterator::SKIP_DOTS ) ) as $f ) {
+				if ( $f->isFile() && substr( $f->getFilename(), -9 ) !== '.ixes-tmp' ) $rels[] = str_replace( '\\', '/', substr( $f->getPathname(), strlen( $stage ) + 1 ) );
+			}
 		}
 		sort( $rels, SORT_STRING );
 		foreach ( self::boot_last( $rels ) as $rel ) {
 			if ( $each ) $each( $rel );
 			if ( ! self::move( $stage . '/' . $rel, $content_dir . '/' . $rel ) ) return new WP_Error( 'io', "cannot move staged {$rel} into place" );
+		}
+		foreach ( self::loaders_first( $deletes ) as $rel ) {
+			$rel = self::safe( $rel );
+			if ( $rel !== null && self::is_boot_path( $rel ) && is_file( $content_dir . '/' . $rel ) ) @unlink( $content_dir . '/' . $rel );
 		}
 		self::rrmdir( $stage );
 		return true;

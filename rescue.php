@@ -36,7 +36,9 @@ if ( ( $ixes_p['action'] ?? '' ) === 'quarantine_mu' ) {
 	require_once __DIR__ . '/includes/class-ixes-mu.php';
 	// wp-content is two levels above this plugin's folder, as served (a symlinked plugin resolves to the site through SCRIPT_FILENAME)
 	$ixes_content = dirname( isset( $_SERVER['SCRIPT_FILENAME'] ) ? $_SERVER['SCRIPT_FILENAME'] : __FILE__, 3 );
-	$ixes_https = ( ! empty( $_SERVER['HTTPS'] ) && strtolower( (string) $_SERVER['HTTPS'] ) !== 'off' ) || (string) ( $_SERVER['SERVER_PORT'] ?? '' ) === '443';
+	// wp-config is not read here, so a proxy that ends TLS (Docker, Coolify) is taken at its word; the request is HMAC-signed anyway
+	$ixes_https = ( ! empty( $_SERVER['HTTPS'] ) && strtolower( (string) $_SERVER['HTTPS'] ) !== 'off' ) || (string) ( $_SERVER['SERVER_PORT'] ?? '' ) === '443'
+		|| strtolower( (string) ( $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '' ) ) === 'https';
 	$ixes_auth = (string) ( $_SERVER['HTTP_AUTHORIZATION'] ?? ( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '' ) );
 	list( $ixes_token ) = IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ?? '' ) );
 	if ( $ixes_token === '' ) $ixes_bare( 401, [ 'message' => 'missing token' ] );

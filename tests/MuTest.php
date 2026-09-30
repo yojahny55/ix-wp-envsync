@@ -101,12 +101,17 @@ class MuTest extends TestCase {
 
 	public function test_forced_push_holds_back_boot_files_unless_only_names_mu_plugins() {
 		$plan = [ 'files' => [ 'push' => [ 'uploads/a.jpg', 'mu-plugins/x.php', 'db.php' ], 'delete' => [ 'mu-plugins/y.php', 'uploads/b.jpg' ] ], 'remote_file_hashes' => [ 'mu-plugins/x.php' => null, 'mu-plugins/y.php' => 'h', 'uploads/b.jpg' => 'h' ], 'warnings' => [] ];
-		$held = IXES_Mu::hold_boot( $plan, [ 'files' ] );
+		$held = IXES_Mu::hold_boot( $plan, [ 'only' => [ 'files' ], 'paths' => [] ] );
 		$this->assertSame( [ 'uploads/a.jpg' ], $held['files']['push'] );
 		$this->assertSame( [ 'uploads/b.jpg' ], $held['files']['delete'] );
 		$this->assertArrayNotHasKey( 'mu-plugins/x.php', $held['remote_file_hashes'] );
-		$this->assertStringContainsString( '--only=mu-plugins', end( $held['warnings'] ) );
-		$this->assertSame( $plan, IXES_Mu::hold_boot( $plan, [ 'files', 'mu-plugins' ] ) );
+		$w = end( $held['warnings'] );
+		$this->assertStringContainsString( '--only=mu-plugins', $w );
+		// drop-ins sit outside mu-plugins/: the warning names them for --paths
+		$this->assertStringContainsString( '--paths=db.php', $w );
+		$this->assertSame( $plan, IXES_Mu::hold_boot( $plan, [ 'only' => [ 'files', 'mu-plugins' ], 'paths' => [] ] ) );
+		// files the user named one by one are what they asked for
+		$this->assertSame( $plan, IXES_Mu::hold_boot( $plan, [ 'only' => [ 'files' ], 'paths' => [ 'db.php' ] ] ) );
 		$none = [ 'files' => [ 'push' => [ 'uploads/a.jpg' ], 'delete' => [] ], 'remote_file_hashes' => [], 'warnings' => [] ];
 		$this->assertSame( $none, IXES_Mu::hold_boot( $none, [] ) );
 	}
@@ -118,6 +123,14 @@ class MuTest extends TestCase {
 		$this->assertSame( [ 'allow_http' => false ], IXES_Mu::key_matches( $this->tmp, $token ) );
 		$this->assertNull( IXES_Mu::key_matches( $this->tmp, str_repeat( 'cd', 32 ) ) );
 		$this->assertStringNotContainsString( $token, file_get_contents( $this->tmp . '/' . IXES_Mu::KEY_FILE ) );
+	}
+
+	public function test_writing_a_key_drops_keys_left_in_other_storage_folders() {
+		$token = str_repeat( 'ab', 32 );
+		mkdir( $this->tmp . '/envsync-aaaaaaaaaaaaaaaa' ); mkdir( $this->tmp . '/envsync-bbbbbbbbbbbbbbbb' );
+		IXES_Mu::write_key( $this->tmp . '/envsync-aaaaaaaaaaaaaaaa', $token, false );
+		IXES_Mu::write_key( $this->tmp . '/envsync-bbbbbbbbbbbbbbbb', str_repeat( 'cd', 32 ), false );
+		$this->assertFileDoesNotExist( $this->tmp . '/envsync-aaaaaaaaaaaaaaaa/' . IXES_Mu::KEY_FILE );
 	}
 
 	public function test_bare_auth_checks_key_https_clock_and_signature() {
@@ -176,9 +189,14 @@ class MuTest extends TestCase {
 		$this->put( 'stage/mu-plugins/x/a.php', 'a' );
 		$this->put( 'mu-plugins/x.php', 'old' );
 		$order = [];
-		$r = IXES_Mu::commit_staged( $stage, $this->tmp . '/live', function ( $rel ) use ( &$order ) { $order[] = $rel; } );
+		$this->put( 'live/mu-plugins/x/old.php', 'renamed away' );
+		$this->put( 'live/mu-plugins/gone.php', 'loader' );
+		$r = IXES_Mu::commit_staged( $stage, $this->tmp . '/live', function ( $rel ) use ( &$order ) { $order[] = $rel; }, [ 'mu-plugins/x/old.php', 'mu-plugins/gone.php', '../escape.php' ] );
 		$this->assertTrue( $r );
 		$this->assertSame( [ 'mu-plugins/x/a.php', 'mu-plugins/x.php' ], $order );
+		// deletes wait for the commit too, so the old loader never runs without the file it requires
+		$this->assertFileDoesNotExist( $this->tmp . '/live/mu-plugins/x/old.php' );
+		$this->assertFileDoesNotExist( $this->tmp . '/live/mu-plugins/gone.php' );
 		$this->assertSame( 'loader', file_get_contents( $this->tmp . '/live/mu-plugins/x.php' ) );
 		$this->assertDirectoryDoesNotExist( $stage );
 		$this->assertTrue( IXES_Mu::commit_staged( $this->tmp . '/none', $this->tmp . '/live' ) );

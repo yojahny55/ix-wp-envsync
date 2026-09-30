@@ -225,9 +225,9 @@ What `--force` does when there is no baseline:
 | Only on local | Inserted on the remote |
 | On both sides, different | **Local overwrites the remote** |
 | Only on the remote | Kept. Nothing is deleted, unless you add `--mirror` |
-| A mu-plugin or drop-in | **Held back**, unless `--only` names `mu-plugins` |
+| A mu-plugin or drop-in | **Held back**, unless `--only` names `mu-plugins` or `--paths` names the file |
 
-Mu-plugins and drop-ins load on every request, rescue included, so a forced push leaves them out and says how many it held back. Check that each one belongs on the new host, then send them on their own: `wp envsync push prod --force --only=mu-plugins` (drop-ins travel with that too).
+Mu-plugins and drop-ins load on every request, rescue included, so a forced push leaves them out and its warning names what it held back. Check that each one belongs on the new host, then send them on their own: `wp envsync push prod --force --only=mu-plugins` for mu-plugins, `--paths=object-cache.php` (and so on) for drop-ins, which live outside `mu-plugins/`.
 
 ### Replacing what the remote already has: `--mirror`
 
@@ -521,7 +521,7 @@ Must-use plugins (`mu-plugins/`) and drop-ins (`db.php`, `object-cache.php`, `su
 
 - The plan lists them in their own **MU-PLUGINS AND DROP-INS** section, one row per file or top-level folder, marked `new`, `changed` or `delete`, and warns whenever a push sends one. The JSON manifest carries the same rows as `mu_plugins[]` (`slug`, `files`, `delete`, `bytes`, `change`).
 - A push sends them after every other file, one request at a time, each folder before the loader file that requires it. Deletes go the other way round: the loader first.
-- From 0.9.7 the remote writes them into the job's `stage/` folder and moves them into `wp-content` only at the end of the push, after the database. A push that fails half-way leaves `mu-plugins/` untouched.
+- From 0.9.7 the remote writes them into the job's `stage/` folder and moves them into `wp-content` only at the end of the push, after the database. Deletes of mu-plugins and drop-ins wait for that moment too. A push that fails half-way leaves `mu-plugins/` untouched.
 - If one still crashes the site, `wp envsync rescue <env> --quarantine-mu` moves them aside without booting WordPress (see [rescue](#wp-envsync-rescue-env)).
 
 Batches finish in any order. A pull records every file that was written and verified, not a position in the list, so an interrupted pull resumes with exactly the files that did not land.

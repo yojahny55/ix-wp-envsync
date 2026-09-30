@@ -394,6 +394,8 @@ class IXES_Applier {
 			$refused = [];
 			foreach ( (array) $p['paths'] as $rel ) {
 				if ( $expect && ! self::file_matches( $rel, $expect[ $rel ] ?? null, $algo ) ) { $refused[] = $rel; continue; }
+				// a mu-plugin or drop-in goes at job_finish, with the staged files that replace it
+				if ( IXES_Mu::is_boot_path( (string) IXES_Transfer::safe_rel( $rel ) ) ) { self::record_meta( $p['job'], 'stage_delete', (string) $rel ); continue; }
 				IXES_Transfer::delete_file( $rel );
 			}
 			return [ 'ok' => true, 'refused' => $refused ];
@@ -466,7 +468,8 @@ class IXES_Applier {
 	public static function job_finish( array $p ) {
 		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		// last of all, after every file and row: the staged mu-plugins and drop-ins land in one local step
-		$r = IXES_Mu::commit_staged( self::job_dir( $p['job'] ) . '/stage', WP_CONTENT_DIR );
+		$meta = json_decode( (string) @file_get_contents( self::job_dir( $p['job'] ) . '/meta.json' ), true );
+		$r = IXES_Mu::commit_staged( self::job_dir( $p['job'] ) . '/stage', WP_CONTENT_DIR, null, (array) ( $meta['stage_delete'] ?? [] ) );
 		if ( is_wp_error( $r ) ) return new WP_Error( $r->get_error_code(), $r->get_error_message(), [ 'status' => 500 ] );
 		wp_cache_flush(); flush_rewrite_rules();
 		self::maintenance( false );
