@@ -6,6 +6,7 @@ class IXES_Transfer {
 	// a page of dumped rows never asks for more than this many serialized bytes, on top of the row 'limit':
 	// a local MariaDB with a 16M max_allowed_packet still choked on a 5000-row page of wp_posts
 	const DUMP_BYTE_BUDGET = 4194304; // ~4 MB
+	const HASH_CHUNK = 250; // rows hash_rows() holds in memory at once
 
 	private static $max_packet = null;
 
@@ -223,22 +224,33 @@ class IXES_Transfer {
 		return false;
 	}
 
+	/**
+	 * Digests of up to $limit rows after $from_pk. Rows are read HASH_CHUNK at a time and dropped once hashed, so a
+	 * page of 5000 wp_posts rows full of revisions never sits in memory at once: that exhausted memory_limit on hosts
+	 * with a large posts table and answered /hash/tables with a 500.
+	 */
 	public static function hash_rows( $table, $from_pk, $limit, array $pairs, $algo, $bytes = false ) {
 		global $wpdb;
 		if ( ! self::valid_table( $table ) ) return new WP_Error( 'bad_table', 'unknown table', [ 'status' => 400 ] );
-		$d  = self::dump( $table, $from_pk, $limit );
-		if ( is_wp_error( $d ) ) return $d;
 		$pk = self::pk_of( $table );
 		$out = []; $byte_keys = false;
 		$is_options = ( $table === $wpdb->options );
-		foreach ( $d['rows'] as $r ) {
-			if ( $is_options && IXES_Env::option_excluded( $r['option_name'] ) ) continue;
-			$h = IXES_Hasher::hash_row( $r, $pairs, $algo, $bytes );
-			if ( $pk ) $out[ $r[ $pk ] ] = $h; else $out[] = $h;
-			if ( $pk && IXES_Hasher::is_bytes( $r[ $pk ] ) ) $byte_keys = true;
-		}
+		$limit = max( 1, (int) $limit ); $done = 0; $next = $from_pk;
+		do {
+			$n = min( self::HASH_CHUNK, $limit - $done );
+			$d = self::dump( $table, $next, $n );
+			if ( is_wp_error( $d ) ) return $d;
+			foreach ( $d['rows'] as $r ) {
+				if ( $is_options && IXES_Env::option_excluded( $r['option_name'] ) ) continue;
+				$h = IXES_Hasher::hash_row( $r, $pairs, $algo, $bytes );
+				if ( $pk ) $out[ $r[ $pk ] ] = $h; else $out[] = $h;
+				if ( $pk && IXES_Hasher::is_bytes( $r[ $pk ] ) ) $byte_keys = true;
+			}
+			$next = $d['next']; $done += $n;
+			unset( $d );
+		} while ( $next !== null && $done < $limit );
 		// a key JSON cannot carry: the hub must not compare this table by key (see IXES_Planner::build())
-		return [ 'rows' => $out, 'next' => $d['next'] ] + ( $byte_keys ? [ 'byte_keys' => true ] : [] );
+		return [ 'rows' => $out, 'next' => $next ] + ( $byte_keys ? [ 'byte_keys' => true ] : [] );
 	}
 
 	/** This plugin's own directory, relative to wp-content, with a trailing slash. */
