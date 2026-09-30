@@ -483,7 +483,7 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 Applies your changes to `<env>`. Production-changed rows are always kept.
 
 - `--dry-run`, `--yes`, `--verbose` — as above. `--format=json` with `--dry-run` prints the manifest.
-- `--plan=<file>` — apply a plan saved earlier (`diff` and `push --dry-run` print its path) without planning again. Refuses if anything changed on this site since; rows and files the remote changed since are skipped as stale. A plan saved before 0.9.11 is checked the old way: planned again, and refused if anything it covers changed on the remote.
+- `--plan=<file>` — apply a plan saved earlier (`diff` and `push --dry-run` print its path) without planning again. Refuses if anything changed on this site since, if the remote's active plugins changed, or if that plan was already pushed; rows and files the remote changed since are skipped as stale. A plan saved before 0.9.11 is checked the old way: planned again, and refused if anything it covers changed on the remote.
 - `--replan` — plan again even when the last `diff` or `--dry-run` made the same plan less than an hour ago.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
 - `--mirror` — with `--force` only. Also deletes, within the scope, the rows, files and tables only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
