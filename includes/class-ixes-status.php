@@ -10,7 +10,7 @@ class IXES_Status {
 	const BASELINE_OLD_DAYS = 7;
 	// ponytail: a fresh install has 3-4 wp_posts rows (Hello world, Sample page, Privacy policy, an auto-draft); any real site has far more. Check users too if this ever misfires.
 	const FRESH_MAX_POSTS = 5;
-	// rule order (the contract above): unconfigured, remote_only, crashing (500), unreachable, old_remote, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
+	// rule order (the contract above): unconfigured, remote_only, crashing (500), unreachable, old_remote, running, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
 	// admin page renders this synchronously on a cache miss, so a dead remote must fail fast and stay under wp-admin's max_execution_time
 	const INFO_TIMEOUT = 10;
 
@@ -29,8 +29,9 @@ class IXES_Status {
 				$s = IXES_PullState::load( $name );
 				if ( ! $s ) return null;
 				$plan = is_file( (string) $s->get( 'plan' ) ) ? json_decode( file_get_contents( $s->get( 'plan' ) ), true ) : null;
-				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->files_count(), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null ];
+				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->files_count(), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null, 'scope' => is_array( $plan ) ? (array) ( $plan['scope'] ?? [] ) : [] ];
 			},
+			'running'       => function ( $name ) { return IXES_Progress::running( $name ); },
 		];
 	}
 
@@ -67,7 +68,7 @@ class IXES_Status {
 	private static function env_facts( array $env, callable $info_for, array $ctx ) {
 		$now = $ctx['now'];
 		$e = [ 'url' => $env['url'], 'label' => $env['label'] ?? '', 'reachable' => false, 'error' => null, 'remote_version' => null, 'version_ok' => null, 'auth_via' => null,
-			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'self_update' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
+			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'self_update' => null, 'running_job' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
 		$info = $info_for( $env );
 		if ( is_wp_error( $info ) ) { $e['error'] = $info->get_error_message(); }
 		else {
@@ -90,6 +91,7 @@ class IXES_Status {
 		$b = $ctx['baseline']( $env['name'] );
 		$e['baseline'] = $b + [ 'age_days' => $b['created_at'] ? (int) floor( ( $now - $b['created_at'] ) / 86400 ) : null ];
 		$e['interrupted_pull'] = $ctx['pull_state']( $env['name'] );
+		$e['running_job'] = $ctx['running']( $env['name'] );
 		return $e;
 	}
 
@@ -103,10 +105,16 @@ class IXES_Status {
 			if ( $e['self_update'] === 'on' ) return $cmd( "wp envsync self-update {$name}", $why );
 			return $cmd( "upload the release zip to {$env['url']}", $why . ( $e['self_update'] === 'off' ? '; self-update is turned off there' : '' ) );
 		}
+		// a long push holds the remote lock past LOCK_STALE_MIN while it runs: never tell anyone to unlock it
+		if ( $j = $e['running_job'] ) return $cmd( '', "a {$j['kind']} is running from this hub ({$j['phase']}); wait for it" );
 		$lock = $e['remote_lock'];
 		if ( $lock && ( $lock['age_minutes'] === null || $lock['age_minutes'] >= self::LOCK_STALE_MIN ) ) return $cmd( "wp envsync unlock {$name}", 'a push started ' . ( $lock['age_minutes'] === null ? 'some time' : $lock['age_minutes'] . ' minutes' ) . ' ago never finished' );
-		if ( $e['interrupted_pull'] ) return $cmd( "wp envsync pull {$name}", 'an interrupted pull can be resumed (or start over with --fresh)' );
-		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" );
+		if ( $e['interrupted_pull'] ) {
+			// a resume keeps the interrupted pull's own scope, not the environment's default: say which
+			$sc = IXES_Scope::from_array( (array) ( $e['interrupted_pull']['scope'] ?? [] ), '' );
+			return $cmd( "wp envsync pull {$name}" . $sc->flags(), 'an interrupted pull can be resumed with its scope (' . $sc->label() . '), or start over with --fresh' );
+		}
+		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" . ( $e['remote_posts'] > 0 ? '; what only it has stays unless you add --mirror' : '' ) );
 		if ( empty( $e['baseline']['created_at'] ) ) return $cmd( "wp envsync pull {$name}", 'no baseline: pull before any push' );
 		if ( $e['baseline']['age_days'] >= self::BASELINE_OLD_DAYS ) return $cmd( "wp envsync diff {$name}", "baseline is {$e['baseline']['age_days']} days old; consider pulling first" );
 		return $cmd( "wp envsync diff {$name}", 'ready' );
@@ -138,6 +146,11 @@ class IXES_Status {
 			if ( $b['partial_at'] ) $line .= ' · partial ' . $d( $b['partial_at'] ) . " ({$b['partial_scope']})";
 			$o[] = $line;
 			if ( $p = $e['interrupted_pull'] ) $o[] = '  interrupted pull: started ' . $d( $p['started'] ) . ( $p['table'] ? ", stopped in {$p['table']}" : ', tables done' ) . ", {$p['files_done']}/" . ( $p['files_total'] ?? '?' ) . ' files';
+			if ( $j = $e['running_job'] ) {
+				$what = $j['phase'] === 'files' ? "files {$j['files_done']}/{$j['files_total']} (" . IXES_Report::size( $j['bytes_done'] ) . ' / ' . IXES_Report::size( $j['bytes_total'] ) . ')'
+					: ( $j['phase'] === 'db' ? "tables {$j['tables_done']}/{$j['tables_total']}" : $j['phase'] );
+				$o[] = "  running: {$j['kind']}, {$what}, updated " . max( 0, time() - (int) $j['updated'] ) . 's ago';
+			}
 			if ( $l = $e['remote_lock'] ) $o[] = "  lock: job {$l['job']}, " . ( $l['age_minutes'] === null ? 'unknown age' : "{$l['age_minutes']} min old" );
 			$o[] = '';
 		}

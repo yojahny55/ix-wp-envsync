@@ -68,4 +68,12 @@ class AuthTest extends TestCase {
 		$this->assertSame( hash_hmac( 'sha256', $msg, $this->tok ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '' ) );
 		$this->assertSame( hash_hmac( 'sha256', $msg . "\nstep", $this->tok ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', 'step' ) );
 	}
+
+	public function test_exclude_options_are_signed() {
+		$sig = IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '', 'imunify_*' );
+		$this->assertTrue( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '', 'imunify_*' ) );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '', '' ), 'header stripped' );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '', '*' ), 'header widened' );
+		$this->assertSame( IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b' ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '', '' ), 'no excludes keeps the old signature' );
+	}
 }

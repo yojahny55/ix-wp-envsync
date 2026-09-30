@@ -89,6 +89,12 @@ class StatusTest extends TestCase {
 		$this->assertSame( 'wp envsync pull prod', $n['command'] );
 		$this->assertStringContainsString( 'resume', $n['why'] );
 	}
+	public function test_interrupted_pull_names_its_scope_in_the_command() {
+		$ctx = $this->ctx( [ 'pull_state' => function () { return [ 'started' => $this->now - 600, 'table' => 'wp_posts', 'cursor' => 10, 'files_done' => 0, 'files_total' => 0, 'scope' => [ 'only' => [ 'db' ], 'tables' => [ 'posts', 'postmeta' ], 'paths' => [] ] ]; } ] );
+		$n = $this->next( $ctx, $this->info() );
+		$this->assertSame( 'wp envsync pull prod --tables=posts,postmeta', $n['command'] );
+		$this->assertStringContainsString( 'tables posts,postmeta', $n['why'] );
+	}
 	public function test_no_baseline() {
 		$ctx = $this->ctx( [ 'baseline' => function () { return [ 'created_at' => null, 'partial_at' => null, 'partial_scope' => null ]; } ] );
 		$n = $this->next( $ctx, $this->info() );
@@ -101,6 +107,7 @@ class StatusTest extends TestCase {
 		$n = $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) );
 		$this->assertSame( 'wp envsync push prod --force --dry-run', $n['command'] );
 		$this->assertStringContainsString( 'fresh install (3 posts)', $n['why'] );
+		$this->assertStringContainsString( 'what only it has stays unless you add --mirror', $n['why'], 'the remote has content of its own (#46)' );
 		$tables[0]['rows'] = 400;
 		$this->assertSame( 'wp envsync pull prod', $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) )['command'] );
 	}
@@ -132,5 +139,21 @@ class StatusTest extends TestCase {
 		$t = IXES_Status::render_text( $r );
 		$this->assertStringContainsString( 'prod  https://p.test  (prod)', $t );
 		$this->assertStringContainsString( 'Next: wp envsync diff prod', $t );
+	}
+
+	public function test_running_job_is_reported_per_env() {
+		$run = [ 'kind' => 'push', 'env' => 'prod', 'phase' => 'files', 'files_done' => 3, 'files_total' => 10, 'bytes_done' => 1024, 'bytes_total' => 4096, 'tables_done' => 0, 'tables_total' => 0, 'updated' => $this->now - 5 ];
+		$r = IXES_Status::build( null, $this->info(), $this->ctx( [ 'running' => function ( $n ) use ( $run ) { return $n === 'prod' ? $run : null; } ] ) );
+		$this->assertSame( $run, $r['envs']['prod']['running_job'] );
+		$this->assertStringContainsString( 'running: push, files 3/10', IXES_Status::render_text( $r ) );
+		$r = IXES_Status::build( null, $this->info(), $this->ctx( [ 'running' => function () { return null; } ] ) );
+		$this->assertNull( $r['envs']['prod']['running_job'] );
+	}
+
+	public function test_a_running_push_is_not_a_stale_lock() {
+		$ctx = $this->ctx( [ 'running' => function () { return [ 'kind' => 'push', 'phase' => 'db', 'tables_done' => 1, 'tables_total' => 4, 'updated' => $this->now ]; } ] );
+		$n = $this->next( $ctx, $this->info( [ 'lock' => [ 'job' => 'j1', 'started' => $this->now - 1200 ] ] ) );
+		$this->assertSame( '', $n['command'] );
+		$this->assertStringContainsString( 'push is running', $n['why'] );
 	}
 }

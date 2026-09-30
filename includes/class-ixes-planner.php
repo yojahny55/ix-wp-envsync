@@ -12,7 +12,7 @@ class IXES_Planner {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
-		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix );
+		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix ) ?: IXES_Env::option_globs_refusal( $env, $info );
 		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$bl   = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
@@ -25,14 +25,17 @@ class IXES_Planner {
 		if ( $mirror && ! $two_way ) return new WP_Error( 'mirror_baseline', "--mirror is only for a first deploy: {$env['name']} has a baseline, so what only it has is its own work and stays" );
 
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
-		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		$local_pairs = self::local_pairs( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local, (string) $info['url'], (string) ( $info['abspath'] ?? '' ), $extra_prod );
 		$ex = IXES_Pull::excludes( $env );
 		// both sides hash byte cells as raw bytes only when the remote can and the baseline agrees; otherwise as before
 		$caps  = (array) ( $info['caps'] ?? [] );
 		$bytes = IXES_Hasher::bytes_mode( $caps, ! $two_way, $two_way ? null : $bl->meta( 'bytes_hash' ) );
 		$cells = $bytes ? [ 'cells' => 1 ] : [];
 		$byte_warn = in_array( IXES_Hasher::CAP, $caps, true ) && ! $bytes ? [ "the {$env['name']} baseline predates 0.9.3: rows with binary cells are compared as before until the next pull" ] : [];
-		$plan = [ 'bytes_hash' => $bytes, 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror, 'drop_tables' => [], 'kept_tables' => [] ];
+		// hub_version .. local: what a later push checks before it reuses this plan instead of building it again (reuse_refusal(), local_change())
+		// remote_active_plugins: the push writes active_plugins without any check on the remote, so a reuse needs the list it merged
+		$plan = [ 'hub_version' => IXES_VERSION, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'remote_active_plugins' => array_values( (array) ( $info['active_plugins'] ?? [] ) ), 'env_key' => self::env_key( $env ), 'local' => [ 'tables' => [], 'files' => null, 'local_only' => [] ],
+			'bytes_hash' => $bytes, 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror, 'drop_tables' => [], 'kept_tables' => [] ];
 		$mirror_warn = [];
 
 		// tables only this site has (a plugin's own tables on a first deploy): the push creates them, then fills them
@@ -40,6 +43,7 @@ class IXES_Planner {
 		$remote_names = array_column( $info['tables'], 'name' );
 		foreach ( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) as $name ) {
 			if ( strpos( $name, $wpdb->prefix . 'ixes_' ) === 0 || in_array( $name, $remote_names, true ) || ! $scope->table_in( $name ) ) continue;
+			$plan['local']['local_only'][] = $name;
 			$create = $wpdb->get_row( "SHOW CREATE TABLE `{$name}`", ARRAY_N );
 			if ( ! $create ) continue;
 			$plan['new_tables'][ $name ] = $create[1];
@@ -75,15 +79,9 @@ class IXES_Planner {
 				} );
 				if ( is_wp_error( $r ) ) return $r;
 			}
-			$local = []; $next = null;
-			do {
-				$res = IXES_Transfer::hash_rows( $name, $next, 5000, $local_pairs, $algo, $bytes );
-				if ( $pk ) $local += $res['rows']; else $local = array_merge( $local, $res['rows'] );
-				// stop early only when byte_key_skip() will drop the table: without a remote pk the
-				// diff runs keyless, and a truncated $local would miss inserts and mirror-delete the rest
-				if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; if ( $pk ) break; }
-				$next = $res['next'];
-			} while ( $next !== null );
+			$local = self::local_rows( $name, $pk, $local_pairs, $algo, $bytes, $byte_keys );
+			if ( is_wp_error( $local ) ) return $local;
+			$plan['local']['tables'][ $name ] = [ 'pk' => $pk, 'digest' => self::digest( $local ) ];
 			$skip = self::byte_key_skip( $plan, $name, $pk, $byte_keys );
 			if ( $skip !== null ) { $byte_warn[] = $skip; continue; }
 
@@ -98,7 +96,7 @@ class IXES_Planner {
 					foreach ( $d['conflict'] as $id ) $plan['conflict_detail'][ $name ][ $id ] = (string) $wpdb->get_var( $wpdb->prepare( "SELECT post_title FROM {$wpdb->posts} WHERE ID = %d", $id ) );
 				}
 			} else {
-				$d = [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'set_insert' => IXES_Differ::diff_set( $local, $remote )['insert'] ];
+				$d = [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'same' => count( array_intersect( $local, $remote ) ), 'set_insert' => IXES_Differ::diff_set( $local, $remote )['insert'] ];
 				// no primary key: --mirror deletes by row hash, which needs a remote that knows the delete_set step
 				if ( $mirror ) {
 					$gone = array_values( array_unique( array_diff( $remote, $local ) ) );
@@ -109,8 +107,21 @@ class IXES_Planner {
 			if ( $name === $wpdb->options ) {
 				$base_ap = $two_way ? [] : self::option_from_baseline_or_local( 'active_plugins', $bl );
 				$remote_ap = (array) ( $info['active_plugins'] ?? [] );
-				$merged = IXES_Differ::merge_active_plugins( $base_ap, (array) get_option( 'active_plugins', [] ), $remote_ap );
+				if ( ! empty( $env['exclude_options'] ) ) {
+					$n = 0;
+					foreach ( $wpdb->get_col( "SELECT option_name FROM {$wpdb->options}" ) as $o ) {
+						foreach ( (array) $env['exclude_options'] as $g ) if ( fnmatch( $g, $o ) ) { $n++; break; }
+					}
+					$plan['options_excluded'] = [ $name => $n ];
+				}
+				$local_ap = (array) get_option( 'active_plugins', [] );
+				// a plugin whose folder is excluded there is that host's own: the remote keeps its activation state
+				$pinned = IXES_Differ::excluded_plugins( array_merge( $base_ap, $local_ap, $remote_ap ), $ex );
+				$merged = IXES_Differ::merge_active_plugins( $base_ap, $local_ap, $remote_ap, $pinned );
 				if ( array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
+				$plan['active_plugins_excluded'] = array_values( array_filter( $pinned, function ( $p ) use ( $local_ap, $remote_ap ) {
+					return in_array( $p, $local_ap, true ) !== in_array( $p, $remote_ap, true );
+				} ) );
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] || ! empty( $d['set_delete'] ) ) $plan['tables'][ $name ] = $d;
 		}
@@ -125,13 +136,150 @@ class IXES_Planner {
 			if ( is_wp_error( $r ) ) return $r;
 			$remote_files = self::in_scope( IXES_Pull::drop_excluded( $remote_files, $ex ), $scope );
 			$local_files  = self::in_scope( IXES_Transfer::local_manifest( $ex, $algo, $scope->roots() ), $scope );
+			$plan['local']['files'] = self::digest( $local_files );
 			$base_files   = $two_way ? [] : self::in_scope( $bl->files(), $scope );
 			$fd = IXES_Differ::diff( $base_files, $local_files, $remote_files );
 			if ( $mirror ) $fd = IXES_Differ::mirror( $fd, $local_files, $remote_files );
 			$plan['files'] = [ 'push' => array_merge( $fd['push'], $fd['insert'] ), 'delete' => $fd['delete'], 'conflict' => $fd['conflict'], 'kept' => $fd['kept'] ];
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
+			// only after env add --remove-exclude took a host's own path back into the sync
+			$plan['warnings'] = array_merge( $plan['warnings'], IXES_Mu::host_warnings( $plan['files']['push'], $plan['remote_file_hashes'], $env['name'] ) );
 		}
 		return $plan;
+	}
+
+	/** Local row hashes of $name; $byte_keys turns true when its key holds bytes JSON cannot carry. */
+	private static function local_rows( $name, $pk, array $pairs, $algo, $bytes, &$byte_keys ) {
+		$local = []; $next = null;
+		do {
+			$res = IXES_Transfer::hash_rows( $name, $next, 5000, $pairs, $algo, $bytes );
+			if ( is_wp_error( $res ) ) return $res;
+			if ( $pk ) $local += $res['rows']; else $local = array_merge( $local, $res['rows'] );
+			// stop early only when byte_key_skip() will drop the table: without a remote pk the
+			// diff runs keyless, and a truncated $local would miss inserts and mirror-delete the rest
+			if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; if ( $pk ) break; }
+			$next = $res['next'];
+		} while ( $next !== null );
+		return $local;
+	}
+
+	// a dry run's plan is reused by the push that follows it for this long; the applier re-checks every remote row and file it touches anyway
+	const REUSE_MAX_MIN = 60;
+
+	/** A stable fingerprint of $value; serialize() only feeds md5 here, nothing is ever unserialized. */
+	private static function digest( $value ) {
+		return md5( serialize( $value ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- hashed, never unserialized
+	}
+
+	/** The environment settings a plan depends on: a change to any of them means planning again. */
+	public static function env_key( array $env ) {
+		return self::digest( [ (string) $env['url'], IXES_Pull::excludes( $env ), IXES_Env::extras( $env ), (array) ( $env['exclude_options'] ?? [] ) ] );
+	}
+
+	/**
+	 * Why $saved cannot stand in for a plan built now with $want (scope, mirror, drop, env_key, baseline_at,
+	 * remote_version, algo), or null when it can. The local side is checked apart, by local_change().
+	 */
+	public static function reuse_refusal( array $saved, array $want, $now, $max_secs = self::REUSE_MAX_MIN * 60 ) {
+		if ( empty( $saved['local'] ) ) return 'the plan is older than this hub and records no local fingerprint';
+		if ( ( $saved['hub_version'] ?? '' ) !== IXES_VERSION ) return "the plan was made by hub {$saved['hub_version']}, this hub runs " . IXES_VERSION;
+		$secs = $now - (int) $saved['created'];
+		if ( $secs > $max_secs ) return 'the plan is ' . (int) floor( $secs / 60 ) . ' min old';
+		if ( (array) $saved['scope'] != (array) $want['scope'] ) return 'the plan was made with another scope';
+		if ( ! empty( $saved['mirror'] ) !== ! empty( $want['mirror'] ) ) return 'the plan was made ' . ( empty( $saved['mirror'] ) ? 'without' : 'with' ) . ' --mirror';
+		$asked = array_keys( array_filter( (array) ( $saved['drop_tables'] ?? [] ), function ( $d ) { return ( $d['why'] ?? '' ) === 'asked'; } ) );
+		$drop = (array) $want['drop']; sort( $asked ); sort( $drop );
+		if ( $asked !== $drop ) return 'the plan was made with other --drop-tables';
+		if ( ( $saved['env_key'] ?? '' ) !== $want['env_key'] ) return "the {$saved['env']} environment settings changed since";
+		if ( ( $saved['baseline_at'] ?? null ) != $want['baseline_at'] ) return 'the baseline changed since';
+		if ( ( $saved['remote_version'] ?? '' ) !== (string) $want['remote_version'] ) return "the remote now runs {$want['remote_version']}";
+		if ( ( $saved['algo'] ?? '' ) !== $want['algo'] ) return 'the hash algo changed';
+		if ( ! isset( $saved['remote_active_plugins'] ) || array_values( (array) $saved['remote_active_plugins'] ) !== array_values( (array) $want['remote_active_plugins'] ) ) return "the active plugins on {$saved['env']} changed since";
+		// rows of a table without a primary key go up with nothing to check them against: a second push would insert them twice
+		$applied = (array) get_option( 'ixes_applied_plans', [] );
+		$stamp = self::stamp( $saved );
+		if ( isset( $applied[ $stamp ] ) ) return "that plan was already pushed (job {$applied[ $stamp ]})";
+		return null;
+	}
+
+	private static function stamp( array $plan ) { return $plan['env'] . '@' . (int) $plan['created']; }
+
+	/** Records that $plan went up as $job, so reuse_refusal() never lets it go up again. */
+	public static function mark_applied( array $plan, $job ) {
+		$applied = (array) get_option( 'ixes_applied_plans', [] );
+		$applied[ self::stamp( $plan ) ] = (string) $job;
+		update_option( 'ixes_applied_plans', array_slice( $applied, -50, null, true ), false );
+	}
+
+	/** What a plan built now with these flags would be checked against, for reuse_refusal(). One /info call, which the client keeps. */
+	public static function want( array $env, IXES_Client $c, IXES_Scope $scope, $mirror, array $drop ) {
+		global $wpdb;
+		$info = $c->info();
+		if ( is_wp_error( $info ) ) return $info;
+		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix );
+		if ( $refused ) return $refused;
+		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
+		return [ 'scope' => $scope->to_array(), 'mirror' => (bool) $mirror, 'drop' => $drop, 'env_key' => self::env_key( $env ),
+			'baseline_at' => $bl->exists() ? $bl->meta( 'created_at' ) : null, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'algo' => IXES_Hasher::algo( $info['algos'] ),
+			'remote_active_plugins' => array_values( (array) ( $info['active_plugins'] ?? [] ) ) ];
+	}
+
+	/** What changed on this side since $plan was built, or null. Hashes the local rows and files again; asks the remote nothing. */
+	public static function local_change( array $plan, array $env ) {
+		global $wpdb;
+		if ( empty( $plan['local'] ) ) return 'the plan is older than this hub and records no local fingerprint';
+		$scope = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), $wpdb->prefix );
+		$remote_names = array_keys( array_diff_key( $plan['local']['tables'], array_flip( $plan['local']['local_only'] ) ) );
+		$only = [];
+		foreach ( $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) ) as $name ) {
+			if ( strpos( $name, $wpdb->prefix . 'ixes_' ) === 0 || in_array( $name, $remote_names, true ) || ! $scope->table_in( $name ) ) continue;
+			$only[] = $name;
+		}
+		$new = array_diff( $only, $plan['local']['local_only'] );
+		if ( $new ) return 'new local table ' . implode( ', ', $new );
+		list( , $extra_local ) = IXES_Env::extras( $env );
+		$pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		foreach ( $plan['local']['tables'] as $name => $t ) {
+			if ( ! IXES_Transfer::valid_table( $name ) ) return "{$name} is gone here";
+			$byte_keys = false;
+			$local = self::local_rows( $name, $t['pk'], $pairs, $plan['algo'], ! empty( $plan['bytes_hash'] ), $byte_keys );
+			if ( is_wp_error( $local ) ) return $local->get_error_message();
+			if ( self::digest( $local ) !== $t['digest'] ) return "{$name} changed here";
+		}
+		if ( $plan['local']['files'] !== null ) {
+			$ex = IXES_Pull::excludes( $env );
+			$files = self::in_scope( IXES_Transfer::local_manifest( $ex, $plan['algo'], $scope->roots() ), $scope );
+			if ( self::digest( $files ) !== $plan['local']['files'] ) return 'local files changed';
+		}
+		return null;
+	}
+
+	private static function latest_path( $env ) { return ixes_storage_dir() . '/plans/plan-' . $env . '-latest.json'; }
+
+	/** The plan a push --dry-run or a diff leaves for the push after it. */
+	public static function save_latest( array $plan ) {
+		wp_mkdir_p( ixes_storage_dir() . '/plans' );
+		$path = self::latest_path( $plan['env'] );
+		file_put_contents( $path, json_encode( $plan ) );
+		return $path;
+	}
+	public static function load_latest( $env ) {
+		$path = self::latest_path( $env );
+		$p = is_file( $path ) ? json_decode( (string) file_get_contents( $path ), true ) : null;
+		return is_array( $p ) ? $p : null;
+	}
+	public static function forget_latest( $env ) { $path = self::latest_path( $env ); if ( is_file( $path ) ) unlink( $path ); }
+
+	/**
+	 * How this side hashes its rows for a diff against a remote. The remote's own URL, path and extra values count as
+	 * placeholders here too: a push leaves them as they are, and the remote reads them as its placeholders, so a row
+	 * that carries one must hash the same on both sides or it shows as changed after every push.
+	 */
+	public static function local_pairs( $url, $abspath, array $extra_local, $remote_url, $remote_abspath = '', array $extra_prod = [] ) {
+		$pairs = array_merge( IXES_Hasher::placeholders( $url, $abspath, $extra_local ), IXES_Hasher::placeholders( $remote_url, $remote_abspath, $extra_prod ) );
+		$pairs = array_values( array_filter( $pairs, function ( $p ) { return $p[0] !== '' && $p[0] !== '//'; } ) );
+		usort( $pairs, function ( $a, $b ) { return strlen( $b[0] ) - strlen( $a[0] ); } );
+		return $pairs;
 	}
 
 	/**
@@ -258,6 +406,28 @@ class IXES_Planner {
 		return $v ? (array) json_decode( $v, true ) : (array) get_option( $name, [] );
 	}
 
+	/**
+	 * push --force on a first deploy: rows and files that differ are overwritten. What only the remote has stays
+	 * in 'kept' (--mirror already moved it to delete) and a warning says how much, since it survives the push.
+	 */
+	public static function force( array $plan ) {
+		$said = [];
+		foreach ( $plan['tables'] as $n => &$t ) {
+			$t['push'] = array_merge( $t['push'], $t['conflict'] );
+			$t['kept'] = array_values( array_diff( $t['kept'], $t['conflict'] ) );
+			$t['conflict'] = [];
+			if ( $t['kept'] ) $said[] = number_format( count( $t['kept'] ) ) . " {$n} " . ( count( $t['kept'] ) === 1 ? 'row' : 'rows' );
+		}
+		unset( $t );
+		$f = &$plan['files'];
+		$f['kept'] = array_values( array_diff( $f['kept'], $f['conflict'] ) );
+		$f['push'] = array_merge( $f['push'], $f['conflict'] ); $f['conflict'] = [];
+		if ( $f['kept'] ) $said[] = number_format( count( $f['kept'] ) ) . ( count( $f['kept'] ) === 1 ? ' file' : ' files' );
+		unset( $f );
+		if ( $said ) $plan['warnings'][] = "{$plan['env']} keeps what only it has: " . implode( ', ', $said ) . ' (push --force --mirror deletes them)';
+		return $plan;
+	}
+
 	public static function is_empty( array $plan ) {
 		foreach ( $plan['tables'] as $t ) if ( $t['push'] || $t['insert'] || $t['delete'] || $t['set_insert'] || ! empty( $t['set_delete'] ) ) return false;
 		return empty( $plan['files']['push'] ) && empty( $plan['files']['delete'] ) && $plan['active_plugins'] === null && empty( $plan['drop_tables'] );
@@ -268,24 +438,33 @@ class IXES_Planner {
 		$o[] = sprintf( '%s  ←  local          baseline: %s%s', $plan['env'], $plan['baseline_at'] ? wp_date( 'Y-m-d H:i T', $plan['baseline_at'] ) : 'NONE (2-way)', $plan['two_way'] ? "   !! everything different would OVERWRITE {$plan['env']}" : '' );
 		if ( ! empty( $plan['scope'] ) ) {
 			$sc = IXES_Scope::from_array( (array) $plan['scope'], '' );
-			if ( ! $sc->is_full() ) $o[] = '  scope: ' . $sc->label();
+			if ( $sc->narrows() ) $o[] = '  scope: ' . $sc->label();
 		}
 		$o[] = 'DB';
+		// without a baseline nobody knows who changed a row, only where it is: see IXES_Report::push_table()
+		$two = ! empty( $plan['two_way'] );
 		foreach ( $plan['tables'] as $name => $t ) {
-			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), count( $t['conflict'] ), count( $t['kept'] ) );
+			$n = IXES_Report::table_counts( $t );
+			$o[] = $two
+				? sprintf( '  %-32s local-only %-5d differs %-5d remote-only %-5d same %d', $name, $n['insert'] + $n['push'], $n['prod_wins'], $n['kept_prod'], $n['same'] )
+				: sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %-5d same %d', $name, $n['push'], $n['insert'], $n['delete'], $n['prod_wins'], $n['kept_prod'], $n['same'] );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
+		foreach ( (array) ( $plan['options_excluded'] ?? [] ) as $name => $n ) $o[] = "  {$name}: {$n} row(s) excluded by name";
+		foreach ( (array) ( $plan['active_plugins_excluded'] ?? [] ) as $p ) $o[] = "  active_plugins  {$p}: kept (excluded)";
 		foreach ( (array) ( $plan['drop_tables'] ?? [] ) as $name => $d ) $o[] = sprintf( '  %-32s DROP TABLE (%d rows, %s)', $name, $d['rows'], $d['why'] );
 		$o[] = 'FILES';
-		foreach ( [ 'push', 'delete', 'conflict', 'kept' ] as $k ) {
+		$label = [ 'push' => 'push', 'delete' => 'delete', 'conflict' => $two ? 'differs' : 'remote-wins', 'kept' => $two ? 'remote-only' : 'kept-remote' ];
+		foreach ( $label as $k => $lab ) {
 			$by = [];
-			foreach ( $plan['files'][ $k ] as $rel ) { $dir = implode( '/', array_slice( explode( '/', $rel ), 0, 2 ) ) . '/'; $by[ $dir ] = ( $by[ $dir ] ?? 0 ) + 1; }
-			foreach ( $by as $dir => $n ) $o[] = sprintf( '  %-40s %s %d', $dir, $k === 'kept' ? 'kept-remote' : ( $k === 'conflict' ? 'remote-wins' : $k ), $n );
+			$list = $k === 'kept' ? array_diff( $plan['files']['kept'], $plan['files']['conflict'] ) : $plan['files'][ $k ];
+			foreach ( $list as $rel ) { $dir = implode( '/', array_slice( explode( '/', $rel ), 0, 2 ) ) . '/'; $by[ $dir ] = ( $by[ $dir ] ?? 0 ) + 1; }
+			foreach ( $by as $dir => $n ) $o[] = sprintf( '  %-40s %s %d', $dir, $lab, $n );
 		}
 		$conf = [];
 		foreach ( $plan['tables'] as $name => $t ) foreach ( $t['conflict'] as $pk ) $conf[] = sprintf( '  %-20s #%s  %s', $name, $pk, $plan['conflict_detail'][ $name ][ $pk ] ?? '' );
 		foreach ( $plan['files']['conflict'] as $rel ) $conf[] = '  file                 ' . $rel;
-		if ( $conf ) { $o[] = "CONFLICTS ({$plan['env']} wins)"; $o = array_merge( $o, $conf ); }
+		if ( $conf ) { $o[] = $two ? IXES_Report::DIFFERS_HEAD : "CONFLICTS ({$plan['env']} wins)"; $o = array_merge( $o, $conf ); }
 		if ( self::is_empty( $plan ) ) $o[] = 'Nothing to push.';
 		return implode( "\n", $o ) . "\n";
 	}
