@@ -97,6 +97,18 @@ class IXES_CLI {
 	 * [--only=<parts>]
 	 * : Default scope for this environment's pull, diff and push, e.g. db,uploads when code travels by git (for add). An empty value or "all" removes it.
 	 *
+	 * [--tables=<tables>]
+	 * : Default table list for this environment's pull, diff and push when no scope flag is given (for add). An empty value removes it.
+	 *
+	 * [--exclude-tables=<tables>]
+	 * : Tables or globs this environment always leaves out (for add). @logs covers common log tables. Replaces the whole list.
+	 *
+	 * [--add-exclude-tables=<tables>]
+	 * : Tables to add to the existing table exclude list.
+	 *
+	 * [--remove-exclude-tables=<tables>]
+	 * : Tables to drop from the existing table exclude list.
+	 *
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for every request to this environment (for add). Default: 120. --timeout on pull/diff/push overrides it for that run. Pass an empty value to remove it.
 	 *
@@ -121,9 +133,10 @@ class IXES_CLI {
 			$rows = [];
 			foreach ( IXES_Env::all() as $e ) {
 				$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $e['name'] . '.sqlite' );
-				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'only' => ( $e['default_only'] ?? '' ) !== '' ? $e['default_only'] : 'everything', 'timeout' => ( $e['timeout'] ?? '' ) !== '' ? $e['timeout'] . 's' : '120s (default)', 'baseline' => $bl->baseline_label() ];
+				$scope = IXES_Scope::with_default( [], $e )['assoc'];
+				$rows[] = [ 'name' => $e['name'], 'label' => $e['label'], 'url' => $e['url'], 'scope' => IXES_Scope::from_assoc( $scope, '' )->label(), 'timeout' => ( $e['timeout'] ?? '' ) !== '' ? $e['timeout'] . 's' : '120s (default)', 'baseline' => $bl->baseline_label() ];
 			}
-			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'only', 'timeout', 'baseline' ] );
+			WP_CLI\Utils\format_items( 'table', $rows, [ 'name', 'label', 'url', 'scope', 'timeout', 'baseline' ] );
 			return;
 		}
 		if ( $action === 'add' ) {
@@ -141,6 +154,16 @@ class IXES_CLI {
 				catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 				if ( $only === '' ) unset( $env['default_only'] ); else $env['default_only'] = $only;
 			}
+			try {
+				if ( isset( $assoc['tables'] ) ) {
+					$tables = IXES_Scope::default_tables( $assoc['tables'] === true ? '' : $assoc['tables'] );
+					if ( $tables === '' ) unset( $env['default_tables'] ); else $env['default_tables'] = $tables;
+				}
+				if ( isset( $assoc['exclude-tables'] ) ) $env['exclude_tables'] = IXES_Scope::table_excludes( $assoc['exclude-tables'] === true ? '' : $assoc['exclude-tables'] );
+				if ( isset( $assoc['add-exclude-tables'] ) ) $env['exclude_tables'] = array_values( array_unique( array_merge( (array) ( $env['exclude_tables'] ?? [] ), IXES_Scope::table_excludes( $assoc['add-exclude-tables'] ) ) ) );
+				if ( isset( $assoc['remove-exclude-tables'] ) ) $env['exclude_tables'] = array_values( array_diff( (array) ( $env['exclude_tables'] ?? [] ), IXES_Scope::table_excludes( $assoc['remove-exclude-tables'] ) ) );
+				if ( empty( $env['exclude_tables'] ) ) unset( $env['exclude_tables'] );
+			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 			if ( isset( $assoc['timeout'] ) ) {
 				if ( $assoc['timeout'] === '' || $assoc['timeout'] === true ) unset( $env['timeout'] );
 				else $env['timeout'] = $assoc['timeout']; // IXES_Env::add() validates it
@@ -178,8 +201,9 @@ class IXES_CLI {
 			foreach ( array_filter( [ 'envsync-*/ (storage)', $own ? $own . ' (this plugin)' : '' ] ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'always' ];
 			foreach ( IXES_Env::default_excludes() as $p ) $rows[] = [ 'path' => $p, 'source' => 'default' ];
 			foreach ( (array) $env['excludes'] as $p ) $rows[] = [ 'path' => $p, 'source' => 'this env' ];
+			foreach ( (array) ( $env['exclude_tables'] ?? [] ) as $t ) $rows[] = [ 'path' => 'table ' . $t . ( isset( IXES_Scope::PRESETS[ $t ] ) ? ' (' . implode( ', ', IXES_Scope::PRESETS[ $t ] ) . ')' : '' ), 'source' => 'this env' ];
 			WP_CLI\Utils\format_items( 'table', $rows, [ 'path', 'source' ] );
-			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop one of the "this env" rows with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
+			WP_CLI::log( sprintf( 'Add with --add-exclude= or --add-exclude-tables=, drop a "this env" row with --remove-exclude= or --remove-exclude-tables=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); $this->forget_status(); WP_CLI::success( 'removed' ); return; }
@@ -239,6 +263,9 @@ class IXES_CLI {
 	 * [--paths=<paths>]
 	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 	 *
+	 * [--exclude-tables=<tables>]
+	 * : Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
+	 *
 	 * [--backup-dir=<dir>]
 	 * : Where to write the .sql copy of every table the pull drops here. Default: ENVSYNC_BACKUP_DIR, else the plugin's storage folder.
 	 *
@@ -273,7 +300,7 @@ class IXES_CLI {
 			$note = IXES_Pull::transfer_note( $c, count( $plan['files']['transfer'] ) - $state->files_count(), $par );
 			if ( $note !== '' ) WP_CLI::log( $note );
 			$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
-			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
+			if ( $sc->narrows() ) WP_CLI::log( '  scope: ' . $sc->label() );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
 			$progress = IXES_Progress::for_cli( $assoc );
@@ -354,6 +381,9 @@ class IXES_CLI {
 	 *
 	 * [--paths=<paths>]
 	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+	 *
+	 * [--exclude-tables=<tables>]
+	 * : Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 	 *
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this diff, overriding the environment's own --timeout (env add).
@@ -437,6 +467,9 @@ class IXES_CLI {
 	 *
 	 * [--paths=<paths>]
 	 * : Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+	 *
+	 * [--exclude-tables=<tables>]
+	 * : Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 	 *
 	 * [--drop-tables=<tables>]
 	 * : Comma list of tables only the remote has (with or without prefix) to drop there, although the baseline does not know them. Each one is checked, copied and kept for rollback first.

@@ -115,4 +115,64 @@ class ScopeTest extends TestCase {
 		$this->assertTrue( IXES_Scope::from_array( [ 'only' => [ 'files' ] ], 'wp_' )->covers( IXES_Scope::from_assoc( [ 'only' => 'plugins' ], 'wp_' ) ) );
 		$this->assertTrue( IXES_Scope::from_array( [], 'wp_' )->covers( IXES_Scope::from_assoc( [], 'wp_' ) ) );
 	}
+
+	public function test_exclude_tables_drops_matches_but_keeps_the_scope_full() {
+		$s = $this->s( [ 'exclude-tables' => 'wp_wsal_occurrences, *_debug_events' ] );
+		$this->assertFalse( $s->table_in( 'wp_wsal_occurrences' ) );
+		$this->assertFalse( $s->table_in( 'wp_smtp_debug_events' ) );
+		$this->assertTrue( $s->table_in( 'wp_posts' ) );
+		$this->assertTrue( $s->is_full(), 'an exclude is not a narrower scope: a pull still records a full baseline' );
+		$this->assertTrue( $s->path_in( 'uploads/x.jpg' ) );
+		$this->assertSame( 'everything, not tables wp_wsal_occurrences,*_debug_events', $s->label() );
+	}
+	public function test_exclude_tables_matches_bare_names_and_narrows_tables() {
+		$s = $this->s( [ 'tables' => 'posts,postmeta,wsal_*', 'exclude-tables' => 'wsal_*' ] );
+		$this->assertTrue( $s->table_in( 'wp_posts' ) );
+		$this->assertFalse( $s->table_in( 'wp_wsal_metadata' ) );
+	}
+	public function test_logs_preset_expands() {
+		$s = $this->s( [ 'exclude-tables' => '@logs' ] );
+		foreach ( [ 'wp_wsal_occurrences', 'wp_fluentsmtp_debug_events', 'wp_actionscheduler_logs', 'wp_redirection_404_logs', 'wp_x_audit_log', 'wp_mailpoet_log', 'wp_automation_run_logs' ] as $t ) {
+			$this->assertFalse( $s->table_in( $t ), $t );
+		}
+		$this->assertTrue( $s->table_in( 'wp_actionscheduler_actions' ) );
+		$this->assertStringContainsString( 'not tables @logs', $s->label() );
+	}
+	public function test_unknown_preset_is_refused() {
+		$this->expectException( InvalidArgumentException::class );
+		$this->s( [ 'exclude-tables' => '@nope' ] );
+	}
+	public function test_exclude_tables_round_trips_through_the_plan() {
+		$a = $this->s( [ 'only' => 'db', 'exclude-tables' => '@logs' ] )->to_array();
+		$this->assertFalse( IXES_Scope::from_array( $a, 'wp_' )->table_in( 'wp_mailpoet_log' ) );
+		$this->assertSame( [ 'only' => [ 'db' ], 'tables' => [], 'paths' => [] ], $this->s( [ 'only' => 'db' ] )->to_array(), 'no key when nothing is excluded' );
+	}
+	public function test_family_warning_when_an_exclude_splits_a_family() {
+		$s = $this->s( [ 'exclude-tables' => 'postmeta' ] );
+		$this->assertNotEmpty( $s->family_warnings( [ 'wp_posts' ] ) );
+	}
+	public function test_env_table_excludes_always_apply_and_add_to_the_flag() {
+		$env = [ 'name' => 'prod', 'exclude_tables' => [ '@logs' ] ];
+		$this->assertSame( '@logs', IXES_Scope::with_default( [], $env )['assoc']['exclude-tables'] );
+		$this->assertSame( '@logs,wp_x', IXES_Scope::with_default( [ 'exclude-tables' => 'wp_x', 'only' => 'all' ], $env )['assoc']['exclude-tables'] );
+		$this->assertSame( '@logs', IXES_Scope::with_default( [ 'tables' => 'posts' ], $env )['assoc']['exclude-tables'] );
+	}
+	public function test_env_default_tables_apply_when_no_scope_flag_is_given() {
+		$env = [ 'name' => 'prod', 'default_tables' => 'posts,postmeta' ];
+		$r = IXES_Scope::with_default( [], $env );
+		$this->assertSame( 'posts,postmeta', $r['assoc']['tables'] );
+		$this->assertStringContainsString( 'scope: tables posts,postmeta (default for prod', $r['note'] );
+		$this->assertArrayNotHasKey( 'tables', IXES_Scope::with_default( [ 'only' => 'all' ], $env )['assoc'] );
+		$this->assertSame( [ 'only' => 'files' ], IXES_Scope::with_default( [ 'only' => 'files' ], $env )['assoc'] );
+		$r = IXES_Scope::with_default( [], $env + [ 'default_only' => 'db,uploads' ] );
+		$this->assertSame( [ 'db', 'uploads' ], IXES_Scope::from_assoc( $r['assoc'], 'wp_' )->to_array()['only'] );
+		$this->assertStringContainsString( 'scope: db,uploads, tables posts,postmeta (default', $r['note'] );
+		$this->assertFalse( IXES_Scope::from_assoc( $r['assoc'], 'wp_' )->is_env_default( $env + [ 'default_only' => 'db,uploads' ] ), 'a table default never records a baseline' );
+	}
+	public function test_default_tables_and_table_excludes_are_validated() {
+		$this->assertSame( 'posts,postmeta', IXES_Scope::default_tables( ' posts, postmeta ' ) );
+		$this->assertSame( [ '@logs', 'wp_x' ], IXES_Scope::table_excludes( '@logs, wp_x' ) );
+		$this->expectException( InvalidArgumentException::class );
+		IXES_Scope::table_excludes( '@nope' );
+	}
 }
