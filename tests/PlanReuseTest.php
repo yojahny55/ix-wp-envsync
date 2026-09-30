@@ -36,7 +36,7 @@ class PlanReuseTest extends TestCase {
 	}
 	private static function want( array $plan, array $over = [] ) {
 		return $over + [ 'scope' => self::scope()->to_array(), 'mirror' => false, 'drop' => [], 'env_key' => IXES_Planner::env_key( self::env() ),
-			'baseline_at' => null, 'remote_version' => '0.9.3', 'algo' => 'sha1' ];
+			'baseline_at' => null, 'remote_version' => '0.9.3', 'algo' => 'sha1', 'remote_active_plugins' => [] ];
 	}
 
 	public function test_build_records_what_a_reuse_must_check() {
@@ -90,6 +90,7 @@ class PlanReuseTest extends TestCase {
 			'baseline' => [ 'baseline_at', 1234, 'baseline' ],
 			'remote'   => [ 'remote_version', '0.9.9', 'remote' ],
 			'algo'     => [ 'algo', 'md5', 'algo' ],
+			'plugins'  => [ 'remote_active_plugins', [ 'y/y.php' ], 'active plugins' ],
 		];
 	}
 
@@ -107,5 +108,14 @@ class PlanReuseTest extends TestCase {
 		$this->assertSame( $plan['local'], IXES_Planner::load_latest( 'p' )['local'] );
 		IXES_Planner::forget_latest( 'p' );
 		$this->assertNull( IXES_Planner::load_latest( 'p' ) );
+	}
+
+	public function test_a_plan_already_pushed_is_never_reused() {
+		$GLOBALS['ixes_test_options'] = [];
+		$plan = $this->plan();
+		IXES_Planner::mark_applied( $plan, 'job-7' );
+		$this->assertStringContainsString( 'already pushed', (string) IXES_Planner::reuse_refusal( $plan, self::want( $plan ), $plan['created'], PHP_INT_MAX ) );
+		$other = $plan; $other['created']++;
+		$this->assertNull( IXES_Planner::reuse_refusal( $other, self::want( $other ), $other['created'] ) );
 	}
 }

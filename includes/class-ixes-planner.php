@@ -33,7 +33,8 @@ class IXES_Planner {
 		$cells = $bytes ? [ 'cells' => 1 ] : [];
 		$byte_warn = in_array( IXES_Hasher::CAP, $caps, true ) && ! $bytes ? [ "the {$env['name']} baseline predates 0.9.3: rows with binary cells are compared as before until the next pull" ] : [];
 		// hub_version .. local: what a later push checks before it reuses this plan instead of building it again (reuse_refusal(), local_change())
-		$plan = [ 'hub_version' => IXES_VERSION, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'env_key' => self::env_key( $env ), 'local' => [ 'tables' => [], 'files' => null, 'local_only' => [] ],
+		// remote_active_plugins: the push writes active_plugins without any check on the remote, so a reuse needs the list it merged
+		$plan = [ 'hub_version' => IXES_VERSION, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'remote_active_plugins' => array_values( (array) ( $info['active_plugins'] ?? [] ) ), 'env_key' => self::env_key( $env ), 'local' => [ 'tables' => [], 'files' => null, 'local_only' => [] ],
 			'bytes_hash' => $bytes, 'env' => $env['name'], 'created' => time(), 'baseline_at' => $two_way ? null : $bl->meta( 'created_at' ), 'algo' => $algo, 'two_way' => $two_way, 'tables' => [], 'files' => [], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [], 'scope' => $scope->to_array(), 'new_tables' => [], 'mirror' => (bool) $mirror, 'drop_tables' => [], 'kept_tables' => [] ];
 		$mirror_warn = [];
 
@@ -173,7 +174,21 @@ class IXES_Planner {
 		if ( ( $saved['baseline_at'] ?? null ) != $want['baseline_at'] ) return 'the baseline changed since';
 		if ( ( $saved['remote_version'] ?? '' ) !== (string) $want['remote_version'] ) return "the remote now runs {$want['remote_version']}";
 		if ( ( $saved['algo'] ?? '' ) !== $want['algo'] ) return 'the hash algo changed';
+		if ( ! isset( $saved['remote_active_plugins'] ) || array_values( (array) $saved['remote_active_plugins'] ) !== array_values( (array) $want['remote_active_plugins'] ) ) return "the active plugins on {$saved['env']} changed since";
+		// rows of a table without a primary key go up with nothing to check them against: a second push would insert them twice
+		$applied = (array) get_option( 'ixes_applied_plans', [] );
+		$stamp = self::stamp( $saved );
+		if ( isset( $applied[ $stamp ] ) ) return "that plan was already pushed (job {$applied[ $stamp ]})";
 		return null;
+	}
+
+	private static function stamp( array $plan ) { return $plan['env'] . '@' . (int) $plan['created']; }
+
+	/** Records that $plan went up as $job, so reuse_refusal() never lets it go up again. */
+	public static function mark_applied( array $plan, $job ) {
+		$applied = (array) get_option( 'ixes_applied_plans', [] );
+		$applied[ self::stamp( $plan ) ] = (string) $job;
+		update_option( 'ixes_applied_plans', array_slice( $applied, -50, null, true ), false );
 	}
 
 	/** What a plan built now with these flags would be checked against, for reuse_refusal(). One /info call, which the client keeps. */
@@ -185,7 +200,8 @@ class IXES_Planner {
 		if ( $refused ) return $refused;
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
 		return [ 'scope' => $scope->to_array(), 'mirror' => (bool) $mirror, 'drop' => $drop, 'env_key' => self::env_key( $env ),
-			'baseline_at' => $bl->exists() ? $bl->meta( 'created_at' ) : null, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'algo' => IXES_Hasher::algo( $info['algos'] ) ];
+			'baseline_at' => $bl->exists() ? $bl->meta( 'created_at' ) : null, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'algo' => IXES_Hasher::algo( $info['algos'] ),
+			'remote_active_plugins' => array_values( (array) ( $info['active_plugins'] ?? [] ) ) ];
 	}
 
 	/** What changed on this side since $plan was built, or null. Hashes the local rows and files again; asks the remote nothing. */

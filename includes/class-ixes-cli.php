@@ -529,6 +529,7 @@ class IXES_CLI {
 		IXES_Planner::forget_latest( $env['name'] );
 		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; } );
 		$progress->finish();
+		IXES_Planner::mark_applied( $plan, $r['job'] );
 		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );
 		foreach ( (array) ( $r['kept_tables'] ?? [] ) as $t => $why ) WP_CLI::warning( "kept table {$t} on {$env['name']}: {$why}" );
 		if ( ! empty( $r['dropped'] ) ) WP_CLI::log( 'dropped on ' . $env['name'] . ': ' . implode( ', ', $r['dropped'] ) . "\nlocal copies:\n  " . implode( "\n  ", (array) $r['backups'] ) );
