@@ -104,7 +104,18 @@ class IXES_Transfer {
 		foreach ( get_plugins() as $file => $data ) $plugins[ IXES_Report::plugin_slug( $file ) ] = (string) $data['Version'];
 		$themes = [];
 		foreach ( wp_get_themes() as $slug => $theme ) $themes[ $slug ] = (string) $theme->get( 'Version' );
-		return [ 'plugins' => $plugins, 'themes' => $themes, 'stylesheet' => get_stylesheet() ];
+		return [ 'plugins' => $plugins, 'themes' => $themes, 'stylesheet' => get_stylesheet(), 'orphans' => self::orphan_plugin_dirs( WP_PLUGIN_DIR, $plugins ) ];
+	}
+
+	/** Plugin folders get_plugins() skipped because no file in them has a readable plugin header (a half-deleted plugin). */
+	public static function orphan_plugin_dirs( $dir, array $plugins ) {
+		$out = [];
+		foreach ( glob( rtrim( $dir, '/' ) . '/*', GLOB_ONLYDIR ) ?: [] as $d ) {
+			$slug = basename( $d );
+			if ( ! isset( $plugins[ $slug ] ) ) $out[] = $slug;
+		}
+		sort( $out, SORT_STRING );
+		return $out;
 	}
 
 	public static function pk_of( $table ) {

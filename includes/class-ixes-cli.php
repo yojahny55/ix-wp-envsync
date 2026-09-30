@@ -824,6 +824,34 @@ class IXES_CLI {
 	}
 
 	/**
+	 * List every plugin on this site and on <env> side by side: versions, active state, plugins on one side only,
+	 * folders with no readable plugin header (orphans) and active_plugins entries whose folder is gone. Read-only.
+	 * ## OPTIONS
+	 *
+	 * <env>
+	 * : Environment name.
+	 *
+	 * [--timeout=<seconds>]
+	 * : Per-request timeout for this run only.
+	 *
+	 * [--format=<format>]
+	 * : Machine-readable list. WP-CLI rewrites --json to --format=json itself.
+	 * ---
+	 * default: text
+	 * options:
+	 *   - text
+	 *   - json
+	 * ---
+	 */
+	public function plugins( $args, $assoc ) {
+		$info = $this->fail_if_error( $this->client( $args[0], $this->timeout_override( $assoc ) )->info() );
+		if ( ! isset( $info['inventory'] ) ) WP_CLI::error( "{$args[0]} runs an EnvSync too old to report its plugins. Run: wp envsync self-update {$args[0]}" );
+		$rows = IXES_Report::plugin_inventory( IXES_Transfer::inventory(), (array) $info['inventory'], (array) get_option( 'active_plugins', [] ), (array) ( $info['active_plugins'] ?? [] ) );
+		if ( $this->wants_json( $assoc ) ) { WP_CLI::line( wp_json_encode( [ 'env' => $args[0], 'plugins' => $rows ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) ); return; }
+		WP_CLI::line( IXES_Report::render_inventory( $rows, $args[0] ) );
+	}
+
+	/**
 	 * Show or rotate this site's remote token.
 	 * ## OPTIONS
 	 *

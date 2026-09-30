@@ -116,6 +116,14 @@ class ScopeTest extends TestCase {
 		$this->assertTrue( IXES_Scope::from_array( [], 'wp_' )->covers( IXES_Scope::from_assoc( [], 'wp_' ) ) );
 	}
 
+	public function test_lists_plugins_only_when_the_whole_plugins_folder_is_in_scope() {
+		$this->assertTrue( IXES_Scope::from_assoc( [], 'wp_' )->lists_plugins() );
+		$this->assertTrue( IXES_Scope::from_assoc( [ 'only' => 'plugins' ], 'wp_' )->lists_plugins() );
+		$this->assertTrue( IXES_Scope::from_assoc( [ 'only' => 'db,files' ], 'wp_' )->lists_plugins() );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'uploads' ], 'wp_' )->lists_plugins() );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'db' ], 'wp_' )->lists_plugins() );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'paths' => 'plugins/akismet/' ], 'wp_' )->lists_plugins() );
+	}
 	public function test_exclude_tables_drops_matches_but_keeps_the_scope_full() {
 		$s = $this->s( [ 'exclude-tables' => 'wp_wsal_occurrences, *_debug_events' ] );
 		$this->assertFalse( $s->table_in( 'wp_wsal_occurrences' ) );
