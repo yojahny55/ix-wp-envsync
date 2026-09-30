@@ -176,9 +176,11 @@ Files     1.2 GB / 3.0 GB  4.1 MB/s  40% [=========>              ] 4:52 / 12:10
 Database  5/10             50% [============>             ] 0:03 / 0:06
 ```
 
-Add `--verbose` for the old one-line-per-file output. When the output is piped, as it is for agents and CI, there is no bar, only one line per stage (`files: 6953 (212.4 MB) in 3m12s, 1.1 MB/s`).
+Add `--verbose` for the old one-line-per-file output. When the output is piped, as it is for agents and CI, there is no bar, only one line per stage (`files: 6953 (212.4 MB) in 3m12s, 1.1 MB/s`). To see how far a run has got from another shell, run `wp envsync status prod`: it shows a `running:` line (and `running_job` with `--json`), read from `runs/<kind>-<env>-progress.json`.
 
 `push` shows the same plan, then waits for your confirmation. Add `--yes` to skip the prompt, `--dry-run` to stop after the plan.
+
+Planning hashes both sides, which on a slow link can take as long as the transfer. A `push` right after a `diff` or a `push --dry-run` with the same flags does not plan again: when that plan is less than an hour old and nothing changed on this site since, it prints `reusing plan from 14:02` and applies it. Anything the remote changed in the meantime is still checked row by row and file by file, and skipped as stale. `--replan` plans again anyway.
 
 ---
 
@@ -544,7 +546,8 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 Applies your changes to `<env>`. Production-changed rows are always kept.
 
 - `--dry-run`, `--yes`, `--verbose` — as above. `--format=json` with `--dry-run` prints the manifest.
-- `--plan=<file>` — apply a plan saved earlier. Refuses if anything it covers has changed on the remote since.
+- `--plan=<file>` — apply a plan saved earlier (`diff` and `push --dry-run` print its path) without planning again. Refuses if anything changed on this site since, if the remote's active plugins changed, or if that plan was already pushed; rows and files the remote changed since are skipped as stale. A plan saved before 0.9.11 is checked the old way: planned again, and refused if anything it covers changed on the remote.
+- `--replan` — plan again even when the last `diff` or `--dry-run` made the same plan less than an hour ago.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
 - `--mirror` — with `--force` only. Also deletes, within the scope, the rows, files and tables only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
 - `--drop-tables=<tables>` — comma list of tables only the remote has (with or without the prefix) to drop there although the baseline does not know them. See [Dropped tables](#dropped-tables).
@@ -786,6 +789,8 @@ Agents should read files rather than terminal text:
 | File (under `wp-content/envsync-*/`) | Written by | Holds |
 |---|---|---|
 | `plans/<kind>-<env>-latest.json` | `diff`, `push`, `pull` (including `--dry-run`) | The plan as JSON (`schema: 1`): `summary`, `tables`, `new_tables`, `schema_changes`, `plugins`, `themes`, `other`, `conflicts`, `warnings`. Same data as the tables. |
+| `runs/<kind>-<env>-progress.json` | `pull`, `diff`, `push`, while they run | `kind`, `phase` (`plan`, `files`, `db`), `job`, `started`, `updated`, `files_done`/`files_total`, `bytes_done`/`bytes_total`, `tables_done`/`tables_total`. Rewritten at most every 3 seconds; removed when the run ends. `status --json` shows it as `running_job`. |
+| `plans/plan-<env>-latest.json` | `diff`, `push --dry-run` | The plan the next `push` may reuse. Removed once a push applies it. |
 | `runs/<kind>-<env>-latest.json` | `push`, `pull` | The outcome: `ok`, `job`, `seconds`, `files`, `bytes`, `rows`, `stale`, `error`. Written on failure too. |
 
 `--format=json` prints the same plan to stdout. Every plan command prints the manifest path in its last line (`manifest: …`).

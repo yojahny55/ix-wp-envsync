@@ -665,6 +665,7 @@ class IXES_Applier {
 		$start = $c->post( '/job/start', [ 'plan_meta' => $plan_meta ] );
 		if ( is_wp_error( $start ) ) return $start;
 		$job = $start['job'];
+		$progress->job( $job );
 
 		$stale = [];
 		$choice = null;
