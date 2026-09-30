@@ -89,6 +89,12 @@ class StatusTest extends TestCase {
 		$this->assertSame( 'wp envsync pull prod', $n['command'] );
 		$this->assertStringContainsString( 'resume', $n['why'] );
 	}
+	public function test_interrupted_pull_names_its_scope_in_the_command() {
+		$ctx = $this->ctx( [ 'pull_state' => function () { return [ 'started' => $this->now - 600, 'table' => 'wp_posts', 'cursor' => 10, 'files_done' => 0, 'files_total' => 0, 'scope' => [ 'only' => [ 'db' ], 'tables' => [ 'posts', 'postmeta' ], 'paths' => [] ] ]; } ] );
+		$n = $this->next( $ctx, $this->info() );
+		$this->assertSame( 'wp envsync pull prod --tables=posts,postmeta', $n['command'] );
+		$this->assertStringContainsString( 'tables posts,postmeta', $n['why'] );
+	}
 	public function test_no_baseline() {
 		$ctx = $this->ctx( [ 'baseline' => function () { return [ 'created_at' => null, 'partial_at' => null, 'partial_scope' => null ]; } ] );
 		$n = $this->next( $ctx, $this->info() );
@@ -101,6 +107,7 @@ class StatusTest extends TestCase {
 		$n = $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) );
 		$this->assertSame( 'wp envsync push prod --force --dry-run', $n['command'] );
 		$this->assertStringContainsString( 'fresh install (3 posts)', $n['why'] );
+		$this->assertStringContainsString( 'what only it has stays unless you add --mirror', $n['why'], 'the remote has content of its own (#46)' );
 		$tables[0]['rows'] = 400;
 		$this->assertSame( 'wp envsync pull prod', $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) )['command'] );
 	}

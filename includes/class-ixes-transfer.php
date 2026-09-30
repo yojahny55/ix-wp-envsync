@@ -87,7 +87,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', 'exclude_options', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
 			'self_dir'        => basename( dirname( IXES_FILE ) ), // a self-update zip's top folder must be this
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
@@ -605,10 +605,11 @@ class IXES_Transfer {
 		);
 	}
 
-	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256 ) {
+	/** $root: where $rel lands, WP_CONTENT_DIR unless the applier stages it (see IXES_Applier::write_root()). */
+	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256, $root = null ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused' );
-		$dest = WP_CONTENT_DIR . '/' . $rel;
+		$dest = ( $root === null ? WP_CONTENT_DIR : $root ) . '/' . $rel;
 		$tmp  = $dest . '.ixes-tmp';
 		$dir  = dirname( $dest );
 		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return new WP_Error( 'io', self::io_hint( "cannot create directory {$dir}", $dir ) );

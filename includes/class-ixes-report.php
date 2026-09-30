@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  */
 class IXES_Report {
 	const SCHEMA = 1;
+	const DIFFERS_HEAD = 'DIFFERENT ON BOTH SIDES (no baseline: push --force overwrites them)';
 
 	public static function build( array $in ) {
 		$push = $in['direction'] === 'push';
@@ -15,7 +16,8 @@ class IXES_Report {
 			'schema' => self::SCHEMA, 'kind' => $in['kind'], 'env' => $in['env'], 'url' => $in['url'], 'created' => $in['created'],
 			'direction' => $in['direction'], 'baseline_at' => $in['baseline_at'], 'first_deploy' => (bool) $in['first_deploy'],
 			'scope' => $in['scope'], 'scope_full' => (bool) $in['scope_full'],
-			'summary' => [ 'files' => count( $in['files'] ), 'delete' => count( $in['deletes'] ), 'bytes' => null, 'rows' => 0, 'conflicts' => count( $in['conflicts'] ) ],
+			// 'kept', 'kept_files': rows and files the remote keeps as they are (only it changed or has them)
+			'summary' => [ 'files' => count( $in['files'] ), 'delete' => count( $in['deletes'] ), 'bytes' => null, 'rows' => 0, 'conflicts' => count( $in['conflicts'] ), 'kept' => 0, 'kept_files' => count( (array) ( $in['kept_files'] ?? [] ) ) ],
 			'tables' => [], 'new_tables' => array_values( (array) ( $in['new_tables'] ?? [] ) ), 'schema_changes' => (array) ( $in['schema_changes'] ?? [] ), 'plugins' => [], 'themes' => [], 'other' => [], 'conflicts' => $in['conflicts'], 'warnings' => $in['warnings'],
 			// tables dropped on the side that receives: [ name, rows, why ] ('baseline', 'mirror', 'asked')
 			'drop_tables' => array_values( (array) ( $in['drop_tables'] ?? [] ) ),
@@ -23,9 +25,10 @@ class IXES_Report {
 
 		foreach ( $in['tables'] as $name => $t ) {
 			if ( ! $push ) { $r['tables'][] = [ 'name' => $name, 'rows' => (int) $t['rows'] ]; continue; }
-			if ( ! array_sum( $t ) ) continue;
-			$r['tables'][] = [ 'name' => $name ] + $t;
+			if ( ! ( $t['push'] + $t['insert'] + $t['delete'] + $t['prod_wins'] + $t['kept_prod'] ) ) continue;
+			$r['tables'][] = [ 'name' => $name ] + $t + [ 'same' => 0 ];
 			$r['summary']['rows'] += $t['push'] + $t['insert'] + $t['delete'];
+			$r['summary']['kept'] += $t['kept_prod'];
 		}
 		if ( $in['rows'] !== null ) $r['summary']['rows'] = (int) $in['rows'];
 
@@ -33,12 +36,22 @@ class IXES_Report {
 		$groups = [];
 		foreach ( [ 'files' => $in['files'], 'delete' => $in['deletes'] ] as $k => $list ) {
 			foreach ( $list as $rel ) {
+				if ( IXES_Mu::is_boot_path( $rel ) ) continue; // their own section, below
 				list( $kind, $key ) = self::group_of( $rel );
 				if ( ! isset( $groups[ $kind ][ $key ] ) ) $groups[ $kind ][ $key ] = [ 'files' => 0, 'delete' => 0, 'bytes' => $sizes === null ? null : 0 ];
 				$groups[ $kind ][ $key ][ $k ]++;
 				if ( $k === 'files' && $sizes !== null ) $groups[ $kind ][ $key ]['bytes'] += (int) ( $sizes[ $rel ] ?? 0 );
 			}
 		}
+		// mu-plugins and drop-ins load on every request, rescue included: never folded into OTHER FILES
+		$r['mu_plugins'] = IXES_Mu::groups( $in['files'], $in['deletes'], $push ? (array) ( $in['new_files'] ?? [] ) : null );
+		$mu_bytes = [];
+		foreach ( $in['files'] as $rel ) {
+			if ( $sizes !== null && IXES_Mu::is_boot_path( $rel ) ) $mu_bytes[ IXES_Mu::slug_of( $rel ) ] = ( $mu_bytes[ IXES_Mu::slug_of( $rel ) ] ?? 0 ) + (int) ( $sizes[ $rel ] ?? 0 );
+		}
+		foreach ( $r['mu_plugins'] as &$m ) $m['bytes'] = $sizes === null ? null : ( $mu_bytes[ $m['slug'] ] ?? 0 );
+		unset( $m );
+		if ( $push && $r['mu_plugins'] ) $r['warnings'][] = sprintf( IXES_Mu::WARNING, $in['env'] );
 		if ( $sizes !== null ) { $r['summary']['bytes'] = 0; foreach ( $in['files'] as $rel ) $r['summary']['bytes'] += (int) ( $sizes[ $rel ] ?? 0 ); }
 
 		$before = $in['before']; $source = $in['source'];
@@ -159,7 +172,7 @@ class IXES_Report {
 		global $wpdb;
 		$tables = []; $conflicts = [];
 		foreach ( $plan['tables'] as $name => $t ) {
-			$tables[ $name ] = [ 'push' => count( $t['push'] ) + count( $t['set_insert'] ), 'insert' => count( $t['insert'] ), 'delete' => count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), 'prod_wins' => count( $t['conflict'] ), 'kept_prod' => count( $t['kept'] ) ];
+			$tables[ $name ] = self::table_counts( $t ) + [ 'ids' => self::table_ids( $t ) ];
 			foreach ( $t['conflict'] as $id ) $conflicts[] = [ 'type' => 'row', 'table' => $name, 'id' => (string) $id, 'title' => (string) ( $plan['conflict_detail'][ $name ][ $id ] ?? '' ) ];
 		}
 		foreach ( $plan['files']['conflict'] as $rel ) $conflicts[] = [ 'type' => 'file', 'path' => $rel ];
@@ -177,13 +190,32 @@ class IXES_Report {
 			'baseline_at' => $plan['baseline_at'], 'first_deploy' => (bool) $plan['two_way'], 'scope' => $sc->label(), 'scope_full' => $sc->is_full(),
 			'tables' => $tables, 'new_tables' => array_keys( (array) ( $plan['new_tables'] ?? [] ) ), 'rows' => null,
 			'files' => $plan['files']['push'], 'deletes' => $plan['files']['delete'], 'sizes' => $sizes,
+			'new_files' => array_keys( array_filter( array_intersect_key( (array) ( $plan['remote_file_hashes'] ?? [] ), array_flip( $plan['files']['push'] ) ), 'is_null' ) ),
 			'before' => $before, 'source' => IXES_Transfer::inventory(),
 			'active_before' => $remote_active, 'active_after' => $plan['active_plugins'] !== null ? $plan['active_plugins'] : $remote_active,
 			'active_local' => (array) get_option( 'active_plugins', [] ), 'active_remote' => $remote_active, 'list_plugins' => $sc->lists_plugins(),
 			'stylesheet_after' => $moves_ss ? get_stylesheet() : ( $before['stylesheet'] ?? null ),
 			'conflicts' => $conflicts, 'warnings' => (array) ( $plan['warnings'] ?? [] ),
 			'drop_tables' => self::drops( (array) ( $plan['drop_tables'] ?? [] ) ),
+			'kept_files' => array_values( array_diff( (array) ( $plan['files']['kept'] ?? [] ), (array) $plan['files']['conflict'] ) ),
 		] );
+	}
+
+	/**
+	 * One plan table as counts, each row in exactly one of them. 'prod_wins': both sides changed it (without a
+	 * baseline: it differs), the remote's version stays. 'kept_prod': only the remote changed or has it. 'same': equal.
+	 */
+	public static function table_counts( array $t ) {
+		return [
+			'push' => count( $t['push'] ) + count( $t['set_insert'] ?? [] ), 'insert' => count( $t['insert'] ), 'delete' => count( $t['delete'] ) + count( $t['set_delete'] ?? [] ),
+			'prod_wins' => count( $t['conflict'] ), 'kept_prod' => count( array_diff( $t['kept'], $t['conflict'] ) ), 'same' => (int) ( $t['same'] ?? 0 ),
+		];
+	}
+
+	/** The primary keys behind table_counts(), for agents; a table without a primary key has none. */
+	private static function table_ids( array $t ) {
+		$s = function ( array $ids ) { return array_values( array_map( 'strval', $ids ) ); };
+		return array_filter( [ 'push' => $s( $t['push'] ), 'insert' => $s( $t['insert'] ), 'delete' => $s( $t['delete'] ), 'prod_wins' => $s( $t['conflict'] ), 'kept_prod' => $s( array_diff( $t['kept'], $t['conflict'] ) ) ] );
 	}
 
 	private static function drops( array $d ) {
@@ -234,6 +266,11 @@ class IXES_Report {
 		return $path;
 	}
 
+	/** A run that stopped before its job opened (phase 'plan'): nothing changed on the remote, but the old run file must not stand in for it. */
+	public static function save_failed_run( $kind, $env, $phase, $started, $error ) {
+		return self::save_run( $kind, $env, [ 'ok' => false, 'job' => null, 'phase' => (string) $phase, 'started' => (int) $started, 'finished' => time(), 'seconds' => time() - (int) $started, 'stale' => [], 'error' => (string) $error ] );
+	}
+
 	// 'akismet/akismet.php' -> 'akismet'; a single-file plugin keeps its file name ('hello.php')
 	public static function plugin_slug( $file ) { $d = dirname( (string) $file ); return $d === '.' ? (string) $file : $d; }
 
@@ -261,7 +298,7 @@ class IXES_Report {
 		if ( $r['tables'] ) {
 			$o[] = ''; $o[] = 'DATABASE';
 			$o[] = $push
-				? self::table( [ 'table', 'push', 'insert', 'delete', 'remote-wins', 'kept-remote' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'] ]; }, $r['tables'] ) )
+				? self::push_table( $r )
 				: self::table( [ 'table', 'rows' ], array_map( function ( $t ) use ( $r ) { return [ $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ), $t['rows'] ]; }, $r['tables'] ) );
 		}
 		if ( ! empty( $r['schema_changes'] ) ) {
@@ -279,13 +316,18 @@ class IXES_Report {
 				return array_merge( [ $x['slug'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—', self::version( $x['version'] ), $x['change'] ], $notes ? [ self::plugin_note( $x ) ] : [] );
 			}, $shown[ $k ] ) );
 		}
+		if ( ! empty( $r['mu_plugins'] ) ) {
+			$o[] = ''; $o[] = 'MU-PLUGINS AND DROP-INS (load on every request)';
+			$head = array_merge( [ 'path', 'files' ], $has_del ? [ 'delete' ] : [], [ 'size', 'change' ] );
+			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del ) { return array_merge( [ $x['slug'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—', $x['change'] ] ); }, $r['mu_plugins'] ) );
+		}
 		if ( $r['other'] ) {
 			$o[] = ''; $o[] = 'OTHER FILES';
 			$head = array_merge( [ 'folder', 'files' ], $has_del ? [ 'delete' ] : [], [ 'size' ] );
 			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del ) { return array_merge( [ $x['group'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—' ] ); }, $r['other'] ) );
 		}
 		if ( $r['conflicts'] ) {
-			$o[] = ''; $o[] = "CONFLICTS ({$r['env']} wins)";
+			$o[] = ''; $o[] = $r['first_deploy'] && $r['kind'] === 'diff' ? self::DIFFERS_HEAD : "CONFLICTS ({$r['env']} wins)";
 			foreach ( $r['conflicts'] as $c ) $o[] = $c['type'] === 'file' ? "  file                 {$c['path']}" : sprintf( '  %-20s #%s  %s', $c['table'], $c['id'], $c['title'] );
 		}
 		if ( ! empty( $r['drop_tables'] ) ) {
@@ -295,6 +337,18 @@ class IXES_Report {
 		}
 		if ( ! $s['files'] && ! $s['delete'] && ! $r['tables'] && ! $shown['plugins'] && ! $r['themes'] && empty( $r['drop_tables'] ) ) { $o[] = ''; $o[] = 'Nothing to ' . ( $push ? 'push' : 'pull' ) . '.'; }
 		return implode( "\n", $o ) . "\n";
+	}
+
+	/**
+	 * A diff without a baseline cannot tell who changed a row, only where it is and whether the sides agree:
+	 * local-only, differs, remote-only, same. Its 'push' can only be a keyless table's rows only here, so they count as local-only. Otherwise the push categories, plus same.
+	 */
+	private static function push_table( array $r ) {
+		$name = function ( $t ) use ( $r ) { return $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ); };
+		if ( $r['first_deploy'] && $r['kind'] === 'diff' ) {
+			return self::table( [ 'table', 'local-only', 'differs', 'remote-only', 'same' ], array_map( function ( $t ) use ( $name ) { return [ $name( $t ), $t['insert'] + $t['push'], $t['prod_wins'], $t['kept_prod'], $t['same'] ]; }, $r['tables'] ) );
+		}
+		return self::table( [ 'table', 'push', 'insert', 'delete', 'remote-wins', 'kept-remote', 'same' ], array_map( function ( $t ) use ( $name ) { return [ $name( $t ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'], $t['same'] ]; }, $r['tables'] ) );
 	}
 
 	private static function version( array $v ) {

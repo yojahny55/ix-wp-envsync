@@ -65,8 +65,25 @@ class IXES_Env {
 		return [ 'siteurl', 'home', 'cron', 'recently_activated' ];
 	}
 
+	/** @var string[] the environment's exclude_options globs, for this request: the hub sets them from the env, the remote from the hub's header */
+	private static $option_globs = [];
+	public static function set_option_globs( array $globs ) { self::$option_globs = array_values( $globs ); }
+
+	/** Parse a comma list of option name globs (env add --exclude-options, the X-Envsync-Exclude-Options header). */
+	public static function option_globs( $value ) {
+		return array_values( array_unique( array_filter( array_map( 'trim', explode( ',', (string) $value ) ), 'strlen' ) ) );
+	}
+
+	/** A remote older than 0.9.9 would hash, send and overwrite the rows this environment excludes by name. */
+	public static function option_globs_refusal( array $env, array $info ) {
+		if ( empty( $env['exclude_options'] ) || in_array( 'exclude_options', (array) ( $info['caps'] ?? [] ), true ) ) return null;
+		$from = (string) ( $info['plugin'] ?? '?' );
+		return new WP_Error( 'old_remote', "{$env['name']} runs {$from}, which does not know --exclude-options: run wp envsync self-update {$env['name']} first" );
+	}
+
 	public static function option_excluded( $name ) {
 		if ( in_array( $name, self::excluded_options(), true ) ) return true;
+		foreach ( self::$option_globs as $g ) if ( fnmatch( $g, (string) $name ) ) return true;
 		foreach ( [ 'ixes_', '_transient_', '_site_transient_' ] as $p ) {
 			if ( strpos( $name, $p ) === 0 ) return true;
 		}
