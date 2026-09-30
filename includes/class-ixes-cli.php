@@ -475,8 +475,7 @@ class IXES_CLI {
 		}
 		if ( $plan['two_way'] ) {
 			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); WP_CLI::error( "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ); }
-			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
-			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
+			$plan = IXES_Planner::force( $plan );
 		}
 		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'push' );

@@ -16,7 +16,8 @@ class PlannerRenderTest extends TestCase {
 		$this->assertStringContainsString( 'push 2', $txt );
 		$this->assertStringContainsString( 'insert 1', $txt );
 		$this->assertStringContainsString( 'remote-wins 1', $txt );
-		$this->assertStringContainsString( 'kept-remote 2', $txt );
+		$this->assertStringContainsString( 'kept-remote 1', $txt, 'row 9 counts once, as remote-wins' );
+		$this->assertStringContainsString( 'same 0', $txt );
 		$this->assertStringContainsString( 'themes/k/', $txt );
 		$this->assertStringContainsString( 'CONFLICTS', $txt );
 		$this->assertStringContainsString( '#9', $txt );
@@ -59,5 +60,22 @@ class PlannerRenderTest extends TestCase {
 		];
 		$this->assertStringContainsString( 'baseline: ' . date( 'Y-m-d H:i T', 1790377984 ), IXES_Planner::render_text( $plan ) );
 		$this->assertMatchesRegularExpression( '/baseline: \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} \\S+/', IXES_Planner::render_text( $plan ) );
+	}
+	public function test_render_without_baseline_says_where_rows_are() {
+		$plan = [
+			'env' => 'staging', 'created' => 1, 'baseline_at' => null, 'algo' => 'sha1', 'two_way' => true,
+			'tables' => [ 'wp_posts' => [ 'pk' => 'ID', 'push' => [], 'insert' => [ 3 ], 'delete' => [], 'conflict' => [ 9 ], 'kept' => [ 9, 10 ], 'same' => 5, 'set_insert' => [] ] ],
+			'files' => [ 'push' => [], 'delete' => [], 'conflict' => [ 'themes/k/a.php' ], 'kept' => [ 'themes/k/a.php', 'uploads/x.jpg' ] ],
+			'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [],
+		];
+		$txt = IXES_Planner::render_text( $plan );
+		$this->assertStringContainsString( 'local-only 1', $txt );
+		$this->assertStringContainsString( 'differs 1', $txt );
+		$this->assertStringContainsString( 'remote-only 1', $txt );
+		$this->assertStringContainsString( 'same 5', $txt );
+		$this->assertStringContainsString( 'themes/k/                                differs 1', $txt );
+		$this->assertStringContainsString( 'uploads/x.jpg/                           remote-only 1', $txt );
+		$this->assertStringContainsString( 'DIFFERENT ON BOTH SIDES', $txt );
+		$this->assertStringNotContainsString( 'remote-wins', $txt );
 	}
 }

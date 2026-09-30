@@ -88,4 +88,33 @@ class ReportTest extends TestCase {
 		$this->assertSame( [ [ 'name' => 'wp_posts', 'rows' => 500 ] ], $r['tables'] );
 		$this->assertStringContainsString( 'staging  →  local', IXES_Report::render_text( $r ) );
 	}
+	public function test_diff_without_baseline_names_what_it_can_know() {
+		$r = IXES_Report::build( $this->input( [ 'kind' => 'diff', 'files' => [], 'sizes' => [], 'tables' => [ 'wp_posts' => [ 'push' => 0, 'insert' => 1, 'delete' => 0, 'prod_wins' => 384, 'kept_prod' => 74, 'same' => 274 ] ] ] ) );
+		$txt = IXES_Report::render_text( $r );
+		$this->assertMatchesRegularExpression( '/table\s*\|\s*local-only\s*\|\s*differs\s*\|\s*remote-only\s*\|\s*same/', $txt );
+		$this->assertMatchesRegularExpression( '/wp_posts\s*\|\s*1\s*\|\s*384\s*\|\s*74\s*\|\s*274/', $txt );
+		$this->assertStringNotContainsString( 'remote-wins', $txt );
+		$txt = IXES_Report::render_text( IXES_Report::build( $this->input( [ 'kind' => 'diff', 'conflicts' => [ [ 'type' => 'row', 'table' => 'wp_posts', 'id' => '9', 'title' => 'Home' ] ] ] ) ) );
+		$this->assertStringContainsString( 'DIFFERENT ON BOTH SIDES', $txt );
+		$this->assertStringNotContainsString( 'CONFLICTS', $txt );
+	}
+	public function test_with_a_baseline_the_table_has_a_same_column() {
+		$r = IXES_Report::build( $this->input( [ 'first_deploy' => false, 'baseline_at' => 1789000000, 'tables' => [ 'wp_posts' => [ 'push' => 2, 'insert' => 0, 'delete' => 0, 'prod_wins' => 1, 'kept_prod' => 3, 'same' => 50 ] ] ] ) );
+		$this->assertMatchesRegularExpression( '/remote-wins\s*\|\s*kept-remote\s*\|\s*same/', IXES_Report::render_text( $r ) );
+	}
+	public function test_row_ids_ride_along_without_counting() {
+		$r = IXES_Report::build( $this->input( [ 'tables' => [ 'wp_posts' => [ 'push' => 1, 'insert' => 0, 'delete' => 0, 'prod_wins' => 0, 'kept_prod' => 0, 'same' => 9, 'ids' => [ 'push' => [ '7' ] ] ], 'wp_terms' => [ 'push' => 0, 'insert' => 0, 'delete' => 0, 'prod_wins' => 0, 'kept_prod' => 0, 'same' => 4, 'ids' => [] ] ] ] ) );
+		$this->assertSame( [ 'wp_posts' ], array_column( $r['tables'], 'name' ), 'a table with only identical rows is not listed' );
+		$this->assertSame( [ 'push' => [ '7' ] ], $r['tables'][0]['ids'] );
+		$this->assertSame( 1, $r['summary']['rows'] );
+	}
+	public function test_kept_remote_is_disjoint_from_remote_wins() {
+		$c = IXES_Report::table_counts( [ 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [ 3 ], 'kept' => [ 3, 4 ], 'same' => 0, 'set_insert' => [] ] );
+		$this->assertSame( 1, $c['prod_wins'] ); $this->assertSame( 1, $c['kept_prod'] );
+	}
+	public function test_summary_counts_rows_and_files_the_remote_keeps() {
+		$r = IXES_Report::build( $this->input( [ 'tables' => [ 'wp_posts' => [ 'push' => 1, 'insert' => 0, 'delete' => 0, 'prod_wins' => 0, 'kept_prod' => 74, 'same' => 0 ] ], 'kept_files' => [ 'uploads/x.jpg' ] ] ) );
+		$this->assertSame( 74, $r['summary']['kept'] );
+		$this->assertSame( 1, $r['summary']['kept_files'] );
+	}
 }
