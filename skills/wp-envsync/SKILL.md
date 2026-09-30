@@ -51,6 +51,7 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `self_update`: `"on"` when the remote can install a newer EnvSync itself (`self-update <env>`), `"off"` when its owner turned that off, `null` when the remote is older than 0.9.4 and cannot.
 - `baseline.created_at: null`: no pull has been done for this environment.
 - `remote_lock`: `{job, started, age_minutes}` means a push is running or died there.
+- `running_job`: `null`, or the pull, diff or push this hub is running on that environment now: `{kind, phase, job, started, updated, files_done, files_total, bytes_done, bytes_total, tables_done, tables_total}`. `phase` is `plan`, `files` or `db`. Use it to answer "how far along is it?". While it is set, `next` says to wait: never unlock a lock that belongs to a running push.
 - `interrupted_pull`: `{started, table, files_done, files_total}` means a pull stopped partway.
 - `remote_posts`: the number of rows in the remote's posts table. 5 or fewer means a fresh install.
 - `prefix_map`: `null` when both sites use the same table prefix. Otherwise a string such as `"ab12cd_ → wp_"` (remote prefix → hub prefix): the remote translates, and table names in plans are the hub's.
@@ -88,9 +89,11 @@ A pull tries downloads.wordpress.org first for any plugin or theme file the remo
 ### Ship local changes
 
 ```bash
-wp --path=<site> envsync diff prod             # show this
-wp --path=<site> envsync push prod --yes       # after approval
+wp --path=<site> envsync diff prod                          # show this; it prints "plan saved: <path>"
+wp --path=<site> envsync push prod --yes --plan=<that path>  # after approval
 ```
+
+`--plan=` applies the plan the user approved without planning again, which on a slow link saves as long as the diff took. It refuses when anything changed on this site since the diff; then show a new diff. Rows and files the remote changed in the meantime are skipped by the push and listed as stale. A plain `push prod --yes` also reuses the last diff's plan when it is less than an hour old and nothing changed here, and says `reusing plan from …`; otherwise it plans again.
 
 Point out `remote-wins` and `CONFLICTS`. Those are the user's edits that will **not** be applied, because the remote changed the same thing. That is correct behaviour, but the user needs to know which of their changes are dropped. After the push, tell the user to pull again before their next round of work.
 
@@ -182,11 +185,12 @@ Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>
   - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
   - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
   - `--format=json` prints the same object.
+- `runs/<kind>-<env>-progress.json`: while a pull, diff or push runs, its progress (the same object as `running_job` in `status --json`), rewritten at most every 3 seconds and removed when the run ends.
 - `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
 
 What to report to the user from the manifest: plugins with `change` `turns on` or `turns off`, version changes on plugins and themes, `summary.delete` when it is not zero, and every entry in `conflicts`.
 
-When you run commands, output is piped, so there is no progress bar, only one summary line per stage. Do not add `--verbose` unless the user wants per-file lines.
+When you run commands, output is piped, so there is no progress bar, only one summary line per stage. For progress during a long run, read `status <env> --json` (`running_job`) from a second shell. Do not add `--verbose` unless the user wants per-file lines.
 
 ## Commands
 
@@ -200,7 +204,7 @@ All commands take `--path=<site>`.
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
 | `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--replan] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |

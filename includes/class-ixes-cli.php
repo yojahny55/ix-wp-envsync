@@ -66,6 +66,12 @@ class IXES_CLI {
 		if ( ! is_numeric( $n ) || (int) $n < 1 || (int) $n > 16 ) WP_CLI::error( '--parallel takes a number from 1 to 16' );
 		return (int) $n;
 	}
+	/** Progress for a pull/diff/push on $env, also written to runs/<kind>-<env>-progress.json from the planning on. */
+	private function tracked( $kind, $env, $assoc ) {
+		$p = IXES_Progress::for_cli( $assoc );
+		$p->track( $kind, $env );
+		return $p;
+	}
 	private function forget_status() { delete_transient( 'ixes_status_report' ); }
 	private function scope( $assoc, array $env ) {
 		global $wpdb;
@@ -258,6 +264,7 @@ class IXES_CLI {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
+		$progress = $this->tracked( 'pull', $env['name'], $assoc );
 		$state = IXES_PullState::load( $env['name'] );
 		if ( $state ) {
 			if ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) WP_CLI::error( 'scope flags cannot change while resuming; use --fresh' );
@@ -276,8 +283,8 @@ class IXES_CLI {
 			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
-			$progress = IXES_Progress::for_cli( $assoc );
 			$this->run_recorded( 'pull', $env['name'], IXES_Report::from_pull_plan( $plan ), function () use ( $env, $c, $plan, $state, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), $state, $progress, $par ); $progress->end(); return $r; } );
+			$progress->finish();
 			$this->forget_status();
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 			return;
@@ -309,8 +316,8 @@ class IXES_CLI {
 		WP_CLI::log( "manifest: {$manifest}" );
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
-		$progress = IXES_Progress::for_cli( $assoc );
 		$this->run_recorded( 'pull', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), null, $progress, $par ); $progress->end(); return $r; } );
+		$progress->finish();
 		$this->forget_status();
 		WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
 	}
@@ -361,8 +368,11 @@ class IXES_CLI {
 	public function diff( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) );
+		$progress = $this->tracked( 'diff', $env['name'], $assoc );
 		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
+		$progress->finish();
 		$path = IXES_Planner::save( $plan );
+		IXES_Planner::save_latest( $plan );
 		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
 		$manifest = $this->show_report( IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'diff' ), $assoc );
 		if ( $this->wants_json( $assoc ) ) return;
@@ -372,6 +382,11 @@ class IXES_CLI {
 		}
 		WP_CLI::log( "plan saved: {$path}" );
 		WP_CLI::log( "manifest: {$manifest}" );
+		self::reuse_hint( $env['name'], $path );
+	}
+
+	private static function reuse_hint( $env, $path ) {
+		WP_CLI::log( sprintf( 'push %s --yes within %d minutes reuses this plan while nothing changes here (or pass --plan=%s)', $env, IXES_Planner::REUSE_MAX_MIN, $path ) );
 	}
 
 	private function field_diff( IXES_Client $c, $table, $id, array $plan ) {
@@ -415,7 +430,10 @@ class IXES_CLI {
 	 * : With --force on a first deploy: also delete, within the scope, the rows and files only the remote has. The pre-push snapshot keeps them for rollback.
 	 *
 	 * [--plan=<file>]
-	 * : Apply a previously saved plan file.
+	 * : Apply a previously saved plan file (diff and push --dry-run print its path). It is applied without planning again when nothing changed on this side since.
+	 *
+	 * [--replan]
+	 * : Plan again even when the last dry run or diff made the same plan less than an hour ago and nothing changed here since.
 	 *
 	 * [--verbose]
 	 * : One line per file and table instead of progress bars.
@@ -468,10 +486,29 @@ class IXES_CLI {
 		if ( $saved && ! empty( $assoc['mirror'] ) && empty( $saved['mirror'] ) ) WP_CLI::error( 'that plan was made without --mirror; run push --force --mirror without --plan' );
 		if ( $mirror && empty( $assoc['force'] ) ) WP_CLI::error( '--mirror only goes with --force, on a first deploy' );
 		$drop = $saved ? array_keys( array_filter( (array) ( $saved['drop_tables'] ?? [] ), function ( $d ) { return ( $d['why'] ?? '' ) === 'asked'; } ) ) : IXES_Droptable::table_list( (string) ( $assoc['drop-tables'] ?? '' ), $wpdb->prefix );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
-		if ( $saved ) {
+		$progress = $this->tracked( 'push', $env['name'], $assoc );
+		$plan = null;
+		if ( $saved && ! empty( $saved['local'] ) ) {
+			// a plan that records its local fingerprint is applied without planning again; the applier re-checks every remote row and file it touches
+			$want = $this->fail_if_error( IXES_Planner::want( $env, $c, $scope, $mirror, $drop ) );
+			$why = IXES_Planner::reuse_refusal( $saved, $want, time(), PHP_INT_MAX ) ?? IXES_Planner::local_change( $saved, $env );
+			if ( $why !== null ) WP_CLI::error( "cannot apply that plan: {$why}. Run diff again" );
+			$plan = $saved;
+		} elseif ( $saved ) {
+			$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
 			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" );
 			$plan = $saved;
+		} elseif ( empty( $assoc['dry-run'] ) && empty( $assoc['replan'] ) && ( $latest = IXES_Planner::load_latest( $env['name'] ) ) ) {
+			$want = $this->fail_if_error( IXES_Planner::want( $env, $c, $scope, $mirror, $drop ) );
+			$why = IXES_Planner::reuse_refusal( $latest, $want, time() );
+			$say = $this->wants_json( $assoc ) ? function () {} : $this->logger();
+			if ( $why === null ) { $say( 'checking this site against the plan from the last dry run or diff' ); $why = IXES_Planner::local_change( $latest, $env ); }
+			if ( $why === null ) { $plan = $latest; $say( 'reusing plan from ' . wp_date( 'H:i', (int) $latest['created'] ) . ' (last dry run or diff); nothing changed here since' ); }
+			else $say( "planning again: {$why}" );
+		}
+		if ( $plan === null ) {
+			$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
+			if ( ! empty( $assoc['dry-run'] ) ) { $saved_path = IXES_Planner::save( $plan, 'push' ); IXES_Planner::save_latest( $plan ); }
 		}
 		if ( $plan['two_way'] ) {
 			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); WP_CLI::error( "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ); }
@@ -486,10 +523,12 @@ class IXES_CLI {
 		$note = IXES_Pull::transfer_note( $c, count( $plan['files']['push'] ), $par, true );
 		if ( $note !== '' ) WP_CLI::log( $note );
 		if ( IXES_Planner::is_empty( $plan ) ) { WP_CLI::success( 'nothing to push' ); return; }
-		if ( ! empty( $assoc['dry-run'] ) ) return;
+		if ( ! empty( $assoc['dry-run'] ) ) { if ( isset( $saved_path ) ) self::reuse_hint( $env['name'], $saved_path ); return; }
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
-		$progress = IXES_Progress::for_cli( $assoc );
+		// used once: after this push its remote hashes are the old ones, and every row would come back stale
+		IXES_Planner::forget_latest( $env['name'] );
 		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; } );
+		$progress->finish();
 		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );
 		foreach ( (array) ( $r['kept_tables'] ?? [] ) as $t => $why ) WP_CLI::warning( "kept table {$t} on {$env['name']}: {$why}" );
 		if ( ! empty( $r['dropped'] ) ) WP_CLI::log( 'dropped on ' . $env['name'] . ': ' . implode( ', ', $r['dropped'] ) . "\nlocal copies:\n  " . implode( "\n  ", (array) $r['backups'] ) );
