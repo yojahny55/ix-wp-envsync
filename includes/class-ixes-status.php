@@ -110,7 +110,7 @@ class IXES_Status {
 			$sc = IXES_Scope::from_array( (array) ( $e['interrupted_pull']['scope'] ?? [] ), '' );
 			return $cmd( "wp envsync pull {$name}" . $sc->flags(), 'an interrupted pull can be resumed with its scope (' . $sc->label() . '), or start over with --fresh' );
 		}
-		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" );
+		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" . ( $e['remote_posts'] > 0 ? '; what only it has stays unless you add --mirror' : '' ) );
 		if ( empty( $e['baseline']['created_at'] ) ) return $cmd( "wp envsync pull {$name}", 'no baseline: pull before any push' );
 		if ( $e['baseline']['age_days'] >= self::BASELINE_OLD_DAYS ) return $cmd( "wp envsync diff {$name}", "baseline is {$e['baseline']['age_days']} days old; consider pulling first" );
 		return $cmd( "wp envsync diff {$name}", 'ready' );

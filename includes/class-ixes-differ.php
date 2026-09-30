@@ -4,7 +4,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class IXES_Differ {
 
 	public static function diff( array $base, array $local, array $remote ) {
-		$out = [ 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
+		// 'same' counts rows equal on both sides, so every row lands in exactly one category
+		$out = [ 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'same' => 0 ];
 		$pks = array_unique( array_merge( array_keys( $base ), array_keys( $local ), array_keys( $remote ) ) );
 		sort( $pks );
 		foreach ( $pks as $pk ) {
@@ -12,7 +13,7 @@ class IXES_Differ {
 			$l = isset( $local[ $pk ] )  ? $local[ $pk ]  : null;
 			$r = isset( $remote[ $pk ] ) ? $remote[ $pk ] : null;
 
-			if ( $l === $r ) continue;                       // already equal (incl. both absent)
+			if ( $l === $r ) { if ( $l !== null ) $out['same']++; continue; } // already equal (incl. both absent)
 			$local_changed  = ( $l !== $b );
 			$remote_changed = ( $r !== $b );
 

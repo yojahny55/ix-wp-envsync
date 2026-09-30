@@ -25,7 +25,7 @@ class IXES_Planner {
 		if ( $mirror && ! $two_way ) return new WP_Error( 'mirror_baseline', "--mirror is only for a first deploy: {$env['name']} has a baseline, so what only it has is its own work and stays" );
 
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
-		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		$local_pairs = self::local_pairs( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local, (string) $info['url'], (string) ( $info['abspath'] ?? '' ), $extra_prod );
 		$ex = IXES_Pull::excludes( $env );
 		// both sides hash byte cells as raw bytes only when the remote can and the baseline agrees; otherwise as before
 		$caps  = (array) ( $info['caps'] ?? [] );
@@ -98,7 +98,7 @@ class IXES_Planner {
 					foreach ( $d['conflict'] as $id ) $plan['conflict_detail'][ $name ][ $id ] = (string) $wpdb->get_var( $wpdb->prepare( "SELECT post_title FROM {$wpdb->posts} WHERE ID = %d", $id ) );
 				}
 			} else {
-				$d = [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'set_insert' => IXES_Differ::diff_set( $local, $remote )['insert'] ];
+				$d = [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'same' => count( array_intersect( $local, $remote ) ), 'set_insert' => IXES_Differ::diff_set( $local, $remote )['insert'] ];
 				// no primary key: --mirror deletes by row hash, which needs a remote that knows the delete_set step
 				if ( $mirror ) {
 					$gone = array_values( array_unique( array_diff( $remote, $local ) ) );
@@ -134,6 +134,18 @@ class IXES_Planner {
 			$plan['warnings'] = array_merge( $plan['warnings'], IXES_Mu::host_warnings( $plan['files']['push'], $plan['remote_file_hashes'], $env['name'] ) );
 		}
 		return $plan;
+	}
+
+	/**
+	 * How this side hashes its rows for a diff against a remote. The remote's own URL, path and extra values count as
+	 * placeholders here too: a push leaves them as they are, and the remote reads them as its placeholders, so a row
+	 * that carries one must hash the same on both sides or it shows as changed after every push.
+	 */
+	public static function local_pairs( $url, $abspath, array $extra_local, $remote_url, $remote_abspath = '', array $extra_prod = [] ) {
+		$pairs = array_merge( IXES_Hasher::placeholders( $url, $abspath, $extra_local ), IXES_Hasher::placeholders( $remote_url, $remote_abspath, $extra_prod ) );
+		$pairs = array_values( array_filter( $pairs, function ( $p ) { return $p[0] !== '' && $p[0] !== '//'; } ) );
+		usort( $pairs, function ( $a, $b ) { return strlen( $b[0] ) - strlen( $a[0] ); } );
+		return $pairs;
 	}
 
 	/**
@@ -260,6 +272,28 @@ class IXES_Planner {
 		return $v ? (array) json_decode( $v, true ) : (array) get_option( $name, [] );
 	}
 
+	/**
+	 * push --force on a first deploy: rows and files that differ are overwritten. What only the remote has stays
+	 * in 'kept' (--mirror already moved it to delete) and a warning says how much, since it survives the push.
+	 */
+	public static function force( array $plan ) {
+		$said = [];
+		foreach ( $plan['tables'] as $n => &$t ) {
+			$t['push'] = array_merge( $t['push'], $t['conflict'] );
+			$t['kept'] = array_values( array_diff( $t['kept'], $t['conflict'] ) );
+			$t['conflict'] = [];
+			if ( $t['kept'] ) $said[] = number_format( count( $t['kept'] ) ) . " {$n} " . ( count( $t['kept'] ) === 1 ? 'row' : 'rows' );
+		}
+		unset( $t );
+		$f = &$plan['files'];
+		$f['kept'] = array_values( array_diff( $f['kept'], $f['conflict'] ) );
+		$f['push'] = array_merge( $f['push'], $f['conflict'] ); $f['conflict'] = [];
+		if ( $f['kept'] ) $said[] = number_format( count( $f['kept'] ) ) . ( count( $f['kept'] ) === 1 ? ' file' : ' files' );
+		unset( $f );
+		if ( $said ) $plan['warnings'][] = "{$plan['env']} keeps what only it has: " . implode( ', ', $said ) . ' (push --force --mirror deletes them)';
+		return $plan;
+	}
+
 	public static function is_empty( array $plan ) {
 		foreach ( $plan['tables'] as $t ) if ( $t['push'] || $t['insert'] || $t['delete'] || $t['set_insert'] || ! empty( $t['set_delete'] ) ) return false;
 		return empty( $plan['files']['push'] ) && empty( $plan['files']['delete'] ) && $plan['active_plugins'] === null && empty( $plan['drop_tables'] );
@@ -273,21 +307,28 @@ class IXES_Planner {
 			if ( ! $sc->is_full() ) $o[] = '  scope: ' . $sc->label();
 		}
 		$o[] = 'DB';
+		// without a baseline nobody knows who changed a row, only where it is: see IXES_Report::push_table()
+		$two = ! empty( $plan['two_way'] );
 		foreach ( $plan['tables'] as $name => $t ) {
-			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), count( $t['conflict'] ), count( $t['kept'] ) );
+			$n = IXES_Report::table_counts( $t );
+			$o[] = $two
+				? sprintf( '  %-32s local-only %-5d differs %-5d remote-only %-5d same %d', $name, $n['insert'] + $n['push'], $n['prod_wins'], $n['kept_prod'], $n['same'] )
+				: sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %-5d same %d', $name, $n['push'], $n['insert'], $n['delete'], $n['prod_wins'], $n['kept_prod'], $n['same'] );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
 		foreach ( (array) ( $plan['drop_tables'] ?? [] ) as $name => $d ) $o[] = sprintf( '  %-32s DROP TABLE (%d rows, %s)', $name, $d['rows'], $d['why'] );
 		$o[] = 'FILES';
-		foreach ( [ 'push', 'delete', 'conflict', 'kept' ] as $k ) {
+		$label = [ 'push' => 'push', 'delete' => 'delete', 'conflict' => $two ? 'differs' : 'remote-wins', 'kept' => $two ? 'remote-only' : 'kept-remote' ];
+		foreach ( $label as $k => $lab ) {
 			$by = [];
-			foreach ( $plan['files'][ $k ] as $rel ) { $dir = implode( '/', array_slice( explode( '/', $rel ), 0, 2 ) ) . '/'; $by[ $dir ] = ( $by[ $dir ] ?? 0 ) + 1; }
-			foreach ( $by as $dir => $n ) $o[] = sprintf( '  %-40s %s %d', $dir, $k === 'kept' ? 'kept-remote' : ( $k === 'conflict' ? 'remote-wins' : $k ), $n );
+			$list = $k === 'kept' ? array_diff( $plan['files']['kept'], $plan['files']['conflict'] ) : $plan['files'][ $k ];
+			foreach ( $list as $rel ) { $dir = implode( '/', array_slice( explode( '/', $rel ), 0, 2 ) ) . '/'; $by[ $dir ] = ( $by[ $dir ] ?? 0 ) + 1; }
+			foreach ( $by as $dir => $n ) $o[] = sprintf( '  %-40s %s %d', $dir, $lab, $n );
 		}
 		$conf = [];
 		foreach ( $plan['tables'] as $name => $t ) foreach ( $t['conflict'] as $pk ) $conf[] = sprintf( '  %-20s #%s  %s', $name, $pk, $plan['conflict_detail'][ $name ][ $pk ] ?? '' );
 		foreach ( $plan['files']['conflict'] as $rel ) $conf[] = '  file                 ' . $rel;
-		if ( $conf ) { $o[] = "CONFLICTS ({$plan['env']} wins)"; $o = array_merge( $o, $conf ); }
+		if ( $conf ) { $o[] = $two ? IXES_Report::DIFFERS_HEAD : "CONFLICTS ({$plan['env']} wins)"; $o = array_merge( $o, $conf ); }
 		if ( self::is_empty( $plan ) ) $o[] = 'Nothing to push.';
 		return implode( "\n", $o ) . "\n";
 	}

@@ -107,6 +107,7 @@ class StatusTest extends TestCase {
 		$n = $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) );
 		$this->assertSame( 'wp envsync push prod --force --dry-run', $n['command'] );
 		$this->assertStringContainsString( 'fresh install (3 posts)', $n['why'] );
+		$this->assertStringContainsString( 'what only it has stays unless you add --mirror', $n['why'], 'the remote has content of its own (#46)' );
 		$tables[0]['rows'] = 400;
 		$this->assertSame( 'wp envsync pull prod', $this->next( $ctx, $this->info( [ 'prefix' => 'wp_', 'tables' => $tables ] ) )['command'] );
 	}

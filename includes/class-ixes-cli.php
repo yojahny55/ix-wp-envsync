@@ -351,10 +351,13 @@ class IXES_CLI {
 	 * : List every affected id and file.
 	 *
 	 * [--table=<table>]
-	 * : Show a field-level diff for one table.
+	 * : One table, with or without its prefix, for --id or --list.
 	 *
 	 * [--id=<pk>]
-	 * : Primary key of the row to field-diff.
+	 * : With --table: say where that row is (here, on the remote, both or neither) and show its fields: the ones that differ, or all of them when one side has it.
+	 *
+	 * [--list=<column>]
+	 * : With --table: the keys in one column of the diff, with a few fields that name each row in core tables. local-only, differs, remote-only, or push, insert, delete, remote-wins, kept-remote.
 	 *
 	 * [--flush-cache]
 	 * : Discard the file hash cache and rehash everything.
@@ -374,38 +377,103 @@ class IXES_CLI {
 	public function diff( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) );
+		$table = empty( $assoc['table'] ) ? '' : $this->table_arg( $assoc['table'] );
+		if ( ( isset( $assoc['id'] ) || isset( $assoc['list'] ) ) && $table === '' ) WP_CLI::error( '--id and --list go with --table' );
+		if ( isset( $assoc['id'] ) ) { $this->row_diff( $env, $c, $table, (string) $assoc['id'] ); return; }
 		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
 		$path = IXES_Planner::save( $plan );
-		if ( ! empty( $assoc['table'] ) && ! empty( $assoc['id'] ) ) { $this->field_diff( $c, $assoc['table'], $assoc['id'], $plan ); return; }
+		if ( isset( $assoc['list'] ) ) { $this->list_rows( $env, $c, $plan, $table, (string) $assoc['list'] ); return; }
 		$manifest = $this->show_report( IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'diff' ), $assoc );
 		if ( $this->wants_json( $assoc ) ) return;
 		if ( ! empty( $assoc['details'] ) ) {
-			foreach ( $plan['tables'] as $name => $t ) foreach ( [ 'push', 'insert', 'delete', 'conflict' ] as $k ) if ( $t[ $k ] ) WP_CLI::log( "  {$name} {$k}: " . implode( ', ', $t[ $k ] ) );
+			$cols = $plan['two_way'] ? [ 'local-only', 'differs', 'remote-only' ] : [ 'push', 'insert', 'delete', 'remote-wins', 'kept-remote' ];
+			foreach ( $plan['tables'] as $name => $t ) foreach ( $cols as $k ) { $ids = IXES_Rowinfo::ids( $t, $k )['ids']; if ( $ids ) WP_CLI::log( "  {$name} {$k}: " . implode( ', ', $ids ) ); }
 			foreach ( [ 'push', 'delete', 'conflict' ] as $k ) foreach ( $plan['files'][ $k ] as $rel ) WP_CLI::log( "  file {$k}: {$rel}" );
 		}
 		WP_CLI::log( "plan saved: {$path}" );
 		WP_CLI::log( "manifest: {$manifest}" );
 	}
 
-	private function field_diff( IXES_Client $c, $table, $id, array $plan ) {
+	private function table_arg( $table ) {
+		global $wpdb;
+		$table = strpos( $table, $wpdb->prefix ) === 0 ? $table : $wpdb->prefix . $table;
+		if ( ! IXES_Transfer::valid_table( $table ) ) WP_CLI::error( "--table: {$table} is not a table name" );
+		return $table;
+	}
+
+	/** The row with key $id on the remote, null when it has none, or an error when it cannot be asked. */
+	private function remote_row( IXES_Client $c, $table, $id ) {
+		$info = $c->info();
+		if ( is_wp_error( $info ) ) return $info;
+		$pk = null; $has = false;
+		foreach ( (array) $info['tables'] as $t ) if ( $t['name'] === $table ) { $pk = $t['pk']; $has = true; }
+		if ( ! $has ) return null;
+		if ( ! $pk ) return new WP_Error( 'no_pk', "{$table} has no primary key on the remote" );
+		$from = IXES_Rowinfo::cursor_before( $id );
+		if ( $from === null ) return new WP_Error( 'text_key', "{$table}: only a numeric key can be looked up on the remote" );
+		$d = $c->post( '/dump', [ 'table' => $table, 'from' => $from, 'limit' => 1 ] + ( $c->cells() ? [ 'cells' => 1 ] : [] ) );
+		if ( is_wp_error( $d ) ) return $d;
+		$rows = IXES_Hasher::rows_in( (array) ( $d['rows'] ?? [] ) );
+		if ( is_wp_error( $rows ) ) return $rows;
+		return $rows && isset( $rows[0][ $pk ] ) && (string) $rows[0][ $pk ] === (string) $id ? $rows[0] : null;
+	}
+
+	private function local_rows( $table, array $ids, array $columns = [] ) {
 		global $wpdb;
 		$pk = IXES_Transfer::pk_of( $table );
-		$local  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$pk}` = %s", $id ), ARRAY_A );
-		$remote = null;
-		$d = $c->post( '/dump', [ 'table' => $table, 'from' => $id - 1, 'limit' => 1 ] + ( $c->cells() ? [ 'cells' => 1 ] : [] ) );
-		$rows = is_wp_error( $d ) ? [] : IXES_Hasher::rows_in( (array) ( $d['rows'] ?? [] ) );
-		if ( ! is_wp_error( $rows ) && $rows && (string) $rows[0][ $pk ] === (string) $id ) $remote = $rows[0];
-		$lp = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath() ); $rp = $c->remote_pairs();
-		foreach ( array_unique( array_merge( array_keys( (array) $local ), array_keys( (array) $remote ) ) ) as $col ) {
-			$l = IXES_Hasher::normalize( $local[ $col ] ?? null, $lp ); $r = IXES_Hasher::normalize( $remote[ $col ] ?? null, $rp );
-			if ( $l === $r ) continue;
-			// raw bytes shown as hex: printed as is they garble the terminal
-			if ( IXES_Hasher::is_bytes( $l ) ) $l = '0x' . bin2hex( $l );
-			if ( IXES_Hasher::is_bytes( $r ) ) $r = '0x' . bin2hex( $r );
+		if ( ! $pk || ! $ids ) return [];
+		$sel = $columns ? '`' . $pk . '`, `' . implode( '`, `', array_map( 'esc_sql', $columns ) ) . '`' : '*';
+		$in = implode( ',', array_map( function ( $v ) { return "'" . esc_sql( $v ) . "'"; }, $ids ) );
+		$out = [];
+		foreach ( (array) $wpdb->get_results( "SELECT {$sel} FROM `{$table}` WHERE `{$pk}` IN ({$in})", ARRAY_A ) as $row ) $out[ (string) $row[ $pk ] ] = $row;
+		return $out;
+	}
+
+	private function pairs_for( array $env, IXES_Client $c ) {
+		$info = $this->fail_if_error( $c->info() );
+		list( $prod, $local ) = IXES_Env::extras( $env );
+		return [
+			IXES_Planner::local_pairs( IXES_Env::local_url(), IXES_Env::local_abspath(), $local, (string) $info['url'], (string) ( $info['abspath'] ?? '' ), $prod ),
+			IXES_Hasher::placeholders( $info['url'], $info['abspath'], $prod ),
+		];
+	}
+
+	private function row_diff( array $env, IXES_Client $c, $table, $id ) {
+		$local = $this->local_rows( $table, [ $id ] )[ $id ] ?? null;
+		$remote = $this->fail_if_error( $this->remote_row( $c, $table, $id ) );
+		list( $lp, $rp ) = $this->pairs_for( $env, $c );
+		$cmp = IXES_Rowinfo::compare( $local, $remote, $lp, $rp );
+		$where = [ 'neither' => 'on neither side', 'local-only' => 'only here', 'remote-only' => "only on {$env['name']}", 'same' => 'on both sides, the same', 'differs' => 'on both sides, different' ];
+		WP_CLI::line( "{$table} #{$id}: " . $where[ $cmp['where'] ] );
+		foreach ( $cmp['fields'] as list( $col, $r, $l ) ) {
 			WP_CLI::line( WP_CLI::colorize( "%Y{$col}%n" ) );
-			WP_CLI::line( WP_CLI::colorize( '%R- remote: %n' ) . mb_strimwidth( (string) $r, 0, 300, '…' ) );
-			WP_CLI::line( WP_CLI::colorize( '%G+ local:  %n' ) . mb_strimwidth( (string) $l, 0, 300, '…' ) );
+			// raw bytes shown as hex: printed as is they garble the terminal
+			if ( $r !== null ) WP_CLI::line( WP_CLI::colorize( '%R- remote: %n' ) . mb_strimwidth( IXES_Hasher::is_bytes( $r ) ? '0x' . bin2hex( $r ) : $r, 0, 300, '…' ) );
+			if ( $l !== null ) WP_CLI::line( WP_CLI::colorize( '%G+ local:  %n' ) . mb_strimwidth( IXES_Hasher::is_bytes( $l ) ? '0x' . bin2hex( $l ) : $l, 0, 300, '…' ) );
 		}
+	}
+
+	/** How many remote rows diff --list names one by one: each is its own request. */
+	const LIST_REMOTE_LABELS = 50;
+
+	private function list_rows( array $env, IXES_Client $c, array $plan, $table, $column ) {
+		global $wpdb;
+		$t = $plan['tables'][ $table ] ?? null;
+		if ( ! $t ) { WP_CLI::log( "{$table}: nothing differs in this scope" ); return; }
+		if ( ! $t['pk'] ) WP_CLI::error( "{$table} has no primary key: its rows have no ids to list" );
+		$sel = IXES_Rowinfo::ids( $t, $column );
+		if ( $sel === null ) WP_CLI::error( "--list: {$column} is not a column; use local-only, differs, remote-only, push, insert, delete, remote-wins or kept-remote" );
+		$cols = IXES_Rowinfo::label_columns( $table, $wpdb->prefix );
+		WP_CLI::log( "{$table} {$column}: " . count( $sel['ids'] ) . ( $sel['side'] === 'remote' ? " (rows on {$env['name']})" : '' ) );
+		if ( ! $cols ) { if ( $sel['ids'] ) WP_CLI::log( '  ' . implode( ', ', $sel['ids'] ) ); return; }
+		$named = $sel['ids']; $rest = [];
+		if ( $sel['side'] === 'local' ) $rows = $this->local_rows( $table, $named, $cols );
+		else {
+			$rest = array_slice( $named, self::LIST_REMOTE_LABELS ); $named = array_slice( $named, 0, self::LIST_REMOTE_LABELS ); $rows = [];
+			foreach ( $named as $id ) { $r = $this->remote_row( $c, $table, $id ); if ( is_array( $r ) ) $rows[ $id ] = $r; }
+		}
+		foreach ( $named as $id ) WP_CLI::log( sprintf( '  %-10s %s', "#{$id}", isset( $rows[ $id ] ) ? IXES_Rowinfo::label( $rows[ $id ], $cols ) : '' ) );
+		if ( $rest ) WP_CLI::log( '  and ' . count( $rest ) . ' more: ' . implode( ', ', $rest ) );
 	}
 
 	/**
@@ -489,8 +557,7 @@ class IXES_CLI {
 		}
 		if ( $plan['two_way'] ) {
 			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); $guard( new WP_Error( 'no_baseline', "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ) ); }
-			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
-			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
+			$plan = IXES_Planner::force( $plan );
 			// no baseline says whose mu-plugins these are: they go only when --only names them
 			$plan = IXES_Mu::hold_boot( $plan, (array) ( $plan['scope'] ?? [] ) );
 		}

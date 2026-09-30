@@ -49,6 +49,34 @@ class IXES_Applier {
 			. "if ( isset( \$_SERVER['HTTP_X_ENVSYNC_SIG'] ) && preg_match( '#^[^?]*(\\\\?rest_route=|/wp-json)/" . IXES_Rest::NS . "/#', \$ixes_uri ) ) \$upgrading = 1;\n"
 			. "if ( isset( \$_SERVER['REMOTE_ADDR'] ) && in_array( \$_SERVER['REMOTE_ADDR'], array( '127.0.0.1', '::1' ), true ) ) \$upgrading = 1;\n";
 	}
+	/**
+	 * What a push rewrites in every row it sends, [ from, to ], applied in order by IXES_Hasher::normalize() on the remote.
+	 * Every form the hash reads as the same placeholder (plain, JSON-escaped, protocol-relative, each extra pair) maps to
+	 * its remote form, longest first, as IXES_Hasher::placeholders() does. Two passes through a token each, so a remote
+	 * value that contains a shorter local one is never rewritten twice, and neither is one already in the row.
+	 */
+	public static function write_pairs( $local_url, $local_abspath, $remote_url, $remote_abspath, array $extra_replace ) {
+		$esc  = function ( $v ) { return str_replace( '/', '\/', $v ); };
+		$bare = function ( $u ) { return preg_replace( '#^https?://#', '', $u ); };
+		$lu = untrailingslashit( $local_url ); $ru = untrailingslashit( $remote_url );
+		$la = untrailingslashit( $local_abspath ); $ra = untrailingslashit( $remote_abspath );
+		$map = [ [ $lu, $ru ], [ $esc( $lu ), $esc( $ru ) ], [ '//' . $bare( $lu ), '//' . $bare( $ru ) ], [ $la, $ra ], [ $esc( $la ), $esc( $ra ) ] ];
+		foreach ( $extra_replace as $x ) {
+			if ( ! isset( $x[0], $x[1] ) || (string) $x[1] === '' ) continue;
+			$map[] = [ (string) $x[1], (string) $x[0] ];
+			$map[] = [ $esc( (string) $x[1] ), $esc( (string) $x[0] ) ];
+		}
+		// the remote's own forms stay as they are, but take their token first: a local value inside one is not rewritten
+		foreach ( IXES_Env::extras( [ 'extra_replace' => $extra_replace ] )[0] as $p ) { $map[] = [ $p, $p ]; $map[] = [ $esc( $p ), $esc( $p ) ]; }
+		foreach ( [ $ru, $esc( $ru ), '//' . $bare( $ru ), $ra, $esc( $ra ) ] as $v ) $map[] = [ $v, $v ];
+		$seen = []; $uniq = [];
+		foreach ( $map as $m ) if ( $m[0] !== '' && $m[0] !== '//' && ! isset( $seen[ $m[0] ] ) ) { $seen[ $m[0] ] = true; $uniq[] = $m; }
+		usort( $uniq, function ( $a, $b ) { return strlen( $b[0] ) - strlen( $a[0] ); } );
+		$in = []; $out = [];
+		foreach ( $uniq as $i => $m ) { $tok = '{{IXES-W' . $i . '}}'; $in[] = [ $m[0], $tok ]; $out[] = [ $tok, $m[1] ]; }
+		return array_merge( $in, $out );
+	}
+
 	private static function remote_pairs( array $extra = [] ) { return IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra ); }
 
 	// ---------- remote side ----------
@@ -607,17 +635,9 @@ class IXES_Applier {
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
 
-		$pairs = [
-			[ IXES_Env::local_url(), untrailingslashit( $info['url'] ) ],
-			[ str_replace( '/', '\/', IXES_Env::local_url() ), str_replace( '/', '\/', untrailingslashit( $info['url'] ) ) ],
-			[ IXES_Env::local_abspath(), untrailingslashit( $info['abspath'] ) ],
-		];
-		foreach ( (array) $env['extra_replace'] as $x ) $pairs[] = [ $x[1], $x[0] ];
-		// last: scheme-full urls are already rewritten by now, so this only catches //host references
-		$bare = function ( $u ) { return preg_replace( '#^https?://#', '', untrailingslashit( $u ) ); };
-		$pairs[] = [ '//' . $bare( IXES_Env::local_url() ), '//' . $bare( $info['url'] ) ];
+		$pairs = self::write_pairs( IXES_Env::local_url(), IXES_Env::local_abspath(), $info['url'], $info['abspath'], (array) $env['extra_replace'] );
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
-		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		$local_pairs = IXES_Planner::local_pairs( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local, $info['url'], $info['abspath'], $extra_prod );
 		// a 0.9.3 remote takes byte cells wrapped (an older one gets rows as before); 'cells' tells it to hash them as
 		// raw bytes, only when the plan's own hashes were taken that way (IXES_Hasher::bytes_mode())
 		$bytes = ! empty( $plan['bytes_hash'] );
