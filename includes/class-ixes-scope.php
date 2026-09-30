@@ -88,6 +88,11 @@ class IXES_Scope {
 		return false;
 	}
 
+	/** The whole plugins/ folder is in scope, so a plan can list every plugin on either side. */
+	public function lists_plugins() {
+		return ! $this->paths && ( ! $this->only || in_array( 'plugins', $this->only, true ) || in_array( 'files', $this->only, true ) );
+	}
+
 	public function table_in( $name ) {
 		if ( ! $this->db_wanted() ) return false;
 		if ( ! $this->tables ) return true;

@@ -115,4 +115,13 @@ class ScopeTest extends TestCase {
 		$this->assertTrue( IXES_Scope::from_array( [ 'only' => [ 'files' ] ], 'wp_' )->covers( IXES_Scope::from_assoc( [ 'only' => 'plugins' ], 'wp_' ) ) );
 		$this->assertTrue( IXES_Scope::from_array( [], 'wp_' )->covers( IXES_Scope::from_assoc( [], 'wp_' ) ) );
 	}
+
+	public function test_lists_plugins_only_when_the_whole_plugins_folder_is_in_scope() {
+		$this->assertTrue( IXES_Scope::from_assoc( [], 'wp_' )->lists_plugins() );
+		$this->assertTrue( IXES_Scope::from_assoc( [ 'only' => 'plugins' ], 'wp_' )->lists_plugins() );
+		$this->assertTrue( IXES_Scope::from_assoc( [ 'only' => 'db,files' ], 'wp_' )->lists_plugins() );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'uploads' ], 'wp_' )->lists_plugins() );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'only' => 'db' ], 'wp_' )->lists_plugins() );
+		$this->assertFalse( IXES_Scope::from_assoc( [ 'paths' => 'plugins/akismet/' ], 'wp_' )->lists_plugins() );
+	}
 }

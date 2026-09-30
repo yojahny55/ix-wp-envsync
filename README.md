@@ -172,6 +172,7 @@ Add `--verbose` for the old one-line-per-file output. When the output is piped, 
 
 ```bash
 wp envsync status prod          # check where things stand
+wp envsync plugins prod         # every plugin on both sides, orphans and missing folders
 wp envsync pull prod            # fresh copy of production, records the baseline
                                  # ... do your work ...
 wp envsync diff prod            # preview what would change
@@ -429,6 +430,17 @@ Reports this site's role, each environment's state, and the one recommended next
 - `--json` — machine-readable report, for scripts and agents.
 
 Exit code is always 0; `next` is advice, not an error.
+
+### `wp envsync plugins <env>`
+
+Lists every plugin on this site and on `<env>` side by side, read-only: both versions, where each one is active, and a note for anything odd.
+
+- `local only` / `remote only`: the plugin exists on one side.
+- `orphan folder (local|remote)`: a folder under `plugins/` with no readable plugin header, usually a half-deleted plugin. WordPress does not list it.
+- `active, folder missing (local|remote)`: `active_plugins` names a plugin whose folder is gone on that side.
+- `--json` — the same rows as JSON.
+
+A plan whose scope covers the whole `plugins/` folder (no `--only`, or `--only` with `plugins` or `files`, and no `--paths`) lists every plugin the same way in its `plugins[]` manifest, while its table shows only plugins that move, change activation or carry a note.
 
 ### `wp envsync pull <env>`
 

@@ -181,6 +181,8 @@ Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>
 - `plans/<kind>-<env>-latest.json`: the plan (`schema: 1`). `summary` has `{files, delete, bytes, rows, conflicts}`, followed by `tables[]`, `plugins[]`, `themes[]`, `other[]`, `conflicts[]` and `warnings[]`.
   - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
   - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
+  - Plugin entries also carry `presence` (`both`, `local-only`, `remote-only`, `none`, or `null` when the remote sent no inventory), `orphan` (the sides holding a plugin folder with no readable header) and `active_missing` (the sides whose `active_plugins` names a plugin whose folder is gone).
+  - When the scope covers the whole `plugins/` folder, `plugins[]` lists every plugin on either side, not only the ones that move. To inventory a remote's plugins, run `wp envsync plugins <env> --json` instead of reading a plan: it needs no scope and changes nothing.
   - `--format=json` prints the same object.
 - `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
 

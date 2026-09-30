@@ -46,8 +46,13 @@ class IXES_Report {
 
 		$act_b = array_map( [ __CLASS__, 'plugin_slug' ], (array) $in['active_before'] );
 		$act_a = array_map( [ __CLASS__, 'plugin_slug' ], (array) $in['active_after'] );
-		$slugs = array_unique( array_merge( array_keys( $groups['plugins'] ?? [] ), array_diff( $act_b, $act_a ), array_diff( $act_a, $act_b ) ) );
-		sort( $slugs );
+		// where each plugin lives; with list_plugins (the scope covers plugins/) every plugin on either side gets a row
+		$inv = [];
+		foreach ( self::plugin_inventory( $push ? $source : $before, $push ? $before : $source, $in['active_local'] ?? null, $in['active_remote'] ?? null ) as $x ) $inv[ $x['slug'] ] = $x;
+		$slugs = array_merge( array_map( 'strval', array_keys( $groups['plugins'] ?? [] ) ), array_diff( $act_b, $act_a ), array_diff( $act_a, $act_b ) );
+		if ( ! empty( $in['list_plugins'] ) ) $slugs = array_merge( $slugs, array_column( $inv, 'slug' ) );
+		$slugs = array_unique( $slugs );
+		sort( $slugs, SORT_STRING | SORT_FLAG_CASE );
 		foreach ( $slugs as $slug ) {
 			$g = $groups['plugins'][ $slug ] ?? [ 'files' => 0, 'delete' => 0, 'bytes' => $sizes === null ? null : 0 ];
 			$b = in_array( $slug, $act_b, true ); $a = in_array( $slug, $act_a, true );
@@ -56,6 +61,9 @@ class IXES_Report {
 				'version' => [ 'before' => $vb, 'after' => ( $g['files'] + $g['delete'] ) ? $ver( $source, 'plugins', $slug ) : $vb ],
 				'active' => [ 'before' => $b, 'after' => $a ],
 				'change' => $a && ! $b ? 'turns on' : ( $b && ! $a ? 'turns off' : ( $a ? 'stays on' : '' ) ),
+				'presence' => $inv[ $slug ]['presence'] ?? null,
+				'orphan' => $inv[ $slug ]['orphan'] ?? [],
+				'active_missing' => $inv[ $slug ]['active_missing'] ?? [],
 			];
 		}
 
@@ -78,6 +86,68 @@ class IXES_Report {
 		foreach ( $groups['other'] ?? [] as $group => $g ) $r['other'][] = [ 'group' => $group ] + $g;
 		usort( $r['other'], function ( $x, $y ) { return self::other_rank( $x['group'] ) <=> self::other_rank( $y['group'] ) ?: strcmp( $x['group'], $y['group'] ); } );
 		return $r;
+	}
+
+	/**
+	 * Every plugin on either side, sorted by slug. An inventory's 'orphans' are plugin folders with no readable header.
+	 * presence: 'both', 'local-only', 'remote-only', or 'none' (only an active_plugins entry names it); null while a side's
+	 * inventory is unknown (an old remote), whose versions then read '?'. A null active list leaves that side's active null.
+	 * orphan: the sides holding the folder without a header; active_missing: the sides whose active_plugins names it but lack the folder.
+	 */
+	public static function plugin_inventory( $local, $remote, $active_local, $active_remote ) {
+		$sides = [ 'local' => [ $local, $active_local ], 'remote' => [ $remote, $active_remote ] ];
+		$has = []; $orph = []; $act = []; $slugs = [];
+		foreach ( $sides as $k => $s ) {
+			list( $inv, $active ) = $s;
+			$orph[ $k ] = $inv === null ? [] : array_map( 'strval', (array) ( $inv['orphans'] ?? [] ) );
+			$has[ $k ] = $inv === null ? null : array_merge( array_map( 'strval', array_keys( (array) ( $inv['plugins'] ?? [] ) ) ), $orph[ $k ] );
+			$act[ $k ] = $active === null ? null : array_map( [ __CLASS__, 'plugin_slug' ], (array) $active );
+			$slugs = array_merge( $slugs, (array) $has[ $k ], (array) $act[ $k ] );
+		}
+		$slugs = array_unique( $slugs );
+		sort( $slugs, SORT_STRING | SORT_FLAG_CASE );
+		$rows = [];
+		foreach ( $slugs as $slug ) {
+			$row = [ 'slug' => $slug, 'presence' => null, 'version' => [], 'active' => [], 'orphan' => [], 'active_missing' => [] ];
+			$there = [];
+			foreach ( $sides as $k => $s ) {
+				$there[ $k ] = $has[ $k ] === null ? null : in_array( $slug, $has[ $k ], true );
+				$row['version'][ $k ] = $s[0] === null ? '?' : ( isset( $s[0]['plugins'][ $slug ] ) ? (string) $s[0]['plugins'][ $slug ] : null );
+				$row['active'][ $k ] = $act[ $k ] === null ? null : in_array( $slug, $act[ $k ], true );
+				if ( in_array( $slug, $orph[ $k ], true ) ) $row['orphan'][] = $k;
+				if ( $there[ $k ] === false && $row['active'][ $k ] ) $row['active_missing'][] = $k;
+			}
+			if ( $there['local'] !== null && $there['remote'] !== null ) {
+				$row['presence'] = $there['local'] ? ( $there['remote'] ? 'both' : 'local-only' ) : ( $there['remote'] ? 'remote-only' : 'none' );
+			}
+			$rows[] = $row;
+		}
+		return $rows;
+	}
+
+	/** `wp envsync plugins <env>`: the side-by-side table from plugin_inventory(). */
+	public static function render_inventory( array $rows, $env ) {
+		$v = function ( $x ) { return $x === null ? '—' : (string) $x; };
+		$o = [ "local  ↔  {$env}", self::table( [ 'plugin', 'local', $env, 'active', 'note' ], array_map( function ( $x ) use ( $v, $env ) {
+			$a = $x['active'];
+			$on = $a['local'] && $a['remote'] ? 'both' : ( $a['local'] ? 'local' : ( $a['remote'] ? $env : ( $a['remote'] === null ? '?' : '' ) ) );
+			return [ $x['slug'], $v( $x['version']['local'] ), $v( $x['version']['remote'] ), $on, self::plugin_note( $x ) ];
+		}, $rows ) ) ];
+		if ( ! $rows ) $o[] = 'No plugins on either side.';
+		return implode( "\n", $o ) . "\n";
+	}
+
+	private static function plugin_note( array $x ) {
+		$n = [];
+		if ( in_array( $x['presence'] ?? null, [ 'local-only', 'remote-only' ], true ) ) $n[] = str_replace( '-', ' ', $x['presence'] );
+		foreach ( $x['orphan'] ?? [] as $s ) $n[] = "orphan folder ({$s})";
+		foreach ( $x['active_missing'] ?? [] as $s ) $n[] = "active, folder missing ({$s})";
+		return implode( '; ', $n );
+	}
+
+	// a plan's text lists a plugin only when something moves, its activation flips, or it has a note
+	private static function plugin_shown( array $x ) {
+		return $x['files'] || $x['delete'] || $x['change'] === 'turns on' || $x['change'] === 'turns off' || self::plugin_note( $x ) !== '';
 	}
 
 	// ---------- adapters: read WordPress state, then call build() ----------
@@ -107,6 +177,7 @@ class IXES_Report {
 			'files' => $plan['files']['push'], 'deletes' => $plan['files']['delete'], 'sizes' => $sizes,
 			'before' => $before, 'source' => IXES_Transfer::inventory(),
 			'active_before' => $remote_active, 'active_after' => $plan['active_plugins'] !== null ? $plan['active_plugins'] : $remote_active,
+			'active_local' => (array) get_option( 'active_plugins', [] ), 'active_remote' => $remote_active, 'list_plugins' => $sc->lists_plugins(),
 			'stylesheet_after' => $moves_ss ? get_stylesheet() : ( $before['stylesheet'] ?? null ),
 			'conflicts' => $conflicts, 'warnings' => (array) ( $plan['warnings'] ?? [] ),
 			'drop_tables' => self::drops( (array) ( $plan['drop_tables'] ?? [] ) ),
@@ -136,6 +207,7 @@ class IXES_Report {
 			'files' => $plan['files']['transfer'], 'deletes' => $plan['files']['delete'], 'sizes' => $plan['sizes'] ?? null,
 			'before' => $local, 'source' => $remote,
 			'active_before' => $local_active, 'active_after' => $opts_in ? (array) ( $plan['info']['active_plugins'] ?? [] ) : $local_active,
+			'active_local' => $local_active, 'active_remote' => (array) ( $plan['info']['active_plugins'] ?? [] ), 'list_plugins' => $sc->lists_plugins(),
 			'stylesheet_after' => $opts_in ? ( $remote['stylesheet'] ?? null ) : $local['stylesheet'],
 			'conflicts' => [], 'warnings' => (array) ( $plan['warnings'] ?? [] ),
 			'drop_tables' => self::drops( (array) ( $plan['drop_local'] ?? [] ) ),
@@ -195,13 +267,15 @@ class IXES_Report {
 			foreach ( $r['schema_changes'] as $table => $cols ) foreach ( array_keys( $cols ) as $col ) $o[] = "  {$table}.{$col}  (new column)";
 		}
 		$has_del = $s['delete'] > 0;
+		$shown = [ 'plugins' => array_values( array_filter( $r['plugins'], [ __CLASS__, 'plugin_shown' ] ) ), 'themes' => $r['themes'] ];
 		foreach ( [ 'plugins' => 'plugin', 'themes' => 'theme' ] as $k => $label ) {
-			if ( ! $r[ $k ] ) continue;
+			if ( ! $shown[ $k ] ) continue;
 			$o[] = ''; $o[] = strtoupper( $k );
-			$head = array_merge( [ $label, 'files' ], $has_del ? [ 'delete' ] : [], [ 'size', 'version', 'active' ] );
-			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del ) {
-				return array_merge( [ $x['slug'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—', self::version( $x['version'] ), $x['change'] ] );
-			}, $r[ $k ] ) );
+			$notes = $k === 'plugins' && array_filter( array_map( [ __CLASS__, 'plugin_note' ], $shown[ $k ] ) );
+			$head = array_merge( [ $label, 'files' ], $has_del ? [ 'delete' ] : [], [ 'size', 'version', 'active' ], $notes ? [ 'note' ] : [] );
+			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del, $notes ) {
+				return array_merge( [ $x['slug'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—', self::version( $x['version'] ), $x['change'] ], $notes ? [ self::plugin_note( $x ) ] : [] );
+			}, $shown[ $k ] ) );
 		}
 		if ( $r['other'] ) {
 			$o[] = ''; $o[] = 'OTHER FILES';
@@ -217,7 +291,7 @@ class IXES_Report {
 			$why = [ 'baseline' => 'dropped on the other side since the baseline', 'mirror' => 'first deploy (--mirror)', 'asked' => '--drop-tables' ];
 			$o[] = self::table( [ 'table', 'rows', 'why' ], array_map( function ( $t ) use ( $why ) { return [ $t['name'], $t['rows'], $why[ $t['why'] ] ?? $t['why'] ]; }, $r['drop_tables'] ) );
 		}
-		if ( ! $s['files'] && ! $s['delete'] && ! $r['tables'] && ! $r['plugins'] && ! $r['themes'] && empty( $r['drop_tables'] ) ) { $o[] = ''; $o[] = 'Nothing to ' . ( $push ? 'push' : 'pull' ) . '.'; }
+		if ( ! $s['files'] && ! $s['delete'] && ! $r['tables'] && ! $shown['plugins'] && ! $r['themes'] && empty( $r['drop_tables'] ) ) { $o[] = ''; $o[] = 'Nothing to ' . ( $push ? 'push' : 'pull' ) . '.'; }
 		return implode( "\n", $o ) . "\n";
 	}
 
