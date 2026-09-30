@@ -209,6 +209,11 @@ class IXES_Applier {
 		return $verb === 'REPLACE' ? $wpdb->replace( $table, $row ) : $wpdb->insert( $table, $row );
 	}
 
+	/** Where a pushed file is written: mu-plugins and drop-ins wait in the job's stage/ folder until job_finish() moves them in. */
+	private static function write_root( $job, $rel ) {
+		return IXES_Mu::is_boot_path( (string) IXES_Transfer::safe_rel( $rel ) ) ? self::job_dir( $job ) . '/stage' : WP_CONTENT_DIR;
+	}
+
 	public static function job_step( array $p ) {
 		global $wpdb;
 		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
@@ -274,7 +279,7 @@ class IXES_Applier {
 				return [ 'ok' => false, 'refused' => [ $rel ] ];
 			}
 			$bytes = array_key_exists( 'bin', $p ) ? (string) $p['bin'] : base64_decode( (string) ( $p['data'] ?? '' ) );
-			$r = IXES_Transfer::write_file_chunk( $rel, (int) ( $p['offset'] ?? 0 ), $bytes, ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ) );
+			$r = IXES_Transfer::write_file_chunk( $rel, (int) ( $p['offset'] ?? 0 ), $bytes, ! empty( $p['final'] ), (string) ( $p['sha256'] ?? '' ), self::write_root( $p['job'], $rel ) );
 			if ( is_wp_error( $r ) ) return $r;
 			return [ 'ok' => true ];
 		}
@@ -295,7 +300,7 @@ class IXES_Applier {
 				// a retried batch finds files it already wrote: identical content is done, not a conflict
 				if ( self::file_matches( $rel, (string) ( $m['sha256'] ?? '' ), 'sha256' ) ) continue;
 				if ( array_key_exists( 'expect', $m ) && ! self::file_matches( $rel, $m['expect'], $m['algo'] ?? 'sha1' ) ) { $refused[] = $rel; continue; }
-				$r = IXES_Transfer::write_file_chunk( $rel, 0, $bytes, true, (string) ( $m['sha256'] ?? '' ) );
+				$r = IXES_Transfer::write_file_chunk( $rel, 0, $bytes, true, (string) ( $m['sha256'] ?? '' ), self::write_root( $p['job'], $rel ) );
 				if ( is_wp_error( $r ) ) return $r;
 			}
 			return [ 'ok' => true, 'refused' => $refused ];
@@ -460,6 +465,9 @@ class IXES_Applier {
 
 	public static function job_finish( array $p ) {
 		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		// last of all, after every file and row: the staged mu-plugins and drop-ins land in one local step
+		$r = IXES_Mu::commit_staged( self::job_dir( $p['job'] ) . '/stage', WP_CONTENT_DIR );
+		if ( is_wp_error( $r ) ) return new WP_Error( $r->get_error_code(), $r->get_error_message(), [ 'status' => 500 ] );
 		wp_cache_flush(); flush_rewrite_rules();
 		self::maintenance( false );
 		delete_transient( self::LOCK );
@@ -547,6 +555,8 @@ class IXES_Applier {
 			}
 		}
 		foreach ( (array) ( $meta['created_files'] ?? [] ) as $rel ) IXES_Transfer::delete_file( $rel );
+		// staged mu-plugins and drop-ins that never reached wp-content
+		if ( is_dir( $dir . '/stage' ) ) self::rrmdir( $dir . '/stage' );
 		foreach ( (array) ( $meta['inserted_option_names'] ?? [] ) as $name ) { $wpdb->delete( $wpdb->options, [ 'option_name' => (string) $name ] ); $n++; }
 		foreach ( (array) ( $meta['created_tables'] ?? [] ) as $table ) {
 			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
@@ -659,10 +669,13 @@ class IXES_Applier {
 		$meta_for = function ( $rel ) use ( $file_hashes, $plan ) { return array_key_exists( $rel, $file_hashes ) ? [ 'expect' => $file_hashes[ $rel ], 'algo' => $plan['algo'] ] : []; };
 		$sizes = [];
 		foreach ( $present as $rel ) $sizes[ $rel ] = (int) filesize( WP_CONTENT_DIR . '/' . $rel );
+		// mu-plugins and drop-ins travel last, one request at a time, each folder before its loader (a 0.9.7 remote also stages them until /job/finish)
+		$boot = IXES_Mu::boot_last( array_values( array_filter( $present, [ 'IXES_Mu', 'is_boot_path' ] ) ) );
+		$rest = array_diff_key( $sizes, array_flip( $boot ) );
 		// a 0.8.0 remote gets $parallel batches at once, each sized so all of them have work; older ones one at a time
 		$par = $c->batch_files() ? max( 1, (int) $parallel ) : 1;
-		$packed = in_array( 'batch', $caps, true ) ? IXES_Batch::pack( $sizes, $par > 1 ? IXES_Batch::budget( array_sum( array_filter( $sizes, function ( $n ) { return $n <= IXES_Batch::SMALL; } ) ), $par ) : IXES_Batch::MAX_BYTES ) : [ 'batches' => [], 'large' => $present ];
-		$items_for = function ( $k ) use ( $packed, $meta_for ) {
+		$packed = in_array( 'batch', $caps, true ) ? IXES_Batch::pack( $rest, $par > 1 ? IXES_Batch::budget( array_sum( array_filter( $rest, function ( $n ) { return $n <= IXES_Batch::SMALL; } ) ), $par ) : IXES_Batch::MAX_BYTES ) : [ 'batches' => [], 'large' => array_keys( $rest ) ];
+		$items_for = function ( $k ) use ( &$packed, $meta_for ) {
 			$items = [];
 			foreach ( $packed['batches'][ $k ] as $rel ) {
 				$data = (string) file_get_contents( WP_CONTENT_DIR . '/' . $rel );
@@ -672,7 +685,7 @@ class IXES_Applier {
 		};
 		// batches that landed are not sent again when the error menu says retry
 		$landed = [];
-		$on_done = function ( $k, $r ) use ( $packed, $sizes, $progress, &$stale, &$landed ) {
+		$on_done = function ( $k, $r ) use ( &$packed, $sizes, $progress, &$stale, &$landed ) {
 			$landed[ $k ] = true;
 			$refused = array_flip( (array) ( $r['refused'] ?? [] ) );
 			foreach ( $packed['batches'][ $k ] as $rel ) {
@@ -688,16 +701,31 @@ class IXES_Applier {
 			} );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 		}
-		foreach ( $packed['large'] as $rel ) {
+		$send_large = function ( $rel ) use ( $call, $c, $job, $meta_for, $on_bytes, $progress, &$stale ) {
 			$r = $call( function () use ( $c, $job, $rel, $meta_for, $on_bytes ) { return $c->send_file( $job, $rel, WP_CONTENT_DIR . '/' . $rel, $meta_for( $rel ), $on_bytes ); } );
+			if ( is_wp_error( $r ) ) return $r;
+			if ( $r['refused'] ) $stale[] = "file: {$rel}"; else $progress->item( $rel );
+			return true;
+		};
+		foreach ( $packed['large'] as $rel ) {
+			$r = $send_large( $rel );
 			if ( is_wp_error( $r ) ) return $fail( $r );
-			if ( $r['refused'] ) { $stale[] = "file: {$rel}"; continue; }
-			$progress->item( $rel );
+		}
+		$boot_sizes = [];
+		foreach ( $boot as $rel ) $boot_sizes[ $rel ] = $sizes[ $rel ];
+		foreach ( in_array( 'batch', $caps, true ) ? IXES_Mu::ordered_runs( $boot_sizes ) : array_map( function ( $rel ) { return [ 'large' => $rel ]; }, $boot ) as $run ) {
+			if ( isset( $run['large'] ) ) { $r = $send_large( $run['large'] ); if ( is_wp_error( $r ) ) return $fail( $r ); continue; }
+			$k = 'boot' . count( $packed['batches'] );
+			$packed['batches'][ $k ] = $run['batch'];
+			$r = $call( function () use ( $c, $job, $k, $items_for, $on_done, &$landed ) {
+				return isset( $landed[ $k ] ) ? true : $c->send_batches( $job, [ $k ], 1, $items_for, $on_done );
+			} );
+			if ( is_wp_error( $r ) ) return $fail( $r );
 		}
 		$progress->end();
 		if ( $plan['files']['delete'] ) {
 			$expect = array_intersect_key( $file_hashes, array_flip( $plan['files']['delete'] ) );
-			$step = [ 'job' => $job, 'kind' => 'delete_files', 'paths' => $plan['files']['delete'], 'expect' => $expect, 'algo' => $plan['algo'] ];
+			$step = [ 'job' => $job, 'kind' => 'delete_files', 'paths' => IXES_Mu::loaders_first( $plan['files']['delete'] ), 'expect' => $expect, 'algo' => $plan['algo'] ];
 			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			foreach ( (array) ( $r['refused'] ?? [] ) as $ref ) $stale[] = "file: {$ref}";

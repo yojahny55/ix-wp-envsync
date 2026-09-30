@@ -150,14 +150,8 @@ class IXES_CLI {
 				else $env['basic_auth'] = (string) $assoc['basic-auth'];
 			}
 			if ( isset( $assoc['exclude'] ) )    $env['excludes'] = array_values( array_filter( explode( ',', $assoc['exclude'] ) ) );
-			if ( isset( $assoc['add-exclude'] ) ) {
-				$add = array_filter( explode( ',', $assoc['add-exclude'] ) );
-				$env['excludes'] = array_values( array_unique( array_merge( (array) $env['excludes'], $add ) ) );
-			}
-			if ( isset( $assoc['remove-exclude'] ) ) {
-				$drop = array_filter( explode( ',', $assoc['remove-exclude'] ) );
-				$env['excludes'] = array_values( array_diff( (array) $env['excludes'], $drop ) );
-			}
+			if ( isset( $assoc['add-exclude'] ) )    $env = IXES_Mu::add_excludes( $env, array_filter( explode( ',', $assoc['add-exclude'] ) ) );
+			if ( isset( $assoc['remove-exclude'] ) ) $env = IXES_Mu::remove_excludes( $env, array_filter( explode( ',', $assoc['remove-exclude'] ) ) );
 			if ( isset( $assoc['replace'] ) ) {
 				$replace = [];
 				foreach ( array_filter( explode( ',', $assoc['replace'] ) ) as $p ) { $x = explode( ':', $p, 2 ); if ( count( $x ) === 2 ) $replace[] = $x; }
@@ -177,9 +171,11 @@ class IXES_CLI {
 			$own  = IXES_Transfer::own_dir();
 			foreach ( array_filter( [ 'envsync-*/ (storage)', $own ? $own . ' (this plugin)' : '' ] ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'always' ];
 			foreach ( IXES_Env::default_excludes() as $p ) $rows[] = [ 'path' => $p, 'source' => 'default' ];
+			foreach ( IXES_Mu::host_excludes( $env ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'host-specific (' . IXES_Mu::HOST_SPECIFIC[ $p ] . ')' ];
 			foreach ( (array) $env['excludes'] as $p ) $rows[] = [ 'path' => $p, 'source' => 'this env' ];
 			WP_CLI\Utils\format_items( 'table', $rows, [ 'path', 'source' ] );
-			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop one of the "this env" rows with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
+			foreach ( (array) ( $env['host_included'] ?? [] ) as $p ) WP_CLI::log( "synced although host-specific: {$p} (--add-exclude={$p} excludes it again)" );
+			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop a "this env" or "host-specific" row with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); $this->forget_status(); WP_CLI::success( 'removed' ); return; }
@@ -477,6 +473,8 @@ class IXES_CLI {
 			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); WP_CLI::error( "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ); }
 			foreach ( $plan['tables'] as $n => &$t ) { $t['push'] = array_merge( $t['push'], $t['conflict'] ); $t['conflict'] = []; $t['kept'] = []; } unset( $t );
 			$plan['files']['push'] = array_merge( $plan['files']['push'], $plan['files']['conflict'] ); $plan['files']['conflict'] = [];
+			// no baseline says whose mu-plugins these are: they go only when --only names them
+			$plan = IXES_Mu::hold_boot( $plan, (array) ( $plan['scope']['only'] ?? [] ) );
 		}
 		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'push' );
@@ -556,7 +554,10 @@ class IXES_CLI {
 	 * : Restore the snapshot of the locked push (or the last one), clear its lock and the maintenance file.
 	 *
 	 * [--job=<id>]
-	 * : Job to roll back instead.
+	 * : Job to roll back or quarantine instead.
+	 *
+	 * [--quarantine-mu]
+	 * : Move the mu-plugins and drop-ins the push (--job, else the last one) brought into the storage folder's quarantine/, and put back the versions its snapshot kept. Runs without booting WordPress, so it works when a mu-plugin or drop-in fatals every request.
 	 *
 	 * [--restore-self]
 	 * : Put back the EnvSync folder the last self-update replaced.
@@ -569,7 +570,19 @@ class IXES_CLI {
 	 */
 	public function rescue( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
-		// before 'status': that action loads the plugin, and the plugin may be exactly what is broken
+		// before 'status': that action boots WordPress, and a mu-plugin or drop-in may be exactly what fatals
+		if ( ! empty( $assoc['quarantine-mu'] ) ) {
+			$job = isset( $assoc['job'] ) ? (string) $assoc['job'] : '';
+			$this->confirm( $assoc, 'Move the mu-plugins and drop-ins ' . ( $job !== '' ? "job {$job}" : 'the last push' ) . " brought to {$env['name']} into quarantine?" );
+			$r = $c->rescue( 'quarantine_mu', $job !== '' ? [ 'job' => $job ] : [] );
+			if ( is_wp_error( $r ) ) WP_CLI::error( $r->get_error_message() . "\n--quarantine-mu needs EnvSync 0.9.7 on {$env['name']}, and a push made with it (the push leaves the key it checks). Otherwise use the host's file manager: move the new files out of wp-content/mu-plugins." );
+			foreach ( (array) $r['errors'] as $e ) WP_CLI::warning( $e );
+			WP_CLI::log( 'quarantined: ' . ( $r['quarantined'] ? implode( ', ', $r['quarantined'] ) : 'nothing' ) );
+			WP_CLI::log( 'restored from the snapshot: ' . ( $r['restored'] ? implode( ', ', $r['restored'] ) : 'nothing' ) );
+			WP_CLI::success( "job {$r['job']}: the files sit in the storage folder under quarantine/{$r['job']}/. Next: wp envsync rescue {$env['name']} --rollback to undo the rest of the push, or wp envsync unlock {$env['name']} to keep it" );
+			$this->forget_status();
+			return;
+		}
 		if ( ! empty( $assoc['restore-self'] ) ) {
 			$from = (string) ( $assoc['from'] ?? '' );
 			if ( $from === '' ) {
@@ -585,7 +598,7 @@ class IXES_CLI {
 		}
 		$s = $c->rescue( 'status' );
 		if ( is_wp_error( $s ) ) {
-			WP_CLI::error( $s->get_error_message() . "\nThe rescue endpoint ({$c->rescue_url()}) did not answer. Either the remote runs a plugin older than 0.5.1, or the host blocks PHP files under wp-content/plugins. Use the host's file manager or terminal: rename the crashing plugin's folder under wp-content/plugins." );
+			WP_CLI::error( $s->get_error_message() . "\nThe rescue endpoint ({$c->rescue_url()}) did not answer. Either the remote runs a plugin older than 0.5.1, or the host blocks PHP files under wp-content/plugins. Use the host's file manager or terminal: rename the crashing plugin's folder under wp-content/plugins.\nIf it answered with a critical error, a mu-plugin or drop-in crashes, and those load even here: wp envsync rescue {$env['name']} --quarantine-mu" );
 		}
 		WP_CLI::log( "{$env['name']}  {$env['url']}  (rescue mode: no plugins, no theme)" );
 		WP_CLI::log( '  plugin ' . $s['plugin'] . ( $s['maintenance'] ? '  · maintenance file present' : '' ) );

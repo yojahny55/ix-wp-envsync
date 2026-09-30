@@ -27,7 +27,7 @@ class IXES_Pull {
 	}
 
 	public static function excludes( array $env ) {
-		return array_merge( IXES_Env::default_excludes(), (array) $env['excludes'] );
+		return array_merge( IXES_Env::default_excludes(), IXES_Mu::host_excludes( $env ), (array) $env['excludes'] );
 	}
 
 	/**

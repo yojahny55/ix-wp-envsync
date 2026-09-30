@@ -130,6 +130,8 @@ class IXES_Planner {
 			if ( $mirror ) $fd = IXES_Differ::mirror( $fd, $local_files, $remote_files );
 			$plan['files'] = [ 'push' => array_merge( $fd['push'], $fd['insert'] ), 'delete' => $fd['delete'], 'conflict' => $fd['conflict'], 'kept' => $fd['kept'] ];
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
+			// only after env add --remove-exclude took a host's own path back into the sync
+			$plan['warnings'] = array_merge( $plan['warnings'], IXES_Mu::host_warnings( $plan['files']['push'], $plan['remote_file_hashes'], $env['name'] ) );
 		}
 		return $plan;
 	}

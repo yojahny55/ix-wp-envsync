@@ -225,6 +225,9 @@ What `--force` does when there is no baseline:
 | Only on local | Inserted on the remote |
 | On both sides, different | **Local overwrites the remote** |
 | Only on the remote | Kept. Nothing is deleted, unless you add `--mirror` |
+| A mu-plugin or drop-in | **Held back**, unless `--only` names `mu-plugins` |
+
+Mu-plugins and drop-ins load on every request, rescue included, so a forced push leaves them out and says how many it held back. Check that each one belongs on the new host, then send them on their own: `wp envsync push prod --force --only=mu-plugins` (drop-ins travel with that too).
 
 ### Replacing what the remote already has: `--mirror`
 
@@ -512,6 +515,15 @@ From 0.8.0, in both directions:
 
 Both sides need 0.8.0 or newer. Against an older remote the hub falls back on its own: a pull fetches one file per request, a push sends plain batches one at a time. The plan says which way the files will go, with a `TRANSFER` line, and names the version to upload when the remote is older. `status` flags a remote older than the hub.
 
+#### Mu-plugins and drop-ins
+
+Must-use plugins (`mu-plugins/`) and drop-ins (`db.php`, `object-cache.php`, `sunrise.php` and the rest of WordPress's list) load on every request, `rescue.php` included. A half-copied one takes the whole site down, so:
+
+- The plan lists them in their own **MU-PLUGINS AND DROP-INS** section, one row per file or top-level folder, marked `new`, `changed` or `delete`, and warns whenever a push sends one. The JSON manifest carries the same rows as `mu_plugins[]` (`slug`, `files`, `delete`, `bytes`, `change`).
+- A push sends them after every other file, one request at a time, each folder before the loader file that requires it. Deletes go the other way round: the loader first.
+- From 0.9.7 the remote writes them into the job's `stage/` folder and moves them into `wp-content` only at the end of the push, after the database. A push that fails half-way leaves `mu-plugins/` untouched.
+- If one still crashes the site, `wp envsync rescue <env> --quarantine-mu` moves them aside without booting WordPress (see [rescue](#wp-envsync-rescue-env)).
+
 Batches finish in any order. A pull records every file that was written and verified, not a position in the list, so an interrupted pull resumes with exactly the files that did not land.
 
 Rows are paged by count and by an ~4 MB byte budget, whichever is hit first, so a page of a handful of very wide rows (a table with a lot of post content or serialized options) doesn't outgrow the transfer either. On each side, `INSERT`/`REPLACE` statements built from an incoming page are themselves split to stay under ~75% of that site's own `max_allowed_packet` (read once per sync), so a database with a small packet limit never drops the connection with "MySQL server has gone away" no matter how the other side paged.
@@ -558,7 +570,8 @@ Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back �
 Recovers a remote that crashes on every request, through `rescue.php` (no plugins, no theme loaded). With no flag it only reports the active plugins, the lock and the last job.
 
 - `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
-- `--job=<id>` — roll back this job instead.
+- `--quarantine-mu` — for a site that a mu-plugin or drop-in crashes, which the other flags cannot reach because WordPress loads those even in rescue mode. Moves every mu-plugin and drop-in the last push (or `--job`) sent or deleted into the storage folder's `quarantine/<job>/`, and puts back the versions the push's snapshot kept. It never boots WordPress: it checks the token against a key the push left in the storage folder, and touches files only. Needs 0.9.7 on the remote when the push ran. The lock and the maintenance file stay: follow with `--rollback` to undo the rest of the push, or `unlock` to keep it.
+- `--job=<id>` — roll back or quarantine this job instead.
 - `--plugins-off` — deactivate every plugin except EnvSync.
 - `--restore-self` — put back the EnvSync folder the last self-update replaced. It obeys the same gates as a self-update (the opt-out, `DISALLOW_FILE_MODS`, no symlinked plugin folder) and only restores the version it names.
 - `--from=<version>` — with `--restore-self`: the version to put back. Default: the version the remote's backup holds.
@@ -601,11 +614,24 @@ wp envsync env add prod --add-exclude=uploads/rank-math/,cache/
 wp envsync env excludes prod
 ```
 
-`env excludes` shows the whole effective list and marks each entry as `always`, `default`, or `this env`. Only `this env` rows can be removed.
+`env excludes` shows the whole effective list and marks each entry as `always`, `default`, `host-specific`, or `this env`. Only `host-specific` and `this env` rows can be removed.
+
+### Host-specific files
+
+Managed hosts install their own mu-plugins and plugins, which only work on that host: Plesk WP Toolkit (`mu-plugins/wp-toolkit.php`, `mu-plugins/wp-toolkit/`), Imunify (`mu-plugins/imunify-security-bots.php`, `plugins/imunify-security/`, `imunify-security/`), and the mu-plugins of WP Engine, Kinsta, GoDaddy, Pantheon and Bluehost. Copied to another host, they can take the site down.
+
+EnvSync excludes that built-in list by default, on pull and push alike. `env excludes` shows each entry with its host. To sync one anyway, remove it for that environment, and add it back to exclude it again:
+
+```bash
+wp envsync env add staging --remove-exclude=mu-plugins/wp-toolkit.php,mu-plugins/wp-toolkit/
+wp envsync env add staging --add-exclude=mu-plugins/wp-toolkit.php,mu-plugins/wp-toolkit/
+```
+
+A plan that would send one of them to an environment that does not have it says so in its warnings.
 
 Paths are relative to wp-content. A trailing slash means the folder and everything under it, and nested paths work, such as `uploads/rank-math/`. A folder exclude matches only at that path: `cache/` is `wp-content/cache/`, not a plugin's own `src/cache/` folder. The exceptions are `.git/` and `node_modules/`, which are skipped wherever they appear.
 
-Some things are always excluded and cannot be synced: `wp-config.php`, `.htaccess`, `.env`, `debug.log`, drop-ins, `.git`, `node_modules`, this plugin's own folder, and its storage folder.
+Some things are always excluded and cannot be synced: `wp-config.php`, `.htaccess`, `.env`, `debug.log`, the `object-cache.php` and `advanced-cache.php` drop-ins, `.git`, `node_modules`, this plugin's own folder, and its storage folder.
 
 ---
 

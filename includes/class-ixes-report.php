@@ -33,12 +33,22 @@ class IXES_Report {
 		$groups = [];
 		foreach ( [ 'files' => $in['files'], 'delete' => $in['deletes'] ] as $k => $list ) {
 			foreach ( $list as $rel ) {
+				if ( IXES_Mu::is_boot_path( $rel ) ) continue; // their own section, below
 				list( $kind, $key ) = self::group_of( $rel );
 				if ( ! isset( $groups[ $kind ][ $key ] ) ) $groups[ $kind ][ $key ] = [ 'files' => 0, 'delete' => 0, 'bytes' => $sizes === null ? null : 0 ];
 				$groups[ $kind ][ $key ][ $k ]++;
 				if ( $k === 'files' && $sizes !== null ) $groups[ $kind ][ $key ]['bytes'] += (int) ( $sizes[ $rel ] ?? 0 );
 			}
 		}
+		// mu-plugins and drop-ins load on every request, rescue included: never folded into OTHER FILES
+		$r['mu_plugins'] = IXES_Mu::groups( $in['files'], $in['deletes'], $push ? (array) ( $in['new_files'] ?? [] ) : null );
+		$mu_bytes = [];
+		foreach ( $in['files'] as $rel ) {
+			if ( $sizes !== null && IXES_Mu::is_boot_path( $rel ) ) $mu_bytes[ IXES_Mu::slug_of( $rel ) ] = ( $mu_bytes[ IXES_Mu::slug_of( $rel ) ] ?? 0 ) + (int) ( $sizes[ $rel ] ?? 0 );
+		}
+		foreach ( $r['mu_plugins'] as &$m ) $m['bytes'] = $sizes === null ? null : ( $mu_bytes[ $m['slug'] ] ?? 0 );
+		unset( $m );
+		if ( $push && $r['mu_plugins'] ) $r['warnings'][] = sprintf( IXES_Mu::WARNING, $in['env'] );
 		if ( $sizes !== null ) { $r['summary']['bytes'] = 0; foreach ( $in['files'] as $rel ) $r['summary']['bytes'] += (int) ( $sizes[ $rel ] ?? 0 ); }
 
 		$before = $in['before']; $source = $in['source'];
@@ -105,6 +115,7 @@ class IXES_Report {
 			'baseline_at' => $plan['baseline_at'], 'first_deploy' => (bool) $plan['two_way'], 'scope' => $sc->label(), 'scope_full' => $sc->is_full(),
 			'tables' => $tables, 'new_tables' => array_keys( (array) ( $plan['new_tables'] ?? [] ) ), 'rows' => null,
 			'files' => $plan['files']['push'], 'deletes' => $plan['files']['delete'], 'sizes' => $sizes,
+			'new_files' => array_keys( array_filter( array_intersect_key( (array) ( $plan['remote_file_hashes'] ?? [] ), array_flip( $plan['files']['push'] ) ), 'is_null' ) ),
 			'before' => $before, 'source' => IXES_Transfer::inventory(),
 			'active_before' => $remote_active, 'active_after' => $plan['active_plugins'] !== null ? $plan['active_plugins'] : $remote_active,
 			'stylesheet_after' => $moves_ss ? get_stylesheet() : ( $before['stylesheet'] ?? null ),
@@ -202,6 +213,11 @@ class IXES_Report {
 			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del ) {
 				return array_merge( [ $x['slug'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—', self::version( $x['version'] ), $x['change'] ] );
 			}, $r[ $k ] ) );
+		}
+		if ( ! empty( $r['mu_plugins'] ) ) {
+			$o[] = ''; $o[] = 'MU-PLUGINS AND DROP-INS (load on every request)';
+			$head = array_merge( [ 'path', 'files' ], $has_del ? [ 'delete' ] : [], [ 'size', 'change' ] );
+			$o[] = self::table( $head, array_map( function ( $x ) use ( $has_del ) { return array_merge( [ $x['slug'], $x['files'] ], $has_del ? [ $x['delete'] ] : [], [ $x['files'] ? self::size( $x['bytes'] ) : '—', $x['change'] ] ); }, $r['mu_plugins'] ) );
 		}
 		if ( $r['other'] ) {
 			$o[] = ''; $o[] = 'OTHER FILES';

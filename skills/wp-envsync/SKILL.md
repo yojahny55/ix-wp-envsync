@@ -203,7 +203,7 @@ All commands take `--path=<site>`.
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
-| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--quarantine-mu] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins; `--quarantine-mu` does not boot WordPress at all) |
 | `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
@@ -246,7 +246,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
    - `rescue <env> --plugins-off --yes` keeps the push and switches every plugin except EnvSync off; the user reactivates them in wp-admin.
 
    Wait for their choice.
-3. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
+3. If `rescue <env>` returns the same critical-error page, a mu-plugin or drop-in crashes (they load even in rescue mode). Offer `rescue <env> --quarantine-mu --yes`: it moves the mu-plugins and drop-ins the last push brought into quarantine without booting WordPress, and restores their previous versions. Then offer `--rollback` or `unlock` as above.
+4. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
 
 A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
 
@@ -292,6 +293,8 @@ wp --path=<site> envsync env add prod --remove-exclude=cache/              # dro
 - Never pass `--yes` to a plan the user has not approved in this conversation.
 - Do not push to a `prod`-labelled environment without explicit approval in this conversation.
 - Use `--force` only for a first deploy onto a fresh install the user has confirmed. Use `--mirror` only when the user asked for the remote's extra content to be deleted.
+- A plan's `MU-PLUGINS AND DROP-INS` section lists files that load on every request, rescue included. Show it to the user before any push that has one, and ask whether each `new` row belongs on that host. A forced push holds them back unless `--only` names `mu-plugins`.
+- Host-specific mu-plugins and plugins (Plesk WP Toolkit, Imunify, WP Engine, Kinsta and others; `env excludes` lists them) are excluded by default. Only `--remove-exclude` one when the user asks and the target runs on that same host.
 - A plan's `DROP TABLES` section drops whole tables (checked, copied to `--backup-dir` and kept for rollback first). Show it to the user before any push or pull that has one. Use `--drop-tables` only for tables the user named.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.
 - Never put a token in a file, a commit, or any message that leaves the machine.
