@@ -686,7 +686,13 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 ## For AI agents
 
-A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Copy that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff.
+A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Link that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff:
+
+```bash
+ln -s /path/to/ix-wp-envsync/skills/wp-envsync ~/.claude/skills/wp-envsync
+```
+
+Use a symlink rather than a copy. A copy freezes the skill at the version you copied, so it silently falls behind as new flags and workflows are documented here; a symlink follows the clone, and `git pull` keeps it current. If you already copied it, replace the copy with the link (`rm -r ~/.claude/skills/wp-envsync`, then the `ln -s` above).
 
 Agents should read files rather than terminal text:
 
