@@ -461,11 +461,12 @@ class IXES_Applier {
 	public static function job_finish( array $p ) {
 		if ( self::current_job() !== (string) ( $p['job'] ?? '' ) ) return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
 		wp_cache_flush(); flush_rewrite_rules();
+		$elementor = IXES_Elementor::clear_cache();
 		self::maintenance( false );
 		delete_transient( self::LOCK );
 		$jobs = glob( self::jobs_dir() . '/*', GLOB_ONLYDIR ); sort( $jobs );
 		foreach ( array_slice( $jobs, 0, max( 0, count( $jobs ) - 3 ) ) as $old ) self::rrmdir( $old );
-		return [ 'ok' => true ];
+		return [ 'ok' => true, 'elementor' => $elementor ];
 	}
 
 	public static function job_abort( array $p ) {
@@ -552,7 +553,7 @@ class IXES_Applier {
 			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
 		}
 		wp_cache_flush();
-		return [ 'restored' => $n, 'job' => $job, 'errors' => $errors ];
+		return [ 'restored' => $n, 'job' => $job, 'errors' => $errors, 'elementor' => IXES_Elementor::clear_cache() ];
 	}
 
 	private static function rrmdir( $d ) {
@@ -804,6 +805,7 @@ class IXES_Applier {
 
 		$r = $call( function () use ( $c, $job ) { return $c->post( '/job/finish', [ 'job' => $job ] ); } );
 		if ( is_wp_error( $r ) ) return $fail( $r );
+		$elementor = $r['elementor'] ?? null;
 
 		if ( $dropped ) {
 			// fresh urls: a page cache must not answer this round with the healthy pages of the first one
@@ -819,6 +821,6 @@ class IXES_Applier {
 			}
 		}
 
-		return [ 'job' => $job, 'stale' => $stale, 'dropped' => $dropped, 'kept_tables' => $kept_tables, 'backups' => $backups ];
+		return [ 'job' => $job, 'stale' => $stale, 'dropped' => $dropped, 'kept_tables' => $kept_tables, 'backups' => $backups, 'elementor' => $elementor ];
 	}
 }

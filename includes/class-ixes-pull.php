@@ -468,6 +468,8 @@ class IXES_Pull {
 
 		if ( $options_in ) IXES_Transfer::after_import( IXES_Env::local_url(), IXES_Env::local_abspath() );
 		IXES_Transfer::offset_auto_increment( $done );
+		$line = IXES_Elementor::line( IXES_Elementor::clear_cache() );
+		if ( $line ) $progress->note( $line );
 		$as_baseline = $bl->meta( 'pull_as_baseline' ) !== null ? $bl->meta( 'pull_as_baseline' ) === 'yes' : ! $partial;
 		if ( $as_baseline ) { $bl->meta( 'baseline_scope', $partial ? implode( ',', $scope->to_array()['only'] ) : '' ); $bl->commit(); }
 		else { $bl->meta( 'partial_at', time() ); $bl->meta( 'partial_scope', $scope->label() ); }

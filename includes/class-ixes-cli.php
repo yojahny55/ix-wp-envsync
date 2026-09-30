@@ -492,6 +492,8 @@ class IXES_CLI {
 		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; } );
 		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );
 		foreach ( (array) ( $r['kept_tables'] ?? [] ) as $t => $why ) WP_CLI::warning( "kept table {$t} on {$env['name']}: {$why}" );
+		$line = IXES_Elementor::line( $r['elementor'] ?? null );
+		if ( $line ) WP_CLI::log( $line );
 		if ( ! empty( $r['dropped'] ) ) WP_CLI::log( 'dropped on ' . $env['name'] . ': ' . implode( ', ', $r['dropped'] ) . "\nlocal copies:\n  " . implode( "\n  ", (array) $r['backups'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
 		$this->forget_status();
@@ -516,6 +518,8 @@ class IXES_CLI {
 		$this->confirm( $assoc, "Rollback last push on {$env['name']}?" );
 		$r = $this->fail_if_error( $c->post( '/rollback', [ 'job' => $assoc['job'] ?? null ] ) );
 		foreach ( (array) ( $r['errors'] ?? [] ) as $e ) WP_CLI::warning( $e );
+		$line = IXES_Elementor::line( $r['elementor'] ?? null );
+		if ( $line ) WP_CLI::log( $line );
 		WP_CLI::success( "restored {$r['restored']} rows/files from job {$r['job']}" );
 	}
 
