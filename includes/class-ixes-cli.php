@@ -54,11 +54,25 @@ class IXES_CLI {
 		$r = $run();
 		$end = [ 'finished' => time(), 'seconds' => time() - $t0 ];
 		if ( is_wp_error( $r ) ) {
-			IXES_Report::save_run( $kind, $env, [ 'ok' => false, 'job' => null ] + $base + $end + [ 'stale' => [], 'error' => $r->get_error_message() ] );
+			IXES_Report::save_run( $kind, $env, [ 'ok' => false, 'job' => null, 'phase' => 'job' ] + $base + $end + [ 'stale' => [], 'error' => $r->get_error_message() ] );
 			WP_CLI::error( $r->get_error_message() );
 		}
-		IXES_Report::save_run( $kind, $env, [ 'ok' => true, 'job' => $r['job'] ?? null ] + $base + $end + [ 'stale' => $r['stale'] ?? [], 'dropped' => $r['dropped'] ?? [], 'kept_tables' => $r['kept_tables'] ?? [], 'backups' => $r['backups'] ?? [], 'error' => null ] );
+		IXES_Report::save_run( $kind, $env, [ 'ok' => true, 'job' => $r['job'] ?? null, 'phase' => 'done' ] + $base + $end + [ 'stale' => $r['stale'] ?? [], 'dropped' => $r['dropped'] ?? [], 'kept_tables' => $r['kept_tables'] ?? [], 'backups' => $r['backups'] ?? [], 'error' => null ] );
 		return $r;
+	}
+	/**
+	 * A push or pull that fails before its job opens still records that in runs/<kind>-<env>-latest.json, so the
+	 * file never shows an older run's outcome. A dry run changes nothing and leaves the file alone.
+	 * @return callable( WP_Error|mixed ) that stops with the error, or hands back any other value
+	 */
+	private function plan_guard( $kind, $env, array $assoc ) {
+		$t0 = time(); $record = empty( $assoc['dry-run'] );
+		return function ( $v ) use ( $kind, $env, $t0, $record ) {
+			if ( ! is_wp_error( $v ) ) return $v;
+			$msg = $v->get_error_message();
+			if ( $record ) IXES_Report::save_failed_run( $kind, $env, 'plan', $t0, $msg );
+			WP_CLI::error( $msg );
+		};
 	}
 	/** The admin Status panel caches its report; anything that changes state on this site must invalidate it. */
 	private function parallel( $assoc ) {
@@ -150,14 +164,8 @@ class IXES_CLI {
 				else $env['basic_auth'] = (string) $assoc['basic-auth'];
 			}
 			if ( isset( $assoc['exclude'] ) )    $env['excludes'] = array_values( array_filter( explode( ',', $assoc['exclude'] ) ) );
-			if ( isset( $assoc['add-exclude'] ) ) {
-				$add = array_filter( explode( ',', $assoc['add-exclude'] ) );
-				$env['excludes'] = array_values( array_unique( array_merge( (array) $env['excludes'], $add ) ) );
-			}
-			if ( isset( $assoc['remove-exclude'] ) ) {
-				$drop = array_filter( explode( ',', $assoc['remove-exclude'] ) );
-				$env['excludes'] = array_values( array_diff( (array) $env['excludes'], $drop ) );
-			}
+			if ( isset( $assoc['add-exclude'] ) )    $env = IXES_Mu::add_excludes( $env, array_filter( explode( ',', $assoc['add-exclude'] ) ) );
+			if ( isset( $assoc['remove-exclude'] ) ) $env = IXES_Mu::remove_excludes( $env, array_filter( explode( ',', $assoc['remove-exclude'] ) ) );
 			if ( isset( $assoc['replace'] ) ) {
 				$replace = [];
 				foreach ( array_filter( explode( ',', $assoc['replace'] ) ) as $p ) { $x = explode( ':', $p, 2 ); if ( count( $x ) === 2 ) $replace[] = $x; }
@@ -177,9 +185,11 @@ class IXES_CLI {
 			$own  = IXES_Transfer::own_dir();
 			foreach ( array_filter( [ 'envsync-*/ (storage)', $own ? $own . ' (this plugin)' : '' ] ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'always' ];
 			foreach ( IXES_Env::default_excludes() as $p ) $rows[] = [ 'path' => $p, 'source' => 'default' ];
+			foreach ( IXES_Mu::host_excludes( $env ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'host-specific (' . IXES_Mu::HOST_SPECIFIC[ $p ] . ')' ];
 			foreach ( (array) $env['excludes'] as $p ) $rows[] = [ 'path' => $p, 'source' => 'this env' ];
 			WP_CLI\Utils\format_items( 'table', $rows, [ 'path', 'source' ] );
-			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop one of the "this env" rows with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
+			foreach ( (array) ( $env['host_included'] ?? [] ) as $p ) WP_CLI::log( "synced although host-specific: {$p} (--add-exclude={$p} excludes it again)" );
+			WP_CLI::log( sprintf( 'Add with --add-exclude=, drop a "this env" or "host-specific" row with --remove-exclude=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); $this->forget_status(); WP_CLI::success( 'removed' ); return; }
@@ -259,21 +269,24 @@ class IXES_CLI {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
 		$state = IXES_PullState::load( $env['name'] );
+		$guard = $this->plan_guard( 'pull', $env['name'], $assoc );
 		if ( $state ) {
-			if ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) WP_CLI::error( 'scope flags cannot change while resuming; use --fresh' );
 			$plan = is_file( (string) $state->get( 'plan' ) ) ? json_decode( file_get_contents( $state->get( 'plan' ) ), true ) : null;
-			$info = $this->fail_if_error( $c->info() );
+			global $wpdb;
+			$scope_why = IXES_Scope::resume_refusal( $assoc, is_array( $plan ) ? (array) ( $plan['scope'] ?? [] ) : [], $wpdb->prefix );
+			if ( $scope_why ) $guard( new WP_Error( 'resume', "cannot resume: {$scope_why}. Run it without scope flags to resume, or with --fresh to start over." ) );
+			$info = $guard( $c->info() );
 			$why  = ! is_array( $plan ) ? 'saved plan file is missing' : $state->refusal(
 				(string) ( $info['plugin'] ?? '' ), (array) $plan['excludes'], IXES_Pull::excludes( $env ),
 				(array) ( $plan['extra_replace'] ?? [] ), (array) $env['extra_replace'],
 				$state->get( 'table' ) ? IXES_Transfer::tmp_exists( $state->get( 'table' ) ) : true
 			);
-			if ( $why ) WP_CLI::error( "cannot resume: {$why}. Run again with --fresh to start over." );
+			if ( $why ) $guard( new WP_Error( 'resume', "cannot resume: {$why}. Run again with --fresh to start over." ) );
 			WP_CLI::log( $state->describe( count( $plan['files']['transfer'] ) ) );
 			$note = IXES_Pull::transfer_note( $c, count( $plan['files']['transfer'] ) - $state->files_count(), $par );
 			if ( $note !== '' ) WP_CLI::log( $note );
 			$sc = IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' );
-			if ( ! $sc->is_full() ) WP_CLI::log( '  scope: ' . $sc->label() );
+			WP_CLI::log( '  scope: ' . $sc->label() . ' (from the interrupted pull; the default for ' . $env['name'] . ' does not apply)' );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
 			$progress = IXES_Progress::for_cli( $assoc );
@@ -284,7 +297,7 @@ class IXES_CLI {
 		}
 		// plan() only ever verifies wordpress.org candidates (never writes), so this is identical for a dry run
 		$seed_opts = [ 'no_seed' => ! empty( $assoc['no-seed'] ) ];
-		$plan = $this->fail_if_error( IXES_Pull::plan( $env, $c, $this->scope( $assoc, $env ), $seed_opts ) );
+		$plan = $guard( IXES_Pull::plan( $env, $c, $this->scope( $assoc, $env ), $seed_opts ) );
 		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
 		$report = IXES_Report::from_pull_plan( $plan );
 		$manifest = $this->show_report( $report, $assoc );
@@ -536,17 +549,20 @@ class IXES_CLI {
 		if ( $saved && ! empty( $assoc['mirror'] ) && empty( $saved['mirror'] ) ) WP_CLI::error( 'that plan was made without --mirror; run push --force --mirror without --plan' );
 		if ( $mirror && empty( $assoc['force'] ) ) WP_CLI::error( '--mirror only goes with --force, on a first deploy' );
 		$drop = $saved ? array_keys( array_filter( (array) ( $saved['drop_tables'] ?? [] ), function ( $d ) { return ( $d['why'] ?? '' ) === 'asked'; } ) ) : IXES_Droptable::table_list( (string) ( $assoc['drop-tables'] ?? '' ), $wpdb->prefix );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
+		$guard = $this->plan_guard( 'push', $env['name'], $assoc );
+		$plan = $guard( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
 		if ( $saved ) {
-			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) WP_CLI::error( "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" );
+			foreach ( $saved['remote_hashes'] as $t => $m ) foreach ( $m as $pk => $h ) if ( ( $plan['remote_hashes'][ $t ][ $pk ] ?? null ) !== $h ) $guard( new WP_Error( 'stale_plan', "{$env['name']} changed {$t}#{$pk} since that plan; run diff again" ) );
 			$plan = $saved;
 		}
 		if ( $plan['two_way'] ) {
-			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); WP_CLI::error( "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ); }
+			if ( empty( $assoc['force'] ) ) { WP_CLI::line( IXES_Planner::render_text( $plan ) ); $guard( new WP_Error( 'no_baseline', "no baseline for {$env['name']}: pull first, or pass --force to overwrite the rows listed as remote-wins" ) ); }
 			$plan = IXES_Planner::force( $plan );
+			// no baseline says whose mu-plugins these are: they go only when --only names them
+			$plan = IXES_Mu::hold_boot( $plan, (array) ( $plan['scope'] ?? [] ) );
 		}
 		$plan['backup_dir'] = (string) ( $assoc['backup-dir'] ?? '' );
-		$report = IXES_Report::from_push_plan( $plan, $this->fail_if_error( $c->info() ), 'push' );
+		$report = IXES_Report::from_push_plan( $plan, $guard( $c->info() ), 'push' );
 		$manifest = $this->show_report( $report, $assoc );
 		if ( $this->wants_json( $assoc ) && ! empty( $assoc['dry-run'] ) ) return;
 		WP_CLI::log( "manifest: {$manifest}" );
@@ -623,7 +639,10 @@ class IXES_CLI {
 	 * : Restore the snapshot of the locked push (or the last one), clear its lock and the maintenance file.
 	 *
 	 * [--job=<id>]
-	 * : Job to roll back instead.
+	 * : Job to roll back or quarantine instead.
+	 *
+	 * [--quarantine-mu]
+	 * : Move the mu-plugins and drop-ins the push (--job, else the last one) brought into the storage folder's quarantine/, and put back the versions its snapshot kept. Runs without booting WordPress, so it works when a mu-plugin or drop-in fatals every request.
 	 *
 	 * [--restore-self]
 	 * : Put back the EnvSync folder the last self-update replaced.
@@ -636,7 +655,19 @@ class IXES_CLI {
 	 */
 	public function rescue( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0] );
-		// before 'status': that action loads the plugin, and the plugin may be exactly what is broken
+		// before 'status': that action boots WordPress, and a mu-plugin or drop-in may be exactly what fatals
+		if ( ! empty( $assoc['quarantine-mu'] ) ) {
+			$job = isset( $assoc['job'] ) ? (string) $assoc['job'] : '';
+			$this->confirm( $assoc, 'Move the mu-plugins and drop-ins ' . ( $job !== '' ? "job {$job}" : 'the last push' ) . " brought to {$env['name']} into quarantine?" );
+			$r = $c->rescue( 'quarantine_mu', $job !== '' ? [ 'job' => $job ] : [] );
+			if ( is_wp_error( $r ) ) WP_CLI::error( $r->get_error_message() . "\n--quarantine-mu needs EnvSync 0.9.7 on {$env['name']}, and a push made with it (the push leaves the key it checks). Otherwise use the host's file manager: move the new files out of wp-content/mu-plugins." );
+			foreach ( (array) $r['errors'] as $e ) WP_CLI::warning( $e );
+			WP_CLI::log( 'quarantined: ' . ( $r['quarantined'] ? implode( ', ', $r['quarantined'] ) : 'nothing' ) );
+			WP_CLI::log( 'restored from the snapshot: ' . ( $r['restored'] ? implode( ', ', $r['restored'] ) : 'nothing' ) );
+			WP_CLI::success( "job {$r['job']}: the files sit in the storage folder under quarantine/{$r['job']}/. Next: wp envsync rescue {$env['name']} --rollback to undo the rest of the push, or wp envsync unlock {$env['name']} to keep it" );
+			$this->forget_status();
+			return;
+		}
 		if ( ! empty( $assoc['restore-self'] ) ) {
 			$from = (string) ( $assoc['from'] ?? '' );
 			if ( $from === '' ) {
@@ -652,7 +683,7 @@ class IXES_CLI {
 		}
 		$s = $c->rescue( 'status' );
 		if ( is_wp_error( $s ) ) {
-			WP_CLI::error( $s->get_error_message() . "\nThe rescue endpoint ({$c->rescue_url()}) did not answer. Either the remote runs a plugin older than 0.5.1, or the host blocks PHP files under wp-content/plugins. Use the host's file manager or terminal: rename the crashing plugin's folder under wp-content/plugins." );
+			WP_CLI::error( $s->get_error_message() . "\nThe rescue endpoint ({$c->rescue_url()}) did not answer. Either the remote runs a plugin older than 0.5.1, or the host blocks PHP files under wp-content/plugins. Use the host's file manager or terminal: rename the crashing plugin's folder under wp-content/plugins.\nIf it answered with a critical error, a mu-plugin or drop-in crashes, and those load even here: wp envsync rescue {$env['name']} --quarantine-mu" );
 		}
 		WP_CLI::log( "{$env['name']}  {$env['url']}  (rescue mode: no plugins, no theme)" );
 		WP_CLI::log( '  plugin ' . $s['plugin'] . ( $s['maintenance'] ? '  · maintenance file present' : '' ) );

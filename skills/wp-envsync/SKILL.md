@@ -185,7 +185,7 @@ Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>
   - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
   - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
   - `--format=json` prints the same object.
-- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
+- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, phase, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying. `phase` says where it stopped: `plan` (before any job opened: nothing changed on the remote), `job` (mid-job: the push rolled back or was left as the error menu chose) or `done`. A dry run does not write it.
 
 What to report to the user from the manifest: plugins with `change` `turns on` or `turns off`, version changes on plugins and themes, `summary.delete` when it is not zero, and every entry in `conflicts`.
 
@@ -206,7 +206,7 @@ All commands take `--path=<site>`.
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
-| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--quarantine-mu] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins; `--quarantine-mu` does not boot WordPress at all) |
 | `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
@@ -215,6 +215,8 @@ All commands take `--path=<site>`.
 ## Diagnosing failures
 
 Match the error, then act. Do not retry the same command blindly. When in doubt, run `status --json` again.
+
+Transient network failures are already retried inside the run, up to four attempts with 2, 5 and 15 second pauses, each logged as `retry <n> on <route>`. That covers DNS and connect failures on any request, and gateway errors (429, 502, 503, 504) and timeouts on requests that only read. A paged read that times out asks again for half the page. An error that reads `gave up after 4 attempts` means the remote stayed unreachable for about half a minute; check it with `status` before running again. A 500 is never retried: it is a crash on the remote (see rescue).
 
 **`prefix_mismatch`**: the two sites use different table prefixes and the remote runs a plugin older than 0.6.0. Tell the user to upload the current zip to that site; from 0.6.0 each site keeps its own prefix and the remote translates table names, `<prefix>user_roles` and prefixed usermeta keys. Do not rename tables to work around it. `status` shows `prefix <remote> → <hub>` once both sides can translate.
 
@@ -230,7 +232,7 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 Warn them that the `chmod 664` sweep strips execute bits from any scripts under wp-content.
 
-**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
+**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. A resume keeps the interrupted pull's own scope, not the environment's default: `status` puts that scope's flags in `next.command`, and the same flags may be passed again. Different scope flags are refused. If resume is refused (a different scope, or the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
 **`cURL error 28: Operation timed out`** on a slow remote: pass `--timeout=<seconds>` on that one command, or set it once with `env add <name> --timeout=<seconds>` so every future pull/diff/push against it uses it (a one-off `--timeout` still overrides it). Default is 120s.
 
@@ -249,7 +251,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
    - `rescue <env> --plugins-off --yes` keeps the push and switches every plugin except EnvSync off; the user reactivates them in wp-admin.
 
    Wait for their choice.
-3. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
+3. If `rescue <env>` returns the same critical-error page, a mu-plugin or drop-in crashes (they load even in rescue mode). Offer `rescue <env> --quarantine-mu --yes`: it moves the mu-plugins and drop-ins the last push brought into quarantine without booting WordPress, and restores their previous versions. Then offer `--rollback` or `unlock` as above.
+4. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
 
 A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
 
@@ -295,6 +298,8 @@ wp --path=<site> envsync env add prod --remove-exclude=cache/              # dro
 - Never pass `--yes` to a plan the user has not approved in this conversation.
 - Do not push to a `prod`-labelled environment without explicit approval in this conversation.
 - Use `--force` only for a first deploy onto a fresh install the user has confirmed. Use `--mirror` only when the user asked for the remote's extra content to be deleted.
+- A plan's `MU-PLUGINS AND DROP-INS` section lists files that load on every request, rescue included. Show it to the user before any push that has one, and ask whether each `new` row belongs on that host. A forced push holds them back unless `--only` names `mu-plugins` or `--paths` names the drop-in.
+- Host-specific mu-plugins and plugins (Plesk WP Toolkit, Imunify, WP Engine, Kinsta and others; `env excludes` lists them) are excluded by default. Only `--remove-exclude` one when the user asks and the target runs on that same host.
 - A plan's `DROP TABLES` section drops whole tables (checked, copied to `--backup-dir` and kept for rollback first). Show it to the user before any push or pull that has one. Use `--drop-tables` only for tables the user named.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.
 - Never put a token in a file, a commit, or any message that leaves the machine.

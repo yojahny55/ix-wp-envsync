@@ -117,4 +117,42 @@ class ReportTest extends TestCase {
 		$this->assertSame( 74, $r['summary']['kept'] );
 		$this->assertSame( 1, $r['summary']['kept_files'] );
 	}
+
+	public function test_mu_plugins_get_their_own_section_and_warning() {
+		$in = $this->input( [
+			'files' => [ 'mu-plugins/wp-toolkit.php', 'mu-plugins/wp-toolkit/a.php', 'mu-plugins/own.php', 'object-cache.php', 'uploads/2026/09/a.jpg' ],
+			'deletes' => [], 'sizes' => [ 'mu-plugins/wp-toolkit.php' => 100, 'mu-plugins/wp-toolkit/a.php' => 2048, 'mu-plugins/own.php' => 10, 'object-cache.php' => 5, 'uploads/2026/09/a.jpg' => 1 ],
+			'new_files' => [ 'mu-plugins/wp-toolkit.php', 'mu-plugins/wp-toolkit/a.php', 'object-cache.php' ],
+		] );
+		$r = IXES_Report::build( $in );
+		$this->assertSame( [ 'mu-plugins/own.php', 'mu-plugins/wp-toolkit.php', 'mu-plugins/wp-toolkit/', 'object-cache.php (drop-in)' ], array_column( $r['mu_plugins'], 'slug' ) );
+		$this->assertSame( [ 'changed', 'new', 'new', 'new' ], array_column( $r['mu_plugins'], 'change' ) );
+		$this->assertSame( 2048, $r['mu_plugins'][2]['bytes'] );
+		$this->assertSame( [ 'uploads/2026/' ], array_column( $r['other'], 'group' ) );
+		$this->assertStringContainsString( 'rescue staging --quarantine-mu', implode( "\n", $r['warnings'] ) );
+		$txt = IXES_Report::render_text( $r );
+		$this->assertStringContainsString( 'MU-PLUGINS AND DROP-INS', $txt );
+		$this->assertMatchesRegularExpression( '/\| mu-plugins\/wp-toolkit\/ +\| +1 \| 2\.0 KB \| new +\|/', $txt );
+		$this->assertStringNotContainsString( 'mu-plugins/ ', substr( $txt, strpos( $txt, 'OTHER FILES' ) ) );
+	}
+
+	public function test_no_mu_warning_on_pull_or_without_mu_files() {
+		$this->assertSame( [], IXES_Report::build( $this->input() )['mu_plugins'] );
+		$this->assertSame( [], IXES_Report::build( $this->input() )['warnings'] );
+		$pull = IXES_Report::build( $this->input( [ 'direction' => 'pull', 'files' => [ 'mu-plugins/x.php' ], 'sizes' => [ 'mu-plugins/x.php' => 1 ], 'tables' => [] ] ) );
+		$this->assertSame( '', $pull['mu_plugins'][0]['change'] );
+		$this->assertSame( [], $pull['warnings'] );
+	}
+
+	public function test_a_run_that_fails_before_its_job_replaces_the_previous_run_file() {
+		IXES_Report::save_run( 'push', 'retest', [ 'ok' => true, 'job' => 'old', 'error' => null ] );
+		$path = IXES_Report::save_failed_run( 'push', 'retest', 'plan', 1789000000, 'cURL error 28: Resolving timed out' );
+		$run = json_decode( file_get_contents( $path ), true );
+		$this->assertFalse( $run['ok'] );
+		$this->assertNull( $run['job'] );
+		$this->assertSame( 'plan', $run['phase'] );
+		$this->assertSame( 1789000000, $run['started'] );
+		$this->assertSame( 'cURL error 28: Resolving timed out', $run['error'] );
+		$this->assertArrayHasKey( 'finished', $run );
+	}
 }

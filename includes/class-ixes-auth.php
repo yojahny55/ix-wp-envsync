@@ -11,6 +11,8 @@ class IXES_Auth {
 	public static function install_token() {
 		$token = self::generate_token();
 		update_option( 'ixes_token_hash', wp_hash( $token ), false );
+		// the old token must stop opening rescue.php's bare path too
+		if ( function_exists( 'ixes_storage_dir' ) ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP );
 		set_transient( 'ixes_token_show', $token, 600 );
 		return $token;
 	}
