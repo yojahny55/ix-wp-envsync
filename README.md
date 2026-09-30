@@ -105,12 +105,12 @@ prod  ←  local
   512 files · 38.4 MB · 131 rows
 
 DATABASE
-+-------------+------+--------+--------+-------------+-------------+
-| table       | push | insert | delete | remote-wins | kept-remote |
-+-------------+------+--------+--------+-------------+-------------+
-| wp_posts    |   12 |      3 |      1 |           2 |          41 |
-| wp_postmeta |   87 |     19 |      4 |           0 |         310 |
-+-------------+------+--------+--------+-------------+-------------+
++-------------+------+--------+--------+-------------+-------------+-------+
+| table       | push | insert | delete | remote-wins | kept-remote | same  |
++-------------+------+--------+--------+-------------+-------------+-------+
+| wp_posts    |   12 |      3 |      1 |           2 |          39 |   611 |
+| wp_postmeta |   87 |     19 |      4 |           0 |         310 |  8904 |
++-------------+------+--------+--------+-------------+-------------+-------+
 
 PLUGINS
 +-----------------------+-------+--------+-----------------+----------+
@@ -150,6 +150,20 @@ Every DB and FILES row uses the same counts:
 | `delete` | rows or files you deleted, that production hasn't touched |
 | `remote-wins` | both sides changed it; the remote's version stays |
 | `kept-remote` | the remote changed it, you did not; left alone |
+| `same` | equal on both sides |
+
+Each row counts in one column only. A table where every row is the same is not listed.
+
+Without a baseline nobody knows who changed a row, only where it is, so `diff` shows other columns:
+
+| Column | Meaning |
+|---|---|
+| `local-only` | only on local; a forced push inserts it |
+| `differs` | on both sides, different; a forced push overwrites the remote's |
+| `remote-only` | only on the remote; kept, unless you add `--mirror` |
+| `same` | equal on both sides |
+
+Here `local-only + differs + same` is the local row count and `differs + remote-only + same` the remote's. The rows that differ are listed under `DIFFERENT ON BOTH SIDES` instead of `CONFLICTS`.
 
 `CONFLICTS (prod wins)` (named after the environment: `CONFLICTS (staging wins)` when you push to staging) lists every `remote-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
 
@@ -225,6 +239,8 @@ What `--force` does when there is no baseline:
 | Only on local | Inserted on the remote |
 | On both sides, different | **Local overwrites the remote** |
 | Only on the remote | Kept. Nothing is deleted, unless you add `--mirror` |
+
+The dry run lists what the remote keeps in `kept-remote` and says so in a warning: `staging keeps what only it has: 74 wp_posts rows, 9,030 wp_postmeta rows, 10 files (push --force --mirror deletes them)`. The manifest counts them in `summary.kept` and `summary.kept_files`. To see which rows they are, run `wp envsync diff staging --table=posts --list=remote-only`.
 
 ### Replacing what the remote already has: `--mirror`
 
@@ -469,7 +485,8 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 
 - `--details` — list every affected row id and file path.
 - `--format=json` (or `--json`) — print the manifest instead of the tables. See [For AI agents](#for-ai-agents).
-- `--table=<table> --id=<pk>` — field-by-field diff of a single row, useful for understanding one conflict.
+- `--table=<table> --id=<pk>` — where one row is (only here, only on the remote, on both sides and the same, different, or on neither) and its fields: the ones that differ, or all of them when only one side has it. The table name may leave out the prefix.
+- `--table=<table> --list=<column>` — the keys in one column: `local-only`, `differs`, `remote-only`, or `push`, `insert`, `delete`, `remote-wins`, `kept-remote`. Core tables add a few fields that name each row (for posts: type, status, date, title). Rows on the remote are looked up one request each, so only the first 50 get names.
 - `--flush-cache` — rehash all files.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.

@@ -120,7 +120,7 @@ The user built the site locally, and the remote is a fresh WordPress install. Pu
 3. Tell the user three things before they approve:
    - Local users replace the remote's users, so they will log in with their **local** credentials.
    - Active local dev plugins go up too.
-   - Nothing on the remote is deleted, so an old site's content stays mixed in. If the user wants the remote to end up equal to local, add `--mirror` to the dry run and the push: rows and files only the remote has, within the scope, are deleted (orders and users included). Report the delete counts per table and folder before approval. `rollback` restores them.
+   - Nothing on the remote is deleted, so an old site's content stays mixed in. The dry run's warning and `summary.kept` say how many rows and files that is. If the user wants the remote to end up equal to local, add `--mirror` to the dry run and the push: rows and files only the remote has, within the scope, are deleted (orders and users included). Report the delete counts per table and folder before approval. `rollback` restores them.
 4. Run `push <env> --force --yes` (plus `--mirror` if used in the dry run) after approval.
 5. Run `pull <env> --yes` to record the baseline. From now on, use the normal loop and never `--force`.
 
@@ -153,13 +153,13 @@ wp --path=<site> envsync self-update prod --yes
 wp --path=<site> envsync diff prod --table=wp_posts --id=2231
 ```
 
-Shows the row field by field, on both sides.
+Says where the row is (only here, only on the remote, on both sides and the same, different, or on neither) and shows the fields that differ, or all of them when one side has it. To see which rows sit in one column, add `--list=<column>` instead of `--id`, for example `--table=posts --list=remote-only`.
 
 ## Reading a diff
 
 ```
-| table    | push | insert | delete | remote-wins | kept-remote |
-| wp_posts |   12 |      3 |      1 |           2 |          41 |
+| table    | push | insert | delete | remote-wins | kept-remote | same |
+| wp_posts |   12 |      3 |      1 |           2 |          39 |  611 |
 ```
 
 - `push`: the user's changes going up.
@@ -167,10 +167,13 @@ Shows the row field by field, on both sides.
 - `delete`: rows they deleted, which the remote has not touched.
 - `remote-wins`: both sides changed it, and the remote's version stays. Report these.
 - `kept-remote`: the remote changed it and the user did not. This is normal.
+- `same`: equal on both sides. Each row counts in one column only.
+
+Without a baseline the columns are `local-only`, `differs`, `remote-only` and `same`: nobody knows who changed a row, only where it is. A forced push inserts `local-only`, overwrites `differs` and keeps `remote-only` unless `--mirror` is added.
 
 `baseline: none` (in JSON, `baseline_at: null`) means no pull has been done. Pull first, unless this is a first deploy (`first_deploy: true` in the manifest).
 
-The wording names the environment: a push to staging prints `CONFLICTS (staging wins)` and `skipped (changed on staging during push)`. In JSON the keys stay `prod_wins` and `kept_prod` for every environment.
+The wording names the environment: a push to staging prints `CONFLICTS (staging wins)` and `skipped (changed on staging during push)`. In JSON the keys stay `prod_wins` and `kept_prod` for every environment (without a baseline they hold the `differs` and `remote-only` counts), next to `same`, and each table carries its keys per column under `ids`.
 
 Show the user the table output. For your own reasoning, read the manifest instead (next section).
 
@@ -199,7 +202,7 @@ All commands take `--path=<site>`.
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
-| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Preview a push. Changes nothing. |
+| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--table= --list=<column>] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Preview a push. Changes nothing. |
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
