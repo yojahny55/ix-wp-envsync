@@ -66,4 +66,10 @@ class PlannerRenderTest extends TestCase {
 		$plan['active_plugins_excluded'] = [ 'host/host.php' ];
 		$this->assertStringContainsString( 'active_plugins  host/host.php: kept (excluded)', IXES_Planner::render_text( $plan ) );
 	}
+	public function test_render_counts_option_rows_excluded_by_name() {
+		$plan = $this->plan();
+		$this->assertStringNotContainsString( 'excluded by name', IXES_Planner::render_text( $plan ) );
+		$plan['options_excluded'] = [ 'wp_options' => 3 ];
+		$this->assertStringContainsString( 'wp_options: 3 row(s) excluded by name', IXES_Planner::render_text( $plan ) );
+	}
 }

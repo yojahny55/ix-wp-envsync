@@ -109,6 +109,15 @@ class IXES_CLI {
 	 * [--remove-exclude-tables=<tables>]
 	 * : Tables to drop from the existing table exclude list.
 	 *
+	 * [--exclude-options=<globs>]
+	 * : Option name globs whose wp_options rows this environment never pulls, pushes or deletes, e.g. a host-only plugin's settings (for add). Replaces the whole list.
+	 *
+	 * [--add-exclude-options=<globs>]
+	 * : Option globs to add to the existing list.
+	 *
+	 * [--remove-exclude-options=<globs>]
+	 * : Option globs to drop from the existing list.
+	 *
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for every request to this environment (for add). Default: 120. --timeout on pull/diff/push overrides it for that run. Pass an empty value to remove it.
 	 *
@@ -163,6 +172,10 @@ class IXES_CLI {
 				if ( isset( $assoc['add-exclude-tables'] ) ) $env['exclude_tables'] = array_values( array_unique( array_merge( (array) ( $env['exclude_tables'] ?? [] ), IXES_Scope::table_excludes( $assoc['add-exclude-tables'] ) ) ) );
 				if ( isset( $assoc['remove-exclude-tables'] ) ) $env['exclude_tables'] = array_values( array_diff( (array) ( $env['exclude_tables'] ?? [] ), IXES_Scope::table_excludes( $assoc['remove-exclude-tables'] ) ) );
 				if ( empty( $env['exclude_tables'] ) ) unset( $env['exclude_tables'] );
+				if ( isset( $assoc['exclude-options'] ) ) $env['exclude_options'] = IXES_Env::option_globs( $assoc['exclude-options'] === true ? '' : $assoc['exclude-options'] );
+				if ( isset( $assoc['add-exclude-options'] ) ) $env['exclude_options'] = array_values( array_unique( array_merge( (array) ( $env['exclude_options'] ?? [] ), IXES_Env::option_globs( $assoc['add-exclude-options'] ) ) ) );
+				if ( isset( $assoc['remove-exclude-options'] ) ) $env['exclude_options'] = array_values( array_diff( (array) ( $env['exclude_options'] ?? [] ), IXES_Env::option_globs( $assoc['remove-exclude-options'] ) ) );
+				if ( empty( $env['exclude_options'] ) ) unset( $env['exclude_options'] );
 			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 			if ( isset( $assoc['timeout'] ) ) {
 				if ( $assoc['timeout'] === '' || $assoc['timeout'] === true ) unset( $env['timeout'] );
@@ -201,9 +214,10 @@ class IXES_CLI {
 			foreach ( array_filter( [ 'envsync-*/ (storage)', $own ? $own . ' (this plugin)' : '' ] ) as $p ) $rows[] = [ 'path' => $p, 'source' => 'always' ];
 			foreach ( IXES_Env::default_excludes() as $p ) $rows[] = [ 'path' => $p, 'source' => 'default' ];
 			foreach ( (array) $env['excludes'] as $p ) $rows[] = [ 'path' => $p, 'source' => 'this env' ];
+			foreach ( (array) ( $env['exclude_options'] ?? [] ) as $o ) $rows[] = [ 'path' => 'option ' . $o, 'source' => 'this env' ];
 			foreach ( (array) ( $env['exclude_tables'] ?? [] ) as $t ) $rows[] = [ 'path' => 'table ' . $t . ( isset( IXES_Scope::PRESETS[ $t ] ) ? ' (' . implode( ', ', IXES_Scope::PRESETS[ $t ] ) . ')' : '' ), 'source' => 'this env' ];
 			WP_CLI\Utils\format_items( 'table', $rows, [ 'path', 'source' ] );
-			WP_CLI::log( sprintf( 'Add with --add-exclude= or --add-exclude-tables=, drop a "this env" row with --remove-exclude= or --remove-exclude-tables=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
+			WP_CLI::log( sprintf( 'Add with --add-exclude=, --add-exclude-tables= or --add-exclude-options=; drop a "this env" row with the matching --remove-exclude*=. %d file(s) currently in scope.', count( IXES_Transfer::all_files( IXES_Pull::excludes( $env ) ) ) ) );
 			return;
 		}
 		if ( $action === 'remove' ) { IXES_Env::remove( $args[1] ); $this->forget_status(); WP_CLI::success( 'removed' ); return; }

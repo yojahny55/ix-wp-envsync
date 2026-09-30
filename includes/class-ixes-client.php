@@ -11,7 +11,11 @@ class IXES_Client {
 	/** This site's table prefix; null reads $wpdb. Set by tests. */
 	public $hub_prefix = null;
 
-	public function __construct( array $env ) { $this->env = $env; }
+	public function __construct( array $env ) {
+		$this->env = $env;
+		// one environment per run: its option excludes hold on this side too (hashing, preserve_local_options)
+		IXES_Env::set_option_globs( (array) ( $env['exclude_options'] ?? [] ) );
+	}
 
 	/** Overridden by tests. */
 	protected function transport( $url, array $args ) { return wp_remote_request( $url, $args ); }
@@ -55,6 +59,8 @@ class IXES_Client {
 		];
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
 		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
+		// not signed: it can only narrow what the remote reads or writes
+		if ( ! empty( $this->env['exclude_options'] ) ) $headers['X-Envsync-Exclude-Options'] = implode( ',', (array) $this->env['exclude_options'] );
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
 		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;

@@ -53,6 +53,8 @@ class IXES_Rest {
 		global $wpdb;
 		// the hub speaks in its own table names; everything below translates through this for the rest of the request
 		IXES_Prefix::set_current( $prefix !== '' && $prefix !== $wpdb->prefix ? new IXES_Prefix( $wpdb->prefix, $prefix ) : null );
+		// the hub's exclude_options for this environment: those rows are neither hashed, read nor written here
+		IXES_Env::set_option_globs( IXES_Env::option_globs( $req->get_header( 'x-envsync-exclude-options' ) ) );
 		return true;
 	}
 

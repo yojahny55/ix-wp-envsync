@@ -297,4 +297,16 @@ class ClientLoopTest extends TestCase {
 		$c2->rescue( 'status' );
 		$this->assertSame( 300, $c2->calls[0]['timeout'] );
 	}
+
+	public function test_option_excludes_travel_in_a_header() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'exclude_options' => [ 'imunify_*', 'hostsec_key' ] ] );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$this->assertSame( 'imunify_*,hostsec_key', $c->calls[0]['headers']['X-Envsync-Exclude-Options'] );
+		$this->assertSame( [ 'imunify_*', 'hostsec_key' ], IXES_Env::option_globs( $c->calls[0]['headers']['X-Envsync-Exclude-Options'] ) );
+		IXES_Env::set_option_globs( [] );
+		$c = $this->client(); $c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $c->calls[0]['headers'] );
+	}
 }

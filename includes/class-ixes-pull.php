@@ -49,7 +49,7 @@ class IXES_Pull {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
-		$refused = self::prefix_refusal( $info, $wpdb->prefix );
+		$refused = self::prefix_refusal( $info, $wpdb->prefix ) ?: IXES_Env::option_globs_refusal( $env, $info );
 		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );

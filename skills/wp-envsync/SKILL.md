@@ -105,7 +105,7 @@ The usual release path is to push to staging first, then to production.
 | Client's content, keep your theme | `pull prod --only=db --tables=posts,postmeta,terms,term_taxonomy,term_relationships,termmeta` |
 | Media only | `pull prod --only=uploads` |
 
-An environment can carry a default scope (`env add <env> --only=db,uploads`, shown in `env list`), typically when code travels by git. With no scope flag the command prints `scope: … (default for <env>; --only=all syncs everything)` first. Respect it: do not add `--only=all` unless the user asks to sync code too. A pull in the default scope records the baseline (`baseline.scope` shows it, e.g. `db,uploads`); a diff or push outside that scope fails with `baseline_scope` until a `pull --only=all`.
+An environment can carry a default scope (`env add <env> --only=db,uploads`, shown in `env list`), typically when code travels by git. With no scope flag the command prints `scope: … (default for <env>; --only=all syncs everything)` first. Respect it: do not add `--only=all` unless the user asks to sync code too. A pull in the default scope records the baseline (`baseline.scope` shows it, e.g. `db,uploads`); a diff or push outside that scope fails with `baseline_scope` until a `pull --only=all`. `env add <env> --tables=` stores a default table list the same way; a pull in it never records a baseline.
 
 Rules:
 - `push` never syncs more than the `diff` you ran with the same flags. Run `diff` with exactly the flags you will push with.
@@ -195,12 +195,12 @@ All commands take `--path=<site>`.
 | Command | Purpose |
 |---|---|
 | `envsync status [<env>] [--json]` | Role, each environment's state, and the one next command |
-| `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--timeout=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--replace=]` | Register a remote, or update only the options you pass |
+| `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--timeout=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--tables=] [--exclude-tables=] [--add-exclude-tables=] [--remove-exclude-tables=] [--exclude-options=] [--add-exclude-options=] [--remove-exclude-options=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
-| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--timeout=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=]` | Preview a push. Changes nothing. |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
@@ -284,7 +284,11 @@ wp --path=<site> envsync env add prod --add-exclude=ai1wm-backups/,cache/  # app
 wp --path=<site> envsync env add prod --remove-exclude=cache/              # drop one
 ```
 
-`--exclude=` replaces the whole list. `--add-exclude=` and `--remove-exclude=` edit it in place, so prefer those. An excluded folder is not hashed, transferred or deleted on either side.
+`--exclude=` replaces the whole list. `--add-exclude=` and `--remove-exclude=` edit it in place, so prefer those. An excluded folder is not hashed, transferred or deleted on either side. A plugin whose folder is excluded keeps the remote's activation state; the plan says `kept (excluded)`.
+
+Log tables often make most of a push. `env add prod --add-exclude-tables=@logs` leaves common log tables out for good; `--exclude-tables=` on one command adds to that list. A table exclude keeps the scope full, so a pull still records the baseline.
+
+A host-only plugin's settings stay in `wp_options` even when its folder is excluded. `env add prod --add-exclude-options='<prefix>_*'` keeps those rows out on both sides; the plan counts them. The remote needs 0.9.9 or newer (`self-update` first).
 
 ## Guardrails
 

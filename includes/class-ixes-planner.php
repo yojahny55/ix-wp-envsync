@@ -12,7 +12,7 @@ class IXES_Planner {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
-		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix );
+		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix ) ?: IXES_Env::option_globs_refusal( $env, $info );
 		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$bl   = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
@@ -109,6 +109,13 @@ class IXES_Planner {
 			if ( $name === $wpdb->options ) {
 				$base_ap = $two_way ? [] : self::option_from_baseline_or_local( 'active_plugins', $bl );
 				$remote_ap = (array) ( $info['active_plugins'] ?? [] );
+				if ( ! empty( $env['exclude_options'] ) ) {
+					$n = 0;
+					foreach ( $wpdb->get_col( "SELECT option_name FROM {$wpdb->options}" ) as $o ) {
+						foreach ( (array) $env['exclude_options'] as $g ) if ( fnmatch( $g, $o ) ) { $n++; break; }
+					}
+					$plan['options_excluded'] = [ $name => $n ];
+				}
 				$local_ap = (array) get_option( 'active_plugins', [] );
 				// a plugin whose folder is excluded there is that host's own: the remote keeps its activation state
 				$pinned = IXES_Differ::excluded_plugins( array_merge( $base_ap, $local_ap, $remote_ap ), $ex );
@@ -281,6 +288,7 @@ class IXES_Planner {
 			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), count( $t['conflict'] ), count( $t['kept'] ) );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
+		foreach ( (array) ( $plan['options_excluded'] ?? [] ) as $name => $n ) $o[] = "  {$name}: {$n} row(s) excluded by name";
 		foreach ( (array) ( $plan['active_plugins_excluded'] ?? [] ) as $p ) $o[] = "  active_plugins  {$p}: kept (excluded)";
 		foreach ( (array) ( $plan['drop_tables'] ?? [] ) as $name => $d ) $o[] = sprintf( '  %-32s DROP TABLE (%d rows, %s)', $name, $d['rows'], $d['why'] );
 		$o[] = 'FILES';

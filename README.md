@@ -285,6 +285,32 @@ An explicit flag always wins, and `--only=all` syncs everything for that one com
 
 A `pull` in exactly the default scope records the baseline for that scope, so the normal diff and push loop works without `--force`. `status` shows it as `baseline 2026-09-26 (0 days, db,uploads)`. A `diff` or `push` that reaches outside the baseline's scope (`--only=themes`, `--only=all`) is refused until you pull with `--only=all`. If a full baseline already exists (from a pull with `--only=all`), a default-scope pull only refreshes part of it and never narrows it. A pull with any other narrower scope also refreshes only part of the baseline, as before.
 
+### Leaving tables out
+
+`--exclude-tables=` leaves tables out of a `pull`, `diff` or `push` by name or glob, e.g. `--exclude-tables=wsal_*,*_debug_events`. `@logs` stands for common log tables (`*_wsal_*`, `*_debug_events`, `*_actionscheduler_logs`, `*_404_logs`, `*_audit_log`, `*_mailpoet_log`, `*_automation_run_logs`), which often hold most of a site's rows and never its content.
+
+An environment can keep its own list, which always applies, like its path excludes. `--exclude-tables` on a command adds to it:
+
+```bash
+wp envsync env add prod --add-exclude-tables=@logs
+```
+
+A table exclude does not narrow the scope: a pull with one is still a full pull and records a full baseline, without the excluded tables. The plan shows them as `scope: everything, not tables @logs`.
+
+To sync a fixed set of tables by default instead, `env add <env> --tables=posts,postmeta,...` stores a default table list. It applies with the default `--only` when you pass no scope flag, and the scope line says so. A pull in it refreshes only part of the baseline and never records a new one. `--tables=` removes it.
+
+### Leaving options out
+
+An excluded plugin folder keeps the plugin's files out, but its settings live in `wp_options`. `--exclude-options=` on `env add` takes option name globs whose rows that environment never pulls, pushes or deletes, on either side:
+
+```bash
+wp envsync env add prod --add-exclude-options='hostsec_*'
+```
+
+The plan counts them as `wp_options: N row(s) excluded by name`. The remote needs 0.9.9 or newer; with an older one, `diff`, `push` and `pull` stop and ask you to `self-update` it first.
+
+A plugin whose folder is excluded for an environment also keeps the remote's activation state: a push neither activates nor deactivates it there, and the plan names it as `kept (excluded)`.
+
 ### If a pull is interrupted
 
 If `pull` drops partway through, just run the same command again. It picks up where it left off; answer `y` when it asks to resume. `--fresh` throws that progress away and starts the pull over instead.
@@ -408,7 +434,7 @@ Every self-update and every restore is logged on the remote, with the time, the 
 | `list` | Show every environment and when it was last pulled. |
 | `remove <name>` | Forget an environment. |
 | `ping <name>` | Check connectivity and credentials. |
-| `excludes <name>` | List every path excluded for this environment, and how many files remain in scope. |
+| `excludes <name>` | List every path, table and option excluded for this environment, and how many files remain in scope. |
 
 Options for `add`:
 
@@ -418,6 +444,9 @@ Options for `add`:
 - `--exclude=<paths>` — comma-separated wp-content paths to leave out of sync entirely, e.g. `--exclude=ai1wm-backups/,cache/`. Replaces the whole list.
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
+- `--exclude-tables=<tables>`, `--add-exclude-tables=`, `--remove-exclude-tables=` — tables or globs this environment always leaves out; `@logs` covers common log tables. See [Leaving tables out](#leaving-tables-out).
+- `--exclude-options=<globs>`, `--add-exclude-options=`, `--remove-exclude-options=` — option name globs whose `wp_options` rows never travel. See [Leaving options out](#leaving-options-out).
+- `--tables=<tables>` — optional default table list, applied with `--only` when no scope flag is given. `--tables=` removes it.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
 - `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
@@ -444,6 +473,7 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--exclude-tables=<tables>` — Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 - `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
 - `--no-seed` — never try downloads.wordpress.org for plugin/theme files (see [Seeding from wordpress.org](#seeding-from-wordpressorg) below). Default: `ENVSYNC_NO_SEED`, else seeding is on.
 - `--timeout=<seconds>` — HTTP timeout for this pull, overriding the environment's own `--timeout` (`env add`).
@@ -474,6 +504,7 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--exclude-tables=<tables>` — Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 - `--timeout=<seconds>` — HTTP timeout for this diff, overriding the environment's own `--timeout` (`env add`).
 
 ### `wp envsync push <env>`
@@ -490,6 +521,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
+- `--exclude-tables=<tables>` — Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 - `--timeout=<seconds>` — HTTP timeout for this push, overriding the environment's own `--timeout` (`env add`).
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
