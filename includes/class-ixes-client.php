@@ -5,13 +5,20 @@ class IXES_Client {
 	const CHUNK_JSON_SIZE = 2097152;
 	const DEFAULT_TIMEOUT = 120;
 	const BATCH_TIMEOUT = 300; // floor for one batch request: a 4 MB batch of media that does not compress, on a slow link
+	const RETRY_WAIT = [ 2, 5, 15 ]; // seconds before each retry of a transient failure
+	// routes that change nothing on the remote: any transient failure is safe to send again
+	const READ_ROUTES = [ '/ping', '/info', '/hash/rows', '/hash/tables', '/hash/files', '/schema', '/dump', '/file/get', '/file/batch', '/dirs' ];
 
 	private $env; private $info = null; private $caps = null;
 	private $prefix_header = '';
 	/** This site's table prefix; null reads $wpdb. Set by tests. */
 	public $hub_prefix = null;
 
-	public function __construct( array $env ) { $this->env = $env; }
+	public function __construct( array $env ) {
+		$this->env = $env;
+		// one environment per run: its option excludes hold on this side too (hashing, preserve_local_options)
+		IXES_Env::set_option_globs( (array) ( $env['exclude_options'] ?? [] ) );
+	}
 
 	/** Overridden by tests. */
 	protected function transport( $url, array $args ) { return wp_remote_request( $url, $args ); }
@@ -31,8 +38,32 @@ class IXES_Client {
 	 * Binary 2xx responses return [ 'body' => string, 'headers' => array ]; everything else returns decoded JSON or WP_Error.
 	 */
 	private function request( $method, $route, $body = null, array $opts = [] ) {
-		list( $url, $args ) = $this->prepare( $method, $route, $body, $opts );
-		return $this->parse( $this->transport( $url, $args ), $route, $opts );
+		$waits = empty( $opts['no_retry'] ) ? self::RETRY_WAIT : [];
+		for ( $n = 1; ; $n++ ) {
+			// signed again each time: a retry must not carry an old timestamp
+			list( $url, $args ) = $this->prepare( $method, $route, $body, $opts );
+			$r = $this->parse( $this->transport( $url, $args ), $route, $opts );
+			if ( ! is_wp_error( $r ) || ! $waits || ! self::transient( $r, $route ) ) break;
+			$w = array_shift( $waits );
+			if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry {$n} on {$route} in {$w}s: " . $r->get_error_message() );
+			$this->sleep_s( $w );
+		}
+		if ( $n > 1 && is_wp_error( $r ) ) return new WP_Error( $r->get_error_code(), "gave up after {$n} attempts: " . $r->get_error_message(), $r->get_error_data() );
+		return $r;
+	}
+
+	/**
+	 * Whether a failed request is worth sending again. A connection that never opened (DNS, refused, connect
+	 * timeout) never reached the remote, so any route may retry it. A gateway error or a timeout mid-request
+	 * may have been applied, so only a read-only route retries those. A 500 is a real crash: never.
+	 */
+	public static function transient( WP_Error $e, $route ) {
+		$status = self::err_code( $e );
+		$read = in_array( $route, self::READ_ROUTES, true );
+		if ( $status !== null ) return $read && in_array( $status, [ 429, 502, 503, 504 ], true );
+		$m = $e->get_error_message();
+		if ( preg_match( '/cURL error (6|7):|cURL error 28: (Resolving|Connection) timed out|Failed to connect|Could not resolve/i', $m ) ) return true;
+		return $read && preg_match( '/cURL error (28|52|56):|timed out|Connection reset|Empty reply/i', $m ) === 1;
 	}
 
 	/** @return array [ url, wp_remote_request args ], signed on its own ts and body, so concurrent requests all verify */
@@ -42,6 +73,10 @@ class IXES_Client {
 		$step = isset( $opts['step'] ) ? (string) $opts['step'] : '';
 		// rescue.php (a custom 'url') verifies without a prefix
 		$prefix = isset( $opts['url'] ) ? '' : $this->prefix_header;
+		// /info and /self-update go out bare, so a remote too old for the excludes still answers, option_globs_refusal()
+		// can say why and self-update can fix it; every other request carries them signed, and that remote refuses it
+		$bare   = isset( $opts['url'] ) || $route === '/info' || strpos( $route, '/self-update/' ) === 0;
+		$excl   = $bare || empty( $this->env['exclude_options'] ) ? '' : implode( ',', (array) $this->env['exclude_options'] );
 		if ( isset( $opts['raw_body'] ) ) { $raw = (string) $opts['raw_body']; $ctype = 'application/octet-stream'; }
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
@@ -49,12 +84,14 @@ class IXES_Client {
 			'Authorization' => ! empty( $this->env['basic_auth'] ) ? 'Basic ' . base64_encode( $this->env['basic_auth'] ) : 'Bearer ' . $this->env['token'],
 			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
-			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix ),
+			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl ),
 			'Content-Type'  => $ctype,
 			'Accept'        => ( $opts['accept'] ?? 'json' ) === 'binary' ? 'application/octet-stream' : 'application/json',
 		];
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
 		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
+		// signed: stripped, the remote would overwrite host-only options; widened, it would skip rows the hub expects
+		if ( $excl !== '' ) $headers['X-Envsync-Exclude-Options'] = $excl;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
 		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
@@ -162,7 +199,8 @@ class IXES_Client {
 		if ( $this->info === null ) {
 			// /info is a light call: 30s covers it even on a slow host, but a deliberately larger --timeout still wins
 			$t = $timeout !== null ? (int) $timeout : max( 30, $this->raw_timeout() );
-			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, [ 'timeout' => $t ] ) );
+			// a caller's own short timeout (the admin Status panel) wants a quick answer, not three retries
+			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, [ 'timeout' => $t, 'no_retry' => $timeout !== null ] ) );
 			// remember where rescue.php lives while the remote still answers: it is needed exactly when it no longer does
 			$u = is_array( $this->info ) ? (string) ( $this->info['rescue_url'] ?? '' ) : '';
 			if ( $u !== '' && $u !== ( $this->env['rescue_url'] ?? '' ) && isset( $this->env['name'] ) && function_exists( 'update_option' ) ) {
@@ -226,12 +264,27 @@ class IXES_Client {
 		$limit = isset( $body['limit'] ) ? (int) $body['limit'] : 5000;
 		$max   = $limit;
 		$next  = $body[ $cursor_key ] ?? null;
-		do {
+		$waits = self::RETRY_WAIT; $tries = 1;
+		while ( true ) {
 			$body['limit'] = $limit;
 			$body[ $cursor_key ] = $next;
 			$t0  = microtime( true );
-			$res = $this->post( $route, $body );
-			if ( is_wp_error( $res ) ) return $res;
+			$res = $this->post( $route, $body, [ 'no_retry' => true ] );
+			if ( is_wp_error( $res ) ) {
+				// a page too big for a slow link times out whole: ask for the same cursor again, half as much
+				if ( $waits && self::transient( $res, $route ) ) {
+					$w = array_shift( $waits ); $tries++;
+					$limit = max( 100, (int) ( $limit / 2 ) );
+					if ( isset( $body['bytes'] ) ) $body['bytes'] = max( 262144, (int) ( $body['bytes'] / 2 ) );
+					if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry on {$route} in {$w}s with {$limit} rows a page: " . $res->get_error_message() );
+					$this->sleep_s( $w );
+					continue;
+				}
+				$t = isset( $body['table'] ) ? " {$body['table']}" : '';
+				$at = $next === null ? 'the first page' : 'the page after ' . ( is_scalar( $next ) ? $next : wp_json_encode( $next ) );
+				return new WP_Error( $res->get_error_code(), "paging {$route}{$t} failed at {$at} after {$tries} attempt(s): " . $res->get_error_message() . ( self::transient( $res, $route ) ? '. A slow remote may need a larger --timeout.' : '' ), $res->get_error_data() );
+			}
+			$waits = self::RETRY_WAIT; $tries = 1;
 			$dt  = microtime( true ) - $t0;
 			if ( $each( $res ) === false ) return;
 			$prev = $next;
@@ -244,7 +297,8 @@ class IXES_Client {
 			}
 			if ( $dt > 10 ) $limit = max( 100, (int) ( $limit / 2 ) );
 			elseif ( $dt < 2 ) $limit = min( $max, $limit * 2 );
-		} while ( $next !== null );
+			if ( $next === null ) return;
+		}
 	}
 
 	/** @return int|null HTTP status carried by a WP_Error from request(), null for transport errors */
@@ -262,7 +316,7 @@ class IXES_Client {
 		$offset = 0;
 		while ( true ) {
 			$t0  = microtime( true );
-			$res = $this->post( '/file/get', [ 'path' => $rel, 'offset' => $offset, 'size' => $ch->size() ], [ 'accept' => $this->binary() ? 'binary' : 'json' ] );
+			$res = $this->post( '/file/get', [ 'path' => $rel, 'offset' => $offset, 'size' => $ch->size() ], [ 'accept' => $this->binary() ? 'binary' : 'json', 'no_retry' => true ] );
 			if ( is_wp_error( $res ) ) {
 				if ( $ch->fail( self::err_code( $res ) ) ) { $this->sleep_s( $ch->backoff() ); continue; }
 				return new WP_Error( 'transfer', "{$rel}: gave up at offset {$offset} after {$ch->attempts()} attempts: " . $res->get_error_message() );
@@ -321,8 +375,8 @@ class IXES_Client {
 			$step  = [ 'job' => $job, 'kind' => 'file', 'path' => $rel, 'offset' => $offset, 'final' => $final, 'sha256' => $sha ];
 			if ( $offset === 0 ) $step = array_merge( $step, $first_meta );
 			$t0 = microtime( true );
-			if ( $this->binary() ) $r = $this->post( '/job/step', null, [ 'raw_body' => $data, 'step' => wp_json_encode( $step ) ] );
-			else                   $r = $this->post( '/job/step', $step + [ 'data' => base64_encode( $data ) ] );
+			if ( $this->binary() ) $r = $this->post( '/job/step', null, [ 'raw_body' => $data, 'step' => wp_json_encode( $step ), 'no_retry' => true ] );
+			else                   $r = $this->post( '/job/step', $step + [ 'data' => base64_encode( $data ) ], [ 'no_retry' => true ] );
 			if ( is_wp_error( $r ) ) {
 				if ( $ch->fail( self::err_code( $r ) ) ) { $this->sleep_s( $ch->backoff() ); continue; }
 				fclose( $fh );
@@ -354,7 +408,7 @@ class IXES_Client {
 			$final = $offset + strlen( $data ) >= $total || $data === '';
 			$step  = [ 'id' => $id, 'offset' => $offset, 'final' => $final, 'sha256' => $sha ] + ( $z ? [ 'enc' => 'deflate' ] : [] );
 			$t0 = microtime( true );
-			$r  = $this->post( '/self-update/chunk', null, [ 'raw_body' => $z ? gzdeflate( $data, 6 ) : $data, 'step' => wp_json_encode( $step ) ] );
+			$r  = $this->post( '/self-update/chunk', null, [ 'raw_body' => $z ? gzdeflate( $data, 6 ) : $data, 'step' => wp_json_encode( $step ), 'no_retry' => true ] );
 			if ( is_wp_error( $r ) ) {
 				if ( $ch->fail( self::err_code( $r ) ) ) { $this->sleep_s( $ch->backoff() ); continue; }
 				fclose( $fh );
@@ -371,7 +425,7 @@ class IXES_Client {
 		// 'packed' is how a remote says it has gzinflate; one without zlib still takes plain batches
 		$z = $this->batch_files() && $this->deflate() && in_array( 'packed', $this->caps(), true );
 		$step = [ 'job' => $job, 'kind' => 'files' ] + ( $z ? [ 'enc' => 'deflate' ] : [] );
-		return [ 'POST', '/job/step', null, [ 'raw_body' => $z ? gzdeflate( IXES_Batch::encode( $items ), 6 ) : IXES_Batch::encode( $items ), 'step' => wp_json_encode( $step ), 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ) ] ];
+		return [ 'POST', '/job/step', null, [ 'raw_body' => $z ? gzdeflate( IXES_Batch::encode( $items ), 6 ) : IXES_Batch::encode( $items ), 'step' => wp_json_encode( $step ), 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ), 'no_retry' => true ] ];
 	}
 
 	/**
@@ -398,7 +452,7 @@ class IXES_Client {
 	public function fetch_batches( array $batches, $parallel, callable $on_batch ) {
 		$z = $this->deflate();
 		return $this->waves( array_keys( $batches ), $parallel, function ( $k ) use ( $batches, $z ) {
-			return [ 'POST', '/file/batch', [ 'paths' => array_values( $batches[ $k ] ), 'deflate' => $z ], [ 'accept' => 'binary', 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ) ] ];
+			return [ 'POST', '/file/batch', [ 'paths' => array_values( $batches[ $k ] ), 'deflate' => $z ], [ 'accept' => 'binary', 'timeout' => max( self::BATCH_TIMEOUT, $this->effective_timeout() ), 'no_retry' => true ] ];
 		}, function ( $k, $res ) use ( $batches, $on_batch ) {
 			if ( ! isset( $res['headers'] ) ) return new WP_Error( 'bad_batch', 'batch answer is not binary' );
 			$items = IXES_Batch::open( (string) $res['body'], (string) ( $res['headers']['x-envsync-enc'] ?? '' ), $batches[ $k ] );

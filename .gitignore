@@ -2,3 +2,4 @@ vendor/
 .phpunit.result.cache
 .claude/
 .serena/
+dist/

@@ -4,7 +4,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class IXES_Differ {
 
 	public static function diff( array $base, array $local, array $remote ) {
-		$out = [ 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
+		// 'same' counts rows equal on both sides, so every row lands in exactly one category
+		$out = [ 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'same' => 0 ];
 		$pks = array_unique( array_merge( array_keys( $base ), array_keys( $local ), array_keys( $remote ) ) );
 		sort( $pks );
 		foreach ( $pks as $pk ) {
@@ -12,7 +13,7 @@ class IXES_Differ {
 			$l = isset( $local[ $pk ] )  ? $local[ $pk ]  : null;
 			$r = isset( $remote[ $pk ] ) ? $remote[ $pk ] : null;
 
-			if ( $l === $r ) continue;                       // already equal (incl. both absent)
+			if ( $l === $r ) { if ( $l !== null ) $out['same']++; continue; } // already equal (incl. both absent)
 			$local_changed  = ( $l !== $b );
 			$remote_changed = ( $r !== $b );
 
@@ -66,11 +67,29 @@ class IXES_Differ {
 		return [ 'drop' => $drop, 'kept' => $kept ];
 	}
 
-	public static function merge_active_plugins( array $base, array $local, array $remote ) {
+	/**
+	 * @param string[] $pinned plugins whose files the sync never touches there: the remote keeps its own activation state for them
+	 */
+	public static function merge_active_plugins( array $base, array $local, array $remote, array $pinned = [] ) {
+		$base  = array_diff( $base, $pinned );
+		$local = array_diff( $local, $pinned );
 		$deactivated = array_diff( $base, $local );
 		$activated   = array_diff( $local, $base );
 		$merged = array_diff( $remote, $deactivated );
 		foreach ( $activated as $p ) $merged[] = $p;
 		return array_values( array_unique( $merged ) );
+	}
+
+	/**
+	 * Plugins (active_plugins entries) whose files an exclude keeps out of the sync.
+	 * @param string[] $plugins
+	 * @return string[]
+	 */
+	public static function excluded_plugins( array $plugins, array $excludes ) {
+		$out = [];
+		foreach ( array_unique( $plugins ) as $p ) {
+			if ( IXES_Transfer::excluded_path( 'plugins/' . $p, $excludes ) ) $out[] = $p;
+		}
+		return $out;
 	}
 }

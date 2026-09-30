@@ -26,11 +26,15 @@ class IXES_Baseline {
 
 	public function exists() { return $this->meta( 'created_at' ) !== null; }
 
-	public function reset() {
+	/** Empties the baseline, except the rows and names of the $keep tables. */
+	public function reset( array $keep = [] ) {
 		if ( $this->pdo ) {
-			$this->pdo->exec( 'DELETE FROM rows; DELETE FROM files; DELETE FROM meta; DELETE FROM known;' );
+			$this->pdo->exec( 'DELETE FROM files; DELETE FROM meta;' );
+			$not = $keep ? ' WHERE tbl NOT IN (' . implode( ',', array_fill( 0, count( $keep ), '?' ) ) . ')' : '';
+			foreach ( [ 'rows', 'known' ] as $t ) { $st = $this->pdo->prepare( "DELETE FROM {$t}{$not}" ); $st->execute( array_values( $keep ) ); }
 		} else {
-			$this->json = [ 'rows' => [], 'files' => [], 'meta' => [], 'known' => [] ];
+			$flip = array_flip( $keep );
+			$this->json = [ 'rows' => array_intersect_key( $this->json['rows'], $flip ), 'files' => [], 'meta' => [], 'known' => array_intersect_key( (array) $this->json['known'], $flip ) ];
 			$this->save_json();
 		}
 	}
