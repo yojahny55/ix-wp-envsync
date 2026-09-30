@@ -91,7 +91,7 @@ class IXES_Report {
 	/**
 	 * Every plugin on either side, sorted by slug. An inventory's 'orphans' are plugin folders with no readable header.
 	 * presence: 'both', 'local-only', 'remote-only', or 'none' (only an active_plugins entry names it); null while a side's
-	 * inventory is unknown (an old remote), whose versions then read '?'. A null active list leaves that side's active null.
+	 * inventory is unknown (an old remote), whose versions then read '?', or when a side lacks the plugin and sent no 'orphans'. A null active list leaves that side's active null.
 	 * orphan: the sides holding the folder without a header; active_missing: the sides whose active_plugins names it but lack the folder.
 	 */
 	public static function plugin_inventory( $local, $remote, $active_local, $active_remote ) {
@@ -112,6 +112,8 @@ class IXES_Report {
 			$there = [];
 			foreach ( $sides as $k => $s ) {
 				$there[ $k ] = $has[ $k ] === null ? null : in_array( $slug, $has[ $k ], true );
+				// a remote older than 0.9.10 sends no 'orphans': a slug outside its 'plugins' may still have a folder there
+				if ( $there[ $k ] === false && ! array_key_exists( 'orphans', (array) $s[0] ) ) $there[ $k ] = null;
 				$row['version'][ $k ] = $s[0] === null ? '?' : ( isset( $s[0]['plugins'][ $slug ] ) ? (string) $s[0]['plugins'][ $slug ] : null );
 				$row['active'][ $k ] = $act[ $k ] === null ? null : in_array( $slug, $act[ $k ], true );
 				if ( in_array( $slug, $orph[ $k ], true ) ) $row['orphan'][] = $k;

@@ -60,6 +60,18 @@ class PluginInventoryTest extends TestCase {
 		$this->assertSame( [], $poly['active_missing'] );
 	}
 
+	public function test_inventory_without_orphans_key_does_not_claim_a_missing_folder() {
+		list( $l, $r, $al, $ar ) = $this->sides();
+		unset( $r['orphans'] ); // a remote older than 0.9.10
+		$rows = IXES_Report::plugin_inventory( $l, $r, $al, $ar );
+		$ghost = $this->by( $rows, 'ghost' );
+		$this->assertNull( $ghost['presence'] );
+		$this->assertSame( [], $ghost['active_missing'] );
+		$this->assertNull( $this->by( $rows, 'dev-tools' )['presence'] );
+		$this->assertSame( 'both', $this->by( $rows, 'polylang' )['presence'] );
+		$this->assertSame( 'remote-only', $this->by( $rows, 'forms' )['presence'] );
+	}
+
 	public function test_render_inventory_shows_notes() {
 		list( $l, $r, $al, $ar ) = $this->sides();
 		$t = IXES_Report::render_inventory( IXES_Report::plugin_inventory( $l, $r, $al, $ar ), 'staging' );
