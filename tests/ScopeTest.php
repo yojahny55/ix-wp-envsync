@@ -115,4 +115,27 @@ class ScopeTest extends TestCase {
 		$this->assertTrue( IXES_Scope::from_array( [ 'only' => [ 'files' ] ], 'wp_' )->covers( IXES_Scope::from_assoc( [ 'only' => 'plugins' ], 'wp_' ) ) );
 		$this->assertTrue( IXES_Scope::from_array( [], 'wp_' )->covers( IXES_Scope::from_assoc( [], 'wp_' ) ) );
 	}
+
+	public function test_resume_accepts_no_flags_and_the_stored_scope_in_any_order() {
+		$stored = $this->s( [ 'tables' => 'posts,postmeta' ] )->to_array();
+		$this->assertNull( IXES_Scope::resume_refusal( [], $stored, 'wp_' ) );
+		$this->assertNull( IXES_Scope::resume_refusal( [ 'tables' => 'postmeta, posts' ], $stored, 'wp_' ) );
+		$this->assertNull( IXES_Scope::resume_refusal( [ 'only' => 'db', 'tables' => 'posts,postmeta' ], $stored, 'wp_' ) );
+	}
+	public function test_resume_refuses_a_different_scope_and_names_both() {
+		$stored = $this->s( [ 'tables' => 'posts' ] )->to_array();
+		$why = IXES_Scope::resume_refusal( [ 'only' => 'db,uploads' ], $stored, 'wp_' );
+		$this->assertStringContainsString( 'tables posts', $why );
+		$this->assertStringContainsString( 'db,uploads', $why );
+	}
+	public function test_resume_treats_only_all_as_everything() {
+		$this->assertNull( IXES_Scope::resume_refusal( [ 'only' => 'all' ], [], 'wp_' ) );
+		$this->assertNotNull( IXES_Scope::resume_refusal( [ 'only' => 'all' ], $this->s( [ 'only' => 'db' ] )->to_array(), 'wp_' ) );
+	}
+	public function test_flags_rebuild_the_command_line_for_a_scope() {
+		$this->assertSame( '', $this->s( [] )->flags() );
+		$this->assertSame( ' --tables=posts,postmeta', $this->s( [ 'tables' => 'posts,postmeta' ] )->flags() );
+		$this->assertSame( ' --only=db,uploads', $this->s( [ 'only' => 'db,uploads' ] )->flags() );
+		$this->assertSame( ' --only=themes --paths=themes/mk/', $this->s( [ 'only' => 'themes', 'paths' => 'themes/mk/' ] )->flags() );
+	}
 }

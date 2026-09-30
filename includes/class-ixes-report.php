@@ -160,6 +160,11 @@ class IXES_Report {
 		return $path;
 	}
 
+	/** A run that stopped before its job opened (phase 'plan'): nothing changed on the remote, but the old run file must not stand in for it. */
+	public static function save_failed_run( $kind, $env, $phase, $started, $error ) {
+		return self::save_run( $kind, $env, [ 'ok' => false, 'job' => null, 'phase' => (string) $phase, 'started' => (int) $started, 'finished' => time(), 'seconds' => time() - (int) $started, 'stale' => [], 'error' => (string) $error ] );
+	}
+
 	// 'akismet/akismet.php' -> 'akismet'; a single-file plugin keeps its file name ('hello.php')
 	public static function plugin_slug( $file ) { $d = dirname( (string) $file ); return $d === '.' ? (string) $file : $d; }
 

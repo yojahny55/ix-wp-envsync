@@ -419,7 +419,7 @@ Options for `add`:
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
-- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two.
+- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two. A request that fails on the network is retried up to three times (after 2, 5 and 15 seconds): a DNS or connect failure on any request, since it never reached the remote, and a 429/502/503/504 or a timeout only on requests that read. A paged read (`/dump`, `/hash/*`) that times out asks for half the page. A 500 is never retried.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
