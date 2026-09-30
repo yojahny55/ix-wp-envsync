@@ -70,4 +70,17 @@ class DifferTest extends TestCase {
 		$in = $this->d( [], [ 1 => 'a' ], [ 1 => 'b' ] );
 		$this->assertSame( $in, IXES_Differ::mirror( $in, [ 1 => 'a' ], [ 1 => 'b' ] ) );
 	}
+	public function test_active_plugins_pinned_keep_remote_state() {
+		// host/host.php is excluded on the remote: the hub deactivated it, the remote keeps it active
+		$this->assertSame( [ 'a/a.php', 'host/host.php' ], IXES_Differ::merge_active_plugins( [ 'a/a.php', 'host/host.php' ], [ 'a/a.php' ], [ 'a/a.php', 'host/host.php' ], [ 'host/host.php' ] ) );
+		// activated only on the hub: not pushed either, its files never reach the remote
+		$this->assertSame( [ 'a/a.php' ], IXES_Differ::merge_active_plugins( [ 'a/a.php' ], [ 'a/a.php', 'host/host.php' ], [ 'a/a.php' ], [ 'host/host.php' ] ) );
+		// the rest of the merge is unchanged
+		$this->assertSame( [ 'host/host.php', 'b/b.php' ], IXES_Differ::merge_active_plugins( [ 'a/a.php' ], [ 'b/b.php' ], [ 'a/a.php', 'host/host.php' ], [ 'host/host.php' ] ) );
+	}
+	public function test_excluded_plugins_matches_folder_and_single_file_excludes() {
+		$ex = [ 'plugins/host/', 'plugins/hello.php' ];
+		$this->assertSame( [ 'host/host.php', 'hello.php' ], IXES_Differ::excluded_plugins( [ 'a/a.php', 'host/host.php', 'hello.php', 'hostile/hostile.php' ], $ex ) );
+		$this->assertSame( [], IXES_Differ::excluded_plugins( [ 'a/a.php' ], [] ) );
+	}
 }

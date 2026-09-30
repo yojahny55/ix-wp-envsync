@@ -60,4 +60,10 @@ class PlannerRenderTest extends TestCase {
 		$this->assertStringContainsString( 'baseline: ' . date( 'Y-m-d H:i T', 1790377984 ), IXES_Planner::render_text( $plan ) );
 		$this->assertMatchesRegularExpression( '/baseline: \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} \\S+/', IXES_Planner::render_text( $plan ) );
 	}
+	public function test_render_names_plugins_kept_by_an_exclude() {
+		$plan = $this->plan();
+		$this->assertStringNotContainsString( 'kept (excluded)', IXES_Planner::render_text( $plan ) );
+		$plan['active_plugins_excluded'] = [ 'host/host.php' ];
+		$this->assertStringContainsString( 'active_plugins  host/host.php: kept (excluded)', IXES_Planner::render_text( $plan ) );
+	}
 }

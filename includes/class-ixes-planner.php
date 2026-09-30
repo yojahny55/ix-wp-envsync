@@ -109,8 +109,14 @@ class IXES_Planner {
 			if ( $name === $wpdb->options ) {
 				$base_ap = $two_way ? [] : self::option_from_baseline_or_local( 'active_plugins', $bl );
 				$remote_ap = (array) ( $info['active_plugins'] ?? [] );
-				$merged = IXES_Differ::merge_active_plugins( $base_ap, (array) get_option( 'active_plugins', [] ), $remote_ap );
+				$local_ap = (array) get_option( 'active_plugins', [] );
+				// a plugin whose folder is excluded there is that host's own: the remote keeps its activation state
+				$pinned = IXES_Differ::excluded_plugins( array_merge( $base_ap, $local_ap, $remote_ap ), $ex );
+				$merged = IXES_Differ::merge_active_plugins( $base_ap, $local_ap, $remote_ap, $pinned );
 				if ( array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
+				$plan['active_plugins_excluded'] = array_values( array_filter( $pinned, function ( $p ) use ( $local_ap, $remote_ap ) {
+					return in_array( $p, $local_ap, true ) !== in_array( $p, $remote_ap, true );
+				} ) );
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] || ! empty( $d['set_delete'] ) ) $plan['tables'][ $name ] = $d;
 		}
@@ -275,6 +281,7 @@ class IXES_Planner {
 			$o[] = sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %d', $name, count( $t['push'] ) + count( $t['set_insert'] ), count( $t['insert'] ), count( $t['delete'] ) + count( $t['set_delete'] ?? [] ), count( $t['conflict'] ), count( $t['kept'] ) );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
+		foreach ( (array) ( $plan['active_plugins_excluded'] ?? [] ) as $p ) $o[] = "  active_plugins  {$p}: kept (excluded)";
 		foreach ( (array) ( $plan['drop_tables'] ?? [] ) as $name => $d ) $o[] = sprintf( '  %-32s DROP TABLE (%d rows, %s)', $name, $d['rows'], $d['why'] );
 		$o[] = 'FILES';
 		foreach ( [ 'push', 'delete', 'conflict', 'kept' ] as $k ) {
