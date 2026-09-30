@@ -50,6 +50,8 @@ class IXES_Rest {
 			null, (string) $req->get_header( 'x-envsync-step' ), $prefix
 		);
 		if ( ! $ok ) return new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
+		// rescue.php's bare path (--quarantine-mu) cannot read the token hash from the database: a push leaves it this key
+		if ( substr( (string) $req->get_route(), -10 ) === '/job/start' ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP );
 		global $wpdb;
 		// the hub speaks in its own table names; everything below translates through this for the rest of the request
 		IXES_Prefix::set_current( $prefix !== '' && $prefix !== $wpdb->prefix ? new IXES_Prefix( $wpdb->prefix, $prefix ) : null );
