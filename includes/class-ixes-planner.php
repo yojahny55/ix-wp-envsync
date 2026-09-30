@@ -81,7 +81,7 @@ class IXES_Planner {
 			}
 			$local = self::local_rows( $name, $pk, $local_pairs, $algo, $bytes, $byte_keys );
 			if ( is_wp_error( $local ) ) return $local;
-			$plan['local']['tables'][ $name ] = [ 'pk' => $pk, 'digest' => md5( serialize( $local ) ) ];
+			$plan['local']['tables'][ $name ] = [ 'pk' => $pk, 'digest' => self::digest( $local ) ];
 			$skip = self::byte_key_skip( $plan, $name, $pk, $byte_keys );
 			if ( $skip !== null ) { $byte_warn[] = $skip; continue; }
 
@@ -123,7 +123,7 @@ class IXES_Planner {
 			if ( is_wp_error( $r ) ) return $r;
 			$remote_files = self::in_scope( IXES_Pull::drop_excluded( $remote_files, $ex ), $scope );
 			$local_files  = self::in_scope( IXES_Transfer::local_manifest( $ex, $algo, $scope->roots() ), $scope );
-			$plan['local']['files'] = md5( serialize( $local_files ) );
+			$plan['local']['files'] = self::digest( $local_files );
 			$base_files   = $two_way ? [] : self::in_scope( $bl->files(), $scope );
 			$fd = IXES_Differ::diff( $base_files, $local_files, $remote_files );
 			if ( $mirror ) $fd = IXES_Differ::mirror( $fd, $local_files, $remote_files );
@@ -151,9 +151,14 @@ class IXES_Planner {
 	// a dry run's plan is reused by the push that follows it for this long; the applier re-checks every remote row and file it touches anyway
 	const REUSE_MAX_MIN = 60;
 
+	/** A stable fingerprint of $value; serialize() only feeds md5 here, nothing is ever unserialized. */
+	private static function digest( $value ) {
+		return md5( serialize( $value ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- hashed, never unserialized
+	}
+
 	/** The environment settings a plan depends on: a change to any of them means planning again. */
 	public static function env_key( array $env ) {
-		return md5( serialize( [ (string) $env['url'], IXES_Pull::excludes( $env ), IXES_Env::extras( $env ) ] ) );
+		return self::digest( [ (string) $env['url'], IXES_Pull::excludes( $env ), IXES_Env::extras( $env ) ] );
 	}
 
 	/**
@@ -224,12 +229,12 @@ class IXES_Planner {
 			$byte_keys = false;
 			$local = self::local_rows( $name, $t['pk'], $pairs, $plan['algo'], ! empty( $plan['bytes_hash'] ), $byte_keys );
 			if ( is_wp_error( $local ) ) return $local->get_error_message();
-			if ( md5( serialize( $local ) ) !== $t['digest'] ) return "{$name} changed here";
+			if ( self::digest( $local ) !== $t['digest'] ) return "{$name} changed here";
 		}
 		if ( $plan['local']['files'] !== null ) {
 			$ex = IXES_Pull::excludes( $env );
 			$files = self::in_scope( IXES_Transfer::local_manifest( $ex, $plan['algo'], $scope->roots() ), $scope );
-			if ( md5( serialize( $files ) ) !== $plan['local']['files'] ) return 'local files changed';
+			if ( self::digest( $files ) !== $plan['local']['files'] ) return 'local files changed';
 		}
 		return null;
 	}
