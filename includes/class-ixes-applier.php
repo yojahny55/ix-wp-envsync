@@ -53,7 +53,7 @@ class IXES_Applier {
 	 * What a push rewrites in every row it sends, [ from, to ], applied in order by IXES_Hasher::normalize() on the remote.
 	 * Every form the hash reads as the same placeholder (plain, JSON-escaped, protocol-relative, each extra pair) maps to
 	 * its remote form, longest first, as IXES_Hasher::placeholders() does. Two passes through a token each, so a remote
-	 * value that contains a shorter local one is never rewritten twice.
+	 * value that contains a shorter local one is never rewritten twice, and neither is one already in the row.
 	 */
 	public static function write_pairs( $local_url, $local_abspath, $remote_url, $remote_abspath, array $extra_replace ) {
 		$esc  = function ( $v ) { return str_replace( '/', '\/', $v ); };
@@ -66,6 +66,9 @@ class IXES_Applier {
 			$map[] = [ (string) $x[1], (string) $x[0] ];
 			$map[] = [ $esc( (string) $x[1] ), $esc( (string) $x[0] ) ];
 		}
+		// the remote's own forms stay as they are, but take their token first: a local value inside one is not rewritten
+		foreach ( IXES_Env::extras( [ 'extra_replace' => $extra_replace ] )[0] as $p ) { $map[] = [ $p, $p ]; $map[] = [ $esc( $p ), $esc( $p ) ]; }
+		foreach ( [ $ru, $esc( $ru ), '//' . $bare( $ru ), $ra, $esc( $ra ) ] as $v ) $map[] = [ $v, $v ];
 		$seen = []; $uniq = [];
 		foreach ( $map as $m ) if ( $m[0] !== '' && $m[0] !== '//' && ! isset( $seen[ $m[0] ] ) ) { $seen[ $m[0] ] = true; $uniq[] = $m; }
 		usort( $uniq, function ( $a, $b ) { return strlen( $b[0] ) - strlen( $a[0] ); } );

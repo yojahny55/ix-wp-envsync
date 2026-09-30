@@ -54,4 +54,7 @@ class UrlRoundTripTest extends TestCase {
 			IXES_Hasher::normalize( 'https://site.local/a http://site.local/b https:\/\/site.local\/c /srv/http/site/d https://site.local/cdn/e', $p )
 		);
 	}
+	public function test_remote_url_that_contains_the_local_one_typed_in_local_content() {
+		$this->assertRoundTrip( 'link https://site.local.example.com/page and "https:\/\/site.local.example.com\/p"', [], 'https://site.local.example.com' );
+	}
 }

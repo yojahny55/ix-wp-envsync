@@ -310,7 +310,7 @@ class IXES_Planner {
 		foreach ( $plan['tables'] as $name => $t ) {
 			$n = IXES_Report::table_counts( $t );
 			$o[] = $two
-				? sprintf( '  %-32s local-only %-5d differs %-5d remote-only %-5d same %d', $name, $n['insert'], $n['prod_wins'], $n['kept_prod'], $n['same'] )
+				? sprintf( '  %-32s local-only %-5d differs %-5d remote-only %-5d same %d', $name, $n['insert'] + $n['push'], $n['prod_wins'], $n['kept_prod'], $n['same'] )
 				: sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %-5d same %d', $name, $n['push'], $n['insert'], $n['delete'], $n['prod_wins'], $n['kept_prod'], $n['same'] );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );

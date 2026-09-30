@@ -244,12 +244,12 @@ class IXES_Report {
 
 	/**
 	 * A diff without a baseline cannot tell who changed a row, only where it is and whether the sides agree:
-	 * local-only, differs, remote-only, same. Otherwise the push categories, plus same.
+	 * local-only, differs, remote-only, same. Its 'push' can only be a keyless table's rows only here, so they count as local-only. Otherwise the push categories, plus same.
 	 */
 	private static function push_table( array $r ) {
 		$name = function ( $t ) use ( $r ) { return $t['name'] . ( in_array( $t['name'], $r['new_tables'], true ) ? ' (new)' : '' ); };
 		if ( $r['first_deploy'] && $r['kind'] === 'diff' ) {
-			return self::table( [ 'table', 'local-only', 'differs', 'remote-only', 'same' ], array_map( function ( $t ) use ( $name ) { return [ $name( $t ), $t['insert'], $t['prod_wins'], $t['kept_prod'], $t['same'] ]; }, $r['tables'] ) );
+			return self::table( [ 'table', 'local-only', 'differs', 'remote-only', 'same' ], array_map( function ( $t ) use ( $name ) { return [ $name( $t ), $t['insert'] + $t['push'], $t['prod_wins'], $t['kept_prod'], $t['same'] ]; }, $r['tables'] ) );
 		}
 		return self::table( [ 'table', 'push', 'insert', 'delete', 'remote-wins', 'kept-remote', 'same' ], array_map( function ( $t ) use ( $name ) { return [ $name( $t ), $t['push'], $t['insert'], $t['delete'], $t['prod_wins'], $t['kept_prod'], $t['same'] ]; }, $r['tables'] ) );
 	}

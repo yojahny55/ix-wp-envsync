@@ -78,4 +78,16 @@ class PlannerRenderTest extends TestCase {
 		$this->assertStringContainsString( 'DIFFERENT ON BOTH SIDES', $txt );
 		$this->assertStringNotContainsString( 'remote-wins', $txt );
 	}
+	public function test_without_baseline_keyless_rows_only_here_count_as_local_only() {
+		$plan = [
+			'env' => 'staging', 'created' => 1, 'baseline_at' => null, 'algo' => 'sha1', 'two_way' => true,
+			'tables' => [ 'wp_nokey' => [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'same' => 2, 'set_insert' => [ 'h1', 'h2', 'h3' ] ] ],
+			'files' => [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [],
+		];
+		$this->assertStringContainsString( 'local-only 3', IXES_Planner::render_text( $plan ) );
+		$r = IXES_Report::build( [ 'kind' => 'diff', 'env' => 'staging', 'url' => '', 'created' => 1, 'direction' => 'push', 'baseline_at' => null, 'first_deploy' => true, 'scope' => 'everything', 'scope_full' => true,
+			'tables' => [ 'wp_nokey' => IXES_Report::table_counts( $plan['tables']['wp_nokey'] ) ], 'rows' => null, 'files' => [], 'deletes' => [], 'sizes' => [], 'before' => null, 'source' => [ 'plugins' => [], 'themes' => [], 'stylesheet' => null ],
+			'active_before' => [], 'active_after' => [], 'stylesheet_after' => null, 'conflicts' => [], 'warnings' => [] ] );
+		$this->assertMatchesRegularExpression( '/wp_nokey\s*\|\s*3\s*\|\s*0\s*\|\s*0\s*\|\s*2/', IXES_Report::render_text( $r ) );
+	}
 }
