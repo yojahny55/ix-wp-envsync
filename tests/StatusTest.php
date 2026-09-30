@@ -89,6 +89,12 @@ class StatusTest extends TestCase {
 		$this->assertSame( 'wp envsync pull prod', $n['command'] );
 		$this->assertStringContainsString( 'resume', $n['why'] );
 	}
+	public function test_interrupted_pull_names_its_scope_in_the_command() {
+		$ctx = $this->ctx( [ 'pull_state' => function () { return [ 'started' => $this->now - 600, 'table' => 'wp_posts', 'cursor' => 10, 'files_done' => 0, 'files_total' => 0, 'scope' => [ 'only' => [ 'db' ], 'tables' => [ 'posts', 'postmeta' ], 'paths' => [] ] ]; } ] );
+		$n = $this->next( $ctx, $this->info() );
+		$this->assertSame( 'wp envsync pull prod --tables=posts,postmeta', $n['command'] );
+		$this->assertStringContainsString( 'tables posts,postmeta', $n['why'] );
+	}
 	public function test_no_baseline() {
 		$ctx = $this->ctx( [ 'baseline' => function () { return [ 'created_at' => null, 'partial_at' => null, 'partial_scope' => null ]; } ] );
 		$n = $this->next( $ctx, $this->info() );
