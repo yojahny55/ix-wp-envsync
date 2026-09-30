@@ -114,4 +114,16 @@ class ReportTest extends TestCase {
 		$this->assertSame( '', $pull['mu_plugins'][0]['change'] );
 		$this->assertSame( [], $pull['warnings'] );
 	}
+
+	public function test_a_run_that_fails_before_its_job_replaces_the_previous_run_file() {
+		IXES_Report::save_run( 'push', 'retest', [ 'ok' => true, 'job' => 'old', 'error' => null ] );
+		$path = IXES_Report::save_failed_run( 'push', 'retest', 'plan', 1789000000, 'cURL error 28: Resolving timed out' );
+		$run = json_decode( file_get_contents( $path ), true );
+		$this->assertFalse( $run['ok'] );
+		$this->assertNull( $run['job'] );
+		$this->assertSame( 'plan', $run['phase'] );
+		$this->assertSame( 1789000000, $run['started'] );
+		$this->assertSame( 'cURL error 28: Resolving timed out', $run['error'] );
+		$this->assertArrayHasKey( 'finished', $run );
+	}
 }

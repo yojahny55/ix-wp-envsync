@@ -29,7 +29,7 @@ class IXES_Status {
 				$s = IXES_PullState::load( $name );
 				if ( ! $s ) return null;
 				$plan = is_file( (string) $s->get( 'plan' ) ) ? json_decode( file_get_contents( $s->get( 'plan' ) ), true ) : null;
-				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->files_count(), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null ];
+				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->files_count(), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null, 'scope' => is_array( $plan ) ? (array) ( $plan['scope'] ?? [] ) : [] ];
 			},
 		];
 	}
@@ -105,7 +105,11 @@ class IXES_Status {
 		}
 		$lock = $e['remote_lock'];
 		if ( $lock && ( $lock['age_minutes'] === null || $lock['age_minutes'] >= self::LOCK_STALE_MIN ) ) return $cmd( "wp envsync unlock {$name}", 'a push started ' . ( $lock['age_minutes'] === null ? 'some time' : $lock['age_minutes'] . ' minutes' ) . ' ago never finished' );
-		if ( $e['interrupted_pull'] ) return $cmd( "wp envsync pull {$name}", 'an interrupted pull can be resumed (or start over with --fresh)' );
+		if ( $e['interrupted_pull'] ) {
+			// a resume keeps the interrupted pull's own scope, not the environment's default: say which
+			$sc = IXES_Scope::from_array( (array) ( $e['interrupted_pull']['scope'] ?? [] ), '' );
+			return $cmd( "wp envsync pull {$name}" . $sc->flags(), 'an interrupted pull can be resumed with its scope (' . $sc->label() . '), or start over with --fresh' );
+		}
 		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" );
 		if ( empty( $e['baseline']['created_at'] ) ) return $cmd( "wp envsync pull {$name}", 'no baseline: pull before any push' );
 		if ( $e['baseline']['age_days'] >= self::BASELINE_OLD_DAYS ) return $cmd( "wp envsync diff {$name}", "baseline is {$e['baseline']['age_days']} days old; consider pulling first" );

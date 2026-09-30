@@ -182,7 +182,7 @@ Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>
   - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
   - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
   - `--format=json` prints the same object.
-- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
+- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, phase, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying. `phase` says where it stopped: `plan` (before any job opened: nothing changed on the remote), `job` (mid-job: the push rolled back or was left as the error menu chose) or `done`. A dry run does not write it.
 
 What to report to the user from the manifest: plugins with `change` `turns on` or `turns off`, version changes on plugins and themes, `summary.delete` when it is not zero, and every entry in `conflicts`.
 
@@ -213,6 +213,8 @@ All commands take `--path=<site>`.
 
 Match the error, then act. Do not retry the same command blindly. When in doubt, run `status --json` again.
 
+Transient network failures are already retried inside the run, up to four attempts with 2, 5 and 15 second pauses, each logged as `retry <n> on <route>`. That covers DNS and connect failures on any request, and gateway errors (429, 502, 503, 504) and timeouts on requests that only read. A paged read that times out asks again for half the page. An error that reads `gave up after 4 attempts` means the remote stayed unreachable for about half a minute; check it with `status` before running again. A 500 is never retried: it is a crash on the remote (see rescue).
+
 **`prefix_mismatch`**: the two sites use different table prefixes and the remote runs a plugin older than 0.6.0. Tell the user to upload the current zip to that site; from 0.6.0 each site keeps its own prefix and the remote translates table names, `<prefix>user_roles` and prefixed usermeta keys. Do not rename tables to work around it. `status` shows `prefix <remote> → <hub>` once both sides can translate.
 
 Known limit across prefixes: a usermeta key that starts with the hub's prefix is renamed to the remote's, even when a plugin chose that name itself (with hub `wp_`, a plugin key `wp_foo_setting` becomes `<remote>foo_setting`). WordPress cannot tell such a key from a real prefixed one. The usual effect is a dismissed notice or per-user preference reappearing on the remote. Mention it only if the user reports a per-user setting that did not carry over.
@@ -227,7 +229,7 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 Warn them that the `chmod 664` sweep strips execute bits from any scripts under wp-content.
 
-**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
+**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. A resume keeps the interrupted pull's own scope, not the environment's default: `status` puts that scope's flags in `next.command`, and the same flags may be passed again. Different scope flags are refused. If resume is refused (a different scope, or the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
 **`cURL error 28: Operation timed out`** on a slow remote: pass `--timeout=<seconds>` on that one command, or set it once with `env add <name> --timeout=<seconds>` so every future pull/diff/push against it uses it (a one-off `--timeout` still overrides it). Default is 120s.
 

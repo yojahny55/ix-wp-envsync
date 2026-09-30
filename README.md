@@ -422,7 +422,7 @@ Options for `add`:
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
-- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two.
+- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two. A request that fails on the network is retried up to three times (after 2, 5 and 15 seconds): a DNS or connect failure on any request, since it never reached the remote, and a 429/502/503/504 or a timeout only on requests that read. A paged read (`/dump`, `/hash/*`) that times out asks for half the page. A 500 is never retried.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
@@ -712,7 +712,13 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 ## For AI agents
 
-A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Copy that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff.
+A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Link that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff:
+
+```bash
+ln -s /path/to/ix-wp-envsync/skills/wp-envsync ~/.claude/skills/wp-envsync
+```
+
+Use a symlink rather than a copy. A copy freezes the skill at the version you copied, so it silently falls behind as new flags and workflows are documented here; a symlink follows the clone, and `git pull` keeps it current. If you already copied it, replace the copy with the link (`rm -r ~/.claude/skills/wp-envsync`, then the `ln -s` above).
 
 Agents should read files rather than terminal text:
 
