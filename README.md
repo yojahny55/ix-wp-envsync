@@ -653,7 +653,7 @@ Installs this hub's EnvSync, or a release zip, on the remote, checks the site, a
 
 ### `wp envsync rollback <env>`
 
-Restores the snapshot from the last push. Undoes changed rows, removes rows and files the push created, and restores files it replaced.
+Restores the snapshot from the last push. Undoes changed rows, removes rows and files the push created, and restores files it replaced. Elementor's cache is cleared afterwards.
 
 - `--job=<id>` — restore a specific job instead of the last one. The last three are kept.
 
@@ -769,6 +769,8 @@ sudo find wp-content -type f -exec chmod 664 {} +
 **A diff's time is mostly requests, not queries.** Every request to the remote boots WordPress there, which on a small host costs one to two seconds before any work starts. From 0.6.4 the hub asks nothing about a table the remote counts empty, reads small tables in shared requests, and has the remote walk only the folders in scope (`uploads/` for `--only=db,uploads`) instead of all of wp-content. Skipping empty tables works against any remote; batching and the narrower walk need 0.6.4 on the remote too.
 
 **Binary columns need 0.9.3 on both sides.** Rows travel as JSON, and JSON cannot carry bytes that are not valid UTF-8: a `varbinary` IP address, a blob, or latin1 text on a site whose connection is not UTF-8. Before 0.9.3 those bytes arrived as `?`, so two IPs that differ only there became one value, and a table with such a column in its primary key failed the pull with `Duplicate entry … for key 'PRIMARY'`. From 0.9.3 such a cell travels base64-encoded and is written back with a hex literal, byte for byte, in pulls, pushes, rollbacks and dropped-table copies. Diffs hash those bytes as they are, once a pull from a 0.9.3 remote has recorded the baseline that way; until then such rows are compared as before, and the plan says so. Rows of plain text keep their hashes. Against an older remote, rows travel as before (a push can write `?` into those cells there), and the plan warns about every table with a `binary`, `varbinary`, `blob` or `bit` column. URLs inside such a cell are never rewritten. A push skips, with a warning, a table whose single-column primary key holds values that are not valid UTF-8 (an ASCII digest in a `varbinary` key is fine): its row hashes are keyed by that key, and JSON cannot carry it. Pulls copy such tables in full.
+
+**Elementor's cache is cleared after every sync.** Elementor keeps rendered HTML in `_elementor_element_cache` post meta and generated CSS under `uploads/elementor/css/`, which WordPress's object-cache flush does not touch, so a site could keep rendering the old output (old URLs included) after a correct sync. From 0.9.12, when Elementor is active, the remote clears that cache at the end of a push and after a rollback, and the hub clears its own after a pull, the same as Elementor → Tools → Clear Files & Data. The output says `elementor: cache cleared`, or warns if the clear failed. The remote needs 0.9.12 for a push or rollback to clear it; `rescue --rollback` runs with plugins off and cannot. Clearing deletes those cache rows, so the next diff after a pull lists them as local deletions; they are regenerated on the next page view.
 
 **Keep both sides on the same plugin version.** Different versions can have different exclude rules. The hub filters anything it would refuse, so a mismatch is handled safely, but matching versions avoid surprises. `wp envsync self-update <env>` brings a remote up to the hub's version.
 
