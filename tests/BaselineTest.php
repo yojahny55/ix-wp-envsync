@@ -56,4 +56,19 @@ class BaselineTest extends TestCase {
 		$bl->reset();
 		$this->assertSame( [], $bl->tables() );
 	}
+
+	public function test_reset_can_keep_tables() {
+		$bl = new IXES_Baseline( $this->path );
+		$bl->reset();
+		$bl->write_rows( 'wp_logs', [ 1 => 'x' ] ); $bl->add_table( 'wp_logs' ); $bl->add_table( 'wp_empty_logs' );
+		$bl->write_rows( 'wp_posts', [ 1 => 'y' ] ); $bl->add_table( 'wp_posts' );
+		$bl->write_files( [ 'a.php' => 'f' ] ); $bl->meta( 'algo', 'sha1' );
+		$bl->reset( [ 'wp_logs', 'wp_empty_logs' ] );
+		$bl = new IXES_Baseline( $this->path );
+		$this->assertSame( [ 'wp_empty_logs', 'wp_logs' ], $bl->tables() );
+		$this->assertSame( [ 1 => 'x' ], $bl->rows( 'wp_logs' ) );
+		$this->assertSame( [], $bl->rows( 'wp_posts' ) );
+		$this->assertSame( [], $bl->files() );
+		$this->assertNull( $bl->meta( 'algo' ) );
+	}
 }

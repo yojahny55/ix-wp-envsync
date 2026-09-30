@@ -121,9 +121,9 @@ class CursorProgressTest extends TestCase {
 		$this->assertLessThan( 5, count( $c->calls ) );
 	}
 
-	private function pull( CursorRemote $c, IXES_Scope $scope ) {
+	private function pull( CursorRemote $c, IXES_Scope $scope, $table = 'wp_filemods', $pk = 'md5' ) {
 		$plan = [ 'created' => time(), 'env' => 'p', 'algo' => 'sha1', 'info' => $c->info(), 'bytes_hash' => false,
-			'tables' => [ [ 'name' => 'wp_filemods', 'pk' => 'md5', 'rows' => self::ROWS ] ], 'new_tables' => [], 'schema_changes' => [],
+			'tables' => [ [ 'name' => $table, 'pk' => $pk, 'rows' => self::ROWS ] ], 'new_tables' => [], 'schema_changes' => [],
 			'files' => [ 'transfer' => [], 'delete' => [], 'remote' => [] ], 'sizes' => [], 'seed' => null, 'pairs' => [], 'excludes' => [],
 			'extra_replace' => [], 'scope' => $scope->to_array(), 'warnings' => [], 'drop_local' => [] ];
 		return IXES_Pull::run( self::env(), $c, $plan, function () {}, null, new IXES_Progress( 'summary', function () {} ) );
@@ -142,6 +142,19 @@ class CursorProgressTest extends TestCase {
 		$r = $this->pull( $this->client(), IXES_Scope::from_array( [ 'only' => [ 'db' ], 'tables' => [ 'filemods' ] ], 'wp_' ) );
 		$this->assertTrue( $r, is_wp_error( $r ) ? $r->get_error_message() : '' );
 		$this->assertCount( self::ROWS, $this->hub->rows['wp_ixes_tmp_filemods'] );
+	}
+
+	public function test_full_pull_with_excluded_tables_keeps_their_baseline_rows() {
+		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-p.sqlite' );
+		$bl->reset(); $bl->write_rows( 'wp_filemods', [ 'x1' => 'h1' ] ); $bl->add_table( 'wp_filemods' ); $bl->add_table( 'wp_gone' );
+		$bl->meta( 'created_at', time() ); $bl->meta( 'algo', 'sha1' ); $bl->meta( 'baseline_scope', '' );
+		// wp_ascii: the JSON baseline (no pdo_sqlite) cannot hold wp_filemods' binary keys
+		$r = $this->pull( $this->client(), IXES_Scope::from_array( [ 'exclude_tables' => [ 'filemods' ] ], 'wp_' ), 'wp_ascii', 'k' );
+		$this->assertTrue( $r, is_wp_error( $r ) ? $r->get_error_message() : '' );
+		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-p.sqlite' );
+		$this->assertSame( [ 'x1' => 'h1' ], $bl->rows( 'wp_filemods' ), 'a push after the exclude is lifted still diffs that table 3-way' );
+		$this->assertSame( [ 'wp_ascii', 'wp_filemods' ], $bl->tables(), 'a table the baseline knew but the scope did not exclude is gone' );
+		$this->assertCount( self::ROWS, $bl->rows( 'wp_ascii' ) );
 	}
 
 	public function test_pull_from_an_older_remote_stops_with_an_error_instead_of_looping() {

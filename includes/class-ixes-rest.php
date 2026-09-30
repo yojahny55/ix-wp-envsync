@@ -42,19 +42,20 @@ class IXES_Rest {
 		if ( $token === '' ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
 		self::$auth_via = $via;
 		$prefix = (string) $req->get_header( 'x-envsync-prefix' );
+		$excl   = (string) $req->get_header( 'x-envsync-exclude-options' );
 		if ( $prefix !== '' && ! IXES_Prefix::valid( $prefix ) ) return new WP_Error( 'prefix', 'bad prefix', [ 'status' => 400 ] );
 		$ok = IXES_Auth::verify(
 			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
 			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),
 			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ),
-			null, (string) $req->get_header( 'x-envsync-step' ), $prefix
+			null, (string) $req->get_header( 'x-envsync-step' ), $prefix, $excl
 		);
 		if ( ! $ok ) return new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
 		global $wpdb;
 		// the hub speaks in its own table names; everything below translates through this for the rest of the request
 		IXES_Prefix::set_current( $prefix !== '' && $prefix !== $wpdb->prefix ? new IXES_Prefix( $wpdb->prefix, $prefix ) : null );
 		// the hub's exclude_options for this environment: those rows are neither hashed, read nor written here
-		IXES_Env::set_option_globs( IXES_Env::option_globs( $req->get_header( 'x-envsync-exclude-options' ) ) );
+		IXES_Env::set_option_globs( IXES_Env::option_globs( $excl ) );
 		return true;
 	}
 

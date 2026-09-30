@@ -295,7 +295,7 @@ An environment can keep its own list, which always applies, like its path exclud
 wp envsync env add prod --add-exclude-tables=@logs
 ```
 
-A table exclude does not narrow the scope: a pull with one is still a full pull and records a full baseline, without the excluded tables. The plan shows them as `scope: everything, not tables @logs`.
+A table exclude does not narrow the scope: a pull with one is still a full pull and records a full baseline. The excluded tables keep the rows the baseline already had for them, so a push after you lift the exclude still compares them three ways and does not bring back rows the remote deleted. The plan shows them as `scope: everything, not tables @logs`.
 
 To sync a fixed set of tables by default instead, `env add <env> --tables=posts,postmeta,...` stores a default table list. It applies with the default `--only` when you pass no scope flag, and the scope line says so. A pull in it refreshes only part of the baseline and never records a new one. `--tables=` removes it.
 

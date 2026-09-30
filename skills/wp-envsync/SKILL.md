@@ -286,7 +286,7 @@ wp --path=<site> envsync env add prod --remove-exclude=cache/              # dro
 
 `--exclude=` replaces the whole list. `--add-exclude=` and `--remove-exclude=` edit it in place, so prefer those. An excluded folder is not hashed, transferred or deleted on either side. A plugin whose folder is excluded keeps the remote's activation state; the plan says `kept (excluded)`.
 
-Log tables often make most of a push. `env add prod --add-exclude-tables=@logs` leaves common log tables out for good; `--exclude-tables=` on one command adds to that list. A table exclude keeps the scope full, so a pull still records the baseline.
+Log tables often make most of a push. `env add prod --add-exclude-tables=@logs` leaves common log tables out for good; `--exclude-tables=` on one command adds to that list. A table exclude keeps the scope full, so a pull still records the baseline, and the excluded tables keep their old baseline rows.
 
 A host-only plugin's settings stay in `wp_options` even when its folder is excluded. `env add prod --add-exclude-options='<prefix>_*'` keeps those rows out on both sides; the plan counts them. The remote needs 0.9.9 or newer (`self-update` first).
 

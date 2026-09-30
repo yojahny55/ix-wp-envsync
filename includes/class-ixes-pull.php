@@ -363,7 +363,9 @@ class IXES_Pull {
 			// scope, unless a full baseline exists: then it only refreshes part of it, as any narrower pull does
 			$full = $bl->exists() && (string) $bl->meta( 'baseline_scope' ) === '';
 			$as_baseline = ! $partial || ( $scope->is_env_default( $env ) && ! $full );
-			if ( $as_baseline ) $bl->reset();
+			// excluded tables are not pulled: their rows stay the base a push compares against once the exclude is lifted,
+			// or that push would see every row prod deleted as new here and insert it back
+			if ( $as_baseline ) $bl->reset( array_values( array_filter( $bl->tables(), [ $scope, 'table_excluded' ] ) ) );
 			// decided once: a resumed pull finishes the way it started, whatever the environment says by then
 			$bl->meta( 'pull_as_baseline', $as_baseline ? 'yes' : 'no' );
 			self::record_hash_mode( $bl, $as_baseline, $c->cells() );

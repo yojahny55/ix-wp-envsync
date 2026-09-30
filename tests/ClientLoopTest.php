@@ -304,6 +304,11 @@ class ClientLoopTest extends TestCase {
 		$c->get( '/ping' );
 		$this->assertSame( 'imunify_*,hostsec_key', $c->calls[0]['headers']['X-Envsync-Exclude-Options'] );
 		$this->assertSame( [ 'imunify_*', 'hostsec_key' ], IXES_Env::option_globs( $c->calls[0]['headers']['X-Envsync-Exclude-Options'] ) );
+		$h = $c->calls[0]['headers'];
+		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'GET', '/envsync/v1/ping', $h['X-Envsync-Ts'], '', '', '', 'imunify_*,hostsec_key' ), $h['X-Envsync-Sig'], 'the header is signed: stripped or widened, the remote refuses the request' );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/info' );
+		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $c->calls[1]['headers'], 'an old remote must still answer /info' );
 		IXES_Env::set_option_globs( [] );
 		$c = $this->client(); $c->script = [ function () { return self::ok_json(); } ];
 		$c->get( '/ping' );

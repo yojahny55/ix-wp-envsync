@@ -117,13 +117,20 @@ class IXES_Scope {
 		return false;
 	}
 
-	public function table_in( $name ) {
-		if ( ! $this->db_wanted() ) return false;
+	/** Whether --exclude-tables (or the environment's exclude_tables) names $name. */
+	public function table_excluded( $name ) {
 		$bare = strpos( $name, $this->prefix ) === 0 ? substr( $name, strlen( $this->prefix ) ) : $name;
 		foreach ( $this->exclude_tables as $ex ) {
-			foreach ( self::PRESETS[ $ex ] ?? [ $ex ] as $pat ) if ( fnmatch( $pat, $name ) || fnmatch( $pat, $bare ) ) return false;
+			foreach ( self::PRESETS[ $ex ] ?? [ $ex ] as $pat ) if ( fnmatch( $pat, $name ) || fnmatch( $pat, $bare ) ) return true;
 		}
+		return false;
+	}
+
+	public function table_in( $name ) {
+		if ( ! $this->db_wanted() ) return false;
+		if ( $this->table_excluded( $name ) ) return false;
 		if ( ! $this->tables ) return true;
+		$bare = strpos( $name, $this->prefix ) === 0 ? substr( $name, strlen( $this->prefix ) ) : $name;
 		foreach ( $this->tables as $pat ) {
 			if ( fnmatch( $pat, $name ) || fnmatch( $pat, $bare ) ) return true;
 		}
