@@ -67,11 +67,29 @@ class IXES_Differ {
 		return [ 'drop' => $drop, 'kept' => $kept ];
 	}
 
-	public static function merge_active_plugins( array $base, array $local, array $remote ) {
+	/**
+	 * @param string[] $pinned plugins whose files the sync never touches there: the remote keeps its own activation state for them
+	 */
+	public static function merge_active_plugins( array $base, array $local, array $remote, array $pinned = [] ) {
+		$base  = array_diff( $base, $pinned );
+		$local = array_diff( $local, $pinned );
 		$deactivated = array_diff( $base, $local );
 		$activated   = array_diff( $local, $base );
 		$merged = array_diff( $remote, $deactivated );
 		foreach ( $activated as $p ) $merged[] = $p;
 		return array_values( array_unique( $merged ) );
+	}
+
+	/**
+	 * Plugins (active_plugins entries) whose files an exclude keeps out of the sync.
+	 * @param string[] $plugins
+	 * @return string[]
+	 */
+	public static function excluded_plugins( array $plugins, array $excludes ) {
+		$out = [];
+		foreach ( array_unique( $plugins ) as $p ) {
+			if ( IXES_Transfer::excluded_path( 'plugins/' . $p, $excludes ) ) $out[] = $p;
+		}
+		return $out;
 	}
 }

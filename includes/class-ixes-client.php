@@ -14,7 +14,11 @@ class IXES_Client {
 	/** This site's table prefix; null reads $wpdb. Set by tests. */
 	public $hub_prefix = null;
 
-	public function __construct( array $env ) { $this->env = $env; }
+	public function __construct( array $env ) {
+		$this->env = $env;
+		// one environment per run: its option excludes hold on this side too (hashing, preserve_local_options)
+		IXES_Env::set_option_globs( (array) ( $env['exclude_options'] ?? [] ) );
+	}
 
 	/** Overridden by tests. */
 	protected function transport( $url, array $args ) { return wp_remote_request( $url, $args ); }
@@ -69,6 +73,10 @@ class IXES_Client {
 		$step = isset( $opts['step'] ) ? (string) $opts['step'] : '';
 		// rescue.php (a custom 'url') verifies without a prefix
 		$prefix = isset( $opts['url'] ) ? '' : $this->prefix_header;
+		// /info and /self-update go out bare, so a remote too old for the excludes still answers, option_globs_refusal()
+		// can say why and self-update can fix it; every other request carries them signed, and that remote refuses it
+		$bare   = isset( $opts['url'] ) || $route === '/info' || strpos( $route, '/self-update/' ) === 0;
+		$excl   = $bare || empty( $this->env['exclude_options'] ) ? '' : implode( ',', (array) $this->env['exclude_options'] );
 		if ( isset( $opts['raw_body'] ) ) { $raw = (string) $opts['raw_body']; $ctype = 'application/octet-stream'; }
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
@@ -76,12 +84,14 @@ class IXES_Client {
 			'Authorization' => ! empty( $this->env['basic_auth'] ) ? 'Basic ' . base64_encode( $this->env['basic_auth'] ) : 'Bearer ' . $this->env['token'],
 			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
-			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix ),
+			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl ),
 			'Content-Type'  => $ctype,
 			'Accept'        => ( $opts['accept'] ?? 'json' ) === 'binary' ? 'application/octet-stream' : 'application/json',
 		];
 		if ( $step !== '' ) $headers['X-Envsync-Step'] = $step;
 		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
+		// signed: stripped, the remote would overwrite host-only options; widened, it would skip rows the hub expects
+		if ( $excl !== '' ) $headers['X-Envsync-Exclude-Options'] = $excl;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
 		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;

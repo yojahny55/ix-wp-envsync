@@ -297,4 +297,26 @@ class ClientLoopTest extends TestCase {
 		$c2->rescue( 'status' );
 		$this->assertSame( 300, $c2->calls[0]['timeout'] );
 	}
+
+	public function test_option_excludes_travel_in_a_header() {
+		$c = new FakeClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'exclude_options' => [ 'imunify_*', 'hostsec_key' ] ] );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$this->assertSame( 'imunify_*,hostsec_key', $c->calls[0]['headers']['X-Envsync-Exclude-Options'] );
+		$this->assertSame( [ 'imunify_*', 'hostsec_key' ], IXES_Env::option_globs( $c->calls[0]['headers']['X-Envsync-Exclude-Options'] ) );
+		$h = $c->calls[0]['headers'];
+		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'GET', '/envsync/v1/ping', $h['X-Envsync-Ts'], '', '', '', 'imunify_*,hostsec_key' ), $h['X-Envsync-Sig'], 'the header is signed: stripped or widened, the remote refuses the request' );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/info' );
+		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $c->calls[1]['headers'], 'an old remote must still answer /info' );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->post( '/self-update/install', [ 'id' => 'x' ] );
+		$h = $c->calls[2]['headers'];
+		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $h, 'self-update is how an old remote learns the excludes' );
+		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'POST', '/envsync/v1/self-update/install', $h['X-Envsync-Ts'], $c->calls[2]['body'] ), $h['X-Envsync-Sig'] );
+		IXES_Env::set_option_globs( [] );
+		$c = $this->client(); $c->script = [ function () { return self::ok_json(); } ];
+		$c->get( '/ping' );
+		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $c->calls[0]['headers'] );
+	}
 }

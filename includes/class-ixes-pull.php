@@ -49,7 +49,7 @@ class IXES_Pull {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
-		$refused = self::prefix_refusal( $info, $wpdb->prefix );
+		$refused = self::prefix_refusal( $info, $wpdb->prefix ) ?: IXES_Env::option_globs_refusal( $env, $info );
 		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$ex   = self::excludes( $env );
@@ -183,6 +183,17 @@ class IXES_Pull {
 	 */
 	public static function hash_mode( $bl ) {
 		return $bl->meta( 'bytes_hash' ) === 'yes';
+	}
+
+	/**
+	 * Tables a baseline pull keeps from the old baseline: the excluded ones, which it does not pull. Their rows stay the
+	 * base a push compares against once the exclude is lifted, or that push would see every row prod deleted as new
+	 * here and insert it back. Only when the new baseline hashes the same way: rows it can never match are worse.
+	 */
+	public static function kept_tables( $bl, IXES_Scope $scope, array $plan, $cells ) {
+		if ( ! $bl->exists() || $bl->meta( 'algo' ) !== $plan['algo'] || $bl->meta( 'source_url' ) !== $plan['info']['url']
+			|| $bl->meta( 'bytes_hash' ) !== ( $cells ? 'yes' : 'no' ) ) return [];
+		return array_values( array_filter( $bl->tables(), [ $scope, 'table_excluded' ] ) );
 	}
 
 	/** A new baseline records how its byte cells are hashed; a pull refreshing part of one keeps that baseline's mode. */
@@ -363,7 +374,12 @@ class IXES_Pull {
 			// scope, unless a full baseline exists: then it only refreshes part of it, as any narrower pull does
 			$full = $bl->exists() && (string) $bl->meta( 'baseline_scope' ) === '';
 			$as_baseline = ! $partial || ( $scope->is_env_default( $env ) && ! $full );
-			if ( $as_baseline ) $bl->reset();
+			if ( $as_baseline ) {
+				$keep = self::kept_tables( $bl, $scope, $plan, $c->cells() );
+				$lost = array_diff( array_filter( $bl->tables(), [ $scope, 'table_excluded' ] ), $keep );
+				if ( $lost ) $progress->note( 'warning: the baseline changes how it hashes rows, so the excluded tables ' . implode( ', ', $lost ) . ' lose their base: pull them before you push them' );
+				$bl->reset( $keep );
+			}
 			// decided once: a resumed pull finishes the way it started, whatever the environment says by then
 			$bl->meta( 'pull_as_baseline', $as_baseline ? 'yes' : 'no' );
 			self::record_hash_mode( $bl, $as_baseline, $c->cells() );

@@ -12,7 +12,7 @@ class IXES_Planner {
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
 		if ( is_wp_error( $info ) ) return $info;
-		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix );
+		$refused = IXES_Pull::prefix_refusal( $info, $wpdb->prefix ) ?: IXES_Env::option_globs_refusal( $env, $info );
 		if ( $refused ) return $refused;
 		$algo = IXES_Hasher::algo( $info['algos'] );
 		$bl   = new IXES_Baseline( ixes_storage_dir() . '/baseline-' . $env['name'] . '.sqlite' );
@@ -109,8 +109,21 @@ class IXES_Planner {
 			if ( $name === $wpdb->options ) {
 				$base_ap = $two_way ? [] : self::option_from_baseline_or_local( 'active_plugins', $bl );
 				$remote_ap = (array) ( $info['active_plugins'] ?? [] );
-				$merged = IXES_Differ::merge_active_plugins( $base_ap, (array) get_option( 'active_plugins', [] ), $remote_ap );
+				if ( ! empty( $env['exclude_options'] ) ) {
+					$n = 0;
+					foreach ( $wpdb->get_col( "SELECT option_name FROM {$wpdb->options}" ) as $o ) {
+						foreach ( (array) $env['exclude_options'] as $g ) if ( fnmatch( $g, $o ) ) { $n++; break; }
+					}
+					$plan['options_excluded'] = [ $name => $n ];
+				}
+				$local_ap = (array) get_option( 'active_plugins', [] );
+				// a plugin whose folder is excluded there is that host's own: the remote keeps its activation state
+				$pinned = IXES_Differ::excluded_plugins( array_merge( $base_ap, $local_ap, $remote_ap ), $ex );
+				$merged = IXES_Differ::merge_active_plugins( $base_ap, $local_ap, $remote_ap, $pinned );
 				if ( array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
+				$plan['active_plugins_excluded'] = array_values( array_filter( $pinned, function ( $p ) use ( $local_ap, $remote_ap ) {
+					return in_array( $p, $local_ap, true ) !== in_array( $p, $remote_ap, true );
+				} ) );
 			}
 			if ( $d['push'] || $d['insert'] || $d['delete'] || $d['conflict'] || $d['kept'] || $d['set_insert'] || ! empty( $d['set_delete'] ) ) $plan['tables'][ $name ] = $d;
 		}
@@ -304,7 +317,7 @@ class IXES_Planner {
 		$o[] = sprintf( '%s  ←  local          baseline: %s%s', $plan['env'], $plan['baseline_at'] ? wp_date( 'Y-m-d H:i T', $plan['baseline_at'] ) : 'NONE (2-way)', $plan['two_way'] ? "   !! everything different would OVERWRITE {$plan['env']}" : '' );
 		if ( ! empty( $plan['scope'] ) ) {
 			$sc = IXES_Scope::from_array( (array) $plan['scope'], '' );
-			if ( ! $sc->is_full() ) $o[] = '  scope: ' . $sc->label();
+			if ( $sc->narrows() ) $o[] = '  scope: ' . $sc->label();
 		}
 		$o[] = 'DB';
 		// without a baseline nobody knows who changed a row, only where it is: see IXES_Report::push_table()
@@ -316,6 +329,8 @@ class IXES_Planner {
 				: sprintf( '  %-32s push %-5d insert %-5d delete %-5d remote-wins %-5d kept-remote %-5d same %d', $name, $n['push'], $n['insert'], $n['delete'], $n['prod_wins'], $n['kept_prod'], $n['same'] );
 		}
 		if ( $plan['active_plugins'] !== null ) $o[] = '  active_plugins  → ' . implode( ', ', $plan['active_plugins'] );
+		foreach ( (array) ( $plan['options_excluded'] ?? [] ) as $name => $n ) $o[] = "  {$name}: {$n} row(s) excluded by name";
+		foreach ( (array) ( $plan['active_plugins_excluded'] ?? [] ) as $p ) $o[] = "  active_plugins  {$p}: kept (excluded)";
 		foreach ( (array) ( $plan['drop_tables'] ?? [] ) as $name => $d ) $o[] = sprintf( '  %-32s DROP TABLE (%d rows, %s)', $name, $d['rows'], $d['why'] );
 		$o[] = 'FILES';
 		$label = [ 'push' => 'push', 'delete' => 'delete', 'conflict' => $two ? 'differs' : 'remote-wins', 'kept' => $two ? 'remote-only' : 'kept-remote' ];
