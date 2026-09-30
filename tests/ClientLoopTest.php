@@ -309,6 +309,11 @@ class ClientLoopTest extends TestCase {
 		$c->script = [ function () { return self::ok_json(); } ];
 		$c->get( '/info' );
 		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $c->calls[1]['headers'], 'an old remote must still answer /info' );
+		$c->script = [ function () { return self::ok_json(); } ];
+		$c->post( '/self-update/install', [ 'id' => 'x' ] );
+		$h = $c->calls[2]['headers'];
+		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $h, 'self-update is how an old remote learns the excludes' );
+		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'POST', '/envsync/v1/self-update/install', $h['X-Envsync-Ts'], $c->calls[2]['body'] ), $h['X-Envsync-Sig'] );
 		IXES_Env::set_option_globs( [] );
 		$c = $this->client(); $c->script = [ function () { return self::ok_json(); } ];
 		$c->get( '/ping' );

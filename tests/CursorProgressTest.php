@@ -144,17 +144,34 @@ class CursorProgressTest extends TestCase {
 		$this->assertCount( self::ROWS, $this->hub->rows['wp_ixes_tmp_filemods'] );
 	}
 
-	public function test_full_pull_with_excluded_tables_keeps_their_baseline_rows() {
+	private function baseline_with_filemods( IXES_Client $c, array $meta = [] ) {
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-p.sqlite' );
 		$bl->reset(); $bl->write_rows( 'wp_filemods', [ 'x1' => 'h1' ] ); $bl->add_table( 'wp_filemods' ); $bl->add_table( 'wp_gone' );
-		$bl->meta( 'created_at', time() ); $bl->meta( 'algo', 'sha1' ); $bl->meta( 'baseline_scope', '' );
+		$meta += [ 'created_at' => time(), 'algo' => 'sha1', 'baseline_scope' => '', 'source_url' => $c->info()['url'], 'bytes_hash' => $c->cells() ? 'yes' : 'no' ];
+		foreach ( $meta as $k => $v ) $bl->meta( $k, $v );
+	}
+
+	public function test_full_pull_with_excluded_tables_keeps_their_baseline_rows() {
+		$c = $this->client();
+		$this->baseline_with_filemods( $c );
 		// wp_ascii: the JSON baseline (no pdo_sqlite) cannot hold wp_filemods' binary keys
-		$r = $this->pull( $this->client(), IXES_Scope::from_array( [ 'exclude_tables' => [ 'filemods' ] ], 'wp_' ), 'wp_ascii', 'k' );
+		$r = $this->pull( $c, IXES_Scope::from_array( [ 'exclude_tables' => [ 'filemods' ] ], 'wp_' ), 'wp_ascii', 'k' );
 		$this->assertTrue( $r, is_wp_error( $r ) ? $r->get_error_message() : '' );
 		$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-p.sqlite' );
 		$this->assertSame( [ 'x1' => 'h1' ], $bl->rows( 'wp_filemods' ), 'a push after the exclude is lifted still diffs that table 3-way' );
 		$this->assertSame( [ 'wp_ascii', 'wp_filemods' ], $bl->tables(), 'a table the baseline knew but the scope did not exclude is gone' );
 		$this->assertCount( self::ROWS, $bl->rows( 'wp_ascii' ) );
+	}
+
+	public function test_excluded_tables_lose_baseline_rows_hashed_another_way() {
+		foreach ( [ [ 'algo' => 'md5' ], [ 'source_url' => 'https://old.test' ], [ 'bytes_hash' => 'maybe' ] ] as $meta ) {
+			$c = $this->client();
+			$this->baseline_with_filemods( $c, $meta );
+			$r = $this->pull( $c, IXES_Scope::from_array( [ 'exclude_tables' => [ 'filemods' ] ], 'wp_' ), 'wp_ascii', 'k' );
+			$this->assertTrue( $r, is_wp_error( $r ) ? $r->get_error_message() : '' );
+			$bl = new IXES_Baseline( ixes_storage_dir() . '/baseline-p.sqlite' );
+			$this->assertSame( [ 'wp_ascii' ], $bl->tables(), 'hashes the new baseline can never match are worse than none: ' . json_encode( $meta ) );
+		}
 	}
 
 	public function test_pull_from_an_older_remote_stops_with_an_error_instead_of_looping() {
