@@ -25,7 +25,7 @@ class IXES_Planner {
 		if ( $mirror && ! $two_way ) return new WP_Error( 'mirror_baseline', "--mirror is only for a first deploy: {$env['name']} has a baseline, so what only it has is its own work and stays" );
 
 		list( $extra_prod, $extra_local ) = IXES_Env::extras( $env );
-		$local_pairs = IXES_Hasher::placeholders( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local );
+		$local_pairs = self::local_pairs( IXES_Env::local_url(), IXES_Env::local_abspath(), $extra_local, (string) $info['url'], (string) ( $info['abspath'] ?? '' ), $extra_prod );
 		$ex = IXES_Pull::excludes( $env );
 		// both sides hash byte cells as raw bytes only when the remote can and the baseline agrees; otherwise as before
 		$caps  = (array) ( $info['caps'] ?? [] );
@@ -132,6 +132,18 @@ class IXES_Planner {
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
 		}
 		return $plan;
+	}
+
+	/**
+	 * How this side hashes its rows for a diff against a remote. The remote's own URL, path and extra values count as
+	 * placeholders here too: a push leaves them as they are, and the remote reads them as its placeholders, so a row
+	 * that carries one must hash the same on both sides or it shows as changed after every push.
+	 */
+	public static function local_pairs( $url, $abspath, array $extra_local, $remote_url, $remote_abspath = '', array $extra_prod = [] ) {
+		$pairs = array_merge( IXES_Hasher::placeholders( $url, $abspath, $extra_local ), IXES_Hasher::placeholders( $remote_url, $remote_abspath, $extra_prod ) );
+		$pairs = array_values( array_filter( $pairs, function ( $p ) { return $p[0] !== '' && $p[0] !== '//'; } ) );
+		usort( $pairs, function ( $a, $b ) { return strlen( $b[0] ) - strlen( $a[0] ); } );
+		return $pairs;
 	}
 
 	/**
