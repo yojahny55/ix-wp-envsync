@@ -83,4 +83,15 @@ class DifferTest extends TestCase {
 		$this->assertSame( [ 'host/host.php', 'hello.php' ], IXES_Differ::excluded_plugins( [ 'a/a.php', 'host/host.php', 'hello.php', 'hostile/hostile.php' ], $ex ) );
 		$this->assertSame( [], IXES_Differ::excluded_plugins( [ 'a/a.php' ], [] ) );
 	}
+	public function test_same_counts_rows_equal_on_both_sides() {
+		$this->assertSame( 2, $this->d( [ 1 => 'a' ], [ 1 => 'a', 2 => 'b', 3 => 'z' ], [ 1 => 'a', 2 => 'b', 3 => 'y' ] )['same'] );
+		$this->assertSame( 1, $this->d( [ 1 => 'a' ], [ 1 => 'b' ], [ 1 => 'b' ] )['same'], 'both changed the same way' );
+	}
+	public function test_without_baseline_every_row_falls_in_one_category() {
+		$l = [ 1 => 'a', 2 => 'b', 3 => 'c' ]; $r = [ 2 => 'b', 3 => 'x', 4 => 'y' ];
+		$c = IXES_Report::table_counts( $this->d( [], $l, $r ) + [ 'set_insert' => [] ] );
+		$this->assertSame( [ 'push' => 0, 'insert' => 1, 'delete' => 0, 'prod_wins' => 1, 'kept_prod' => 1, 'same' => 1 ], $c );
+		$this->assertSame( count( $l ), $c['insert'] + $c['prod_wins'] + $c['same'] );
+		$this->assertSame( count( $r ), $c['prod_wins'] + $c['kept_prod'] + $c['same'] );
+	}
 }

@@ -86,6 +86,32 @@ class IXES_Scope {
 		return $a;
 	}
 
+	/**
+	 * Why scope flags given to a resumed pull cannot apply, or null when there are none or they match the stored scope.
+	 * @param array $stored the interrupted plan's to_array()
+	 */
+	public static function resume_refusal( array $assoc, array $stored, $prefix ) {
+		if ( ! isset( $assoc['only'] ) && ! isset( $assoc['tables'] ) && ! isset( $assoc['paths'] ) ) return null;
+		if ( ( $assoc['only'] ?? null ) === 'all' ) unset( $assoc['only'] );
+		$was = self::from_array( $stored, $prefix );
+		try { $now = self::from_assoc( $assoc, $prefix ); }
+		catch ( InvalidArgumentException $e ) { return $e->getMessage(); }
+		$norm = function ( IXES_Scope $s ) { $a = $s->to_array(); foreach ( $a as &$v ) sort( $v ); return $a; };
+		if ( $norm( $was ) === $norm( $now ) ) return null;
+		return "the interrupted pull runs with scope {$was->label()}, not {$now->label()}";
+	}
+
+	/** The command-line flags that give this scope, with a leading space; '' for everything. */
+	public function flags() {
+		$f = '';
+		$inferred = count( $this->only ) === 1 && ( ( $this->only[0] === 'db' && $this->tables ) || ( $this->only[0] === 'files' && $this->paths ) );
+		if ( $this->only && ! $inferred ) $f .= ' --only=' . implode( ',', $this->only );
+		if ( $this->tables ) $f .= ' --tables=' . implode( ',', $this->tables );
+		if ( $this->paths )  $f .= ' --paths=' . implode( ',', $this->paths );
+		if ( $this->exclude_tables ) $f .= ' --exclude-tables=' . implode( ',', $this->exclude_tables );
+		return $f;
+	}
+
 	/** Whether the scope changes anything: a full scope that excludes tables still does. */
 	public function narrows() { return ! $this->is_full() || $this->exclude_tables; }
 	/** Table excludes do not count: they are the environment's standing rules, like path excludes, and a pull with them is still a full pull. */

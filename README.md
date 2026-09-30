@@ -105,12 +105,12 @@ prod  ←  local
   512 files · 38.4 MB · 131 rows
 
 DATABASE
-+-------------+------+--------+--------+-------------+-------------+
-| table       | push | insert | delete | remote-wins | kept-remote |
-+-------------+------+--------+--------+-------------+-------------+
-| wp_posts    |   12 |      3 |      1 |           2 |          41 |
-| wp_postmeta |   87 |     19 |      4 |           0 |         310 |
-+-------------+------+--------+--------+-------------+-------------+
++-------------+------+--------+--------+-------------+-------------+-------+
+| table       | push | insert | delete | remote-wins | kept-remote | same  |
++-------------+------+--------+--------+-------------+-------------+-------+
+| wp_posts    |   12 |      3 |      1 |           2 |          39 |   611 |
+| wp_postmeta |   87 |     19 |      4 |           0 |         310 |  8904 |
++-------------+------+--------+--------+-------------+-------------+-------+
 
 PLUGINS
 +-----------------------+-------+--------+-----------------+----------+
@@ -150,6 +150,20 @@ Every DB and FILES row uses the same counts:
 | `delete` | rows or files you deleted, that production hasn't touched |
 | `remote-wins` | both sides changed it; the remote's version stays |
 | `kept-remote` | the remote changed it, you did not; left alone |
+| `same` | equal on both sides |
+
+Each row counts in one column only. A table where every row is the same is not listed.
+
+Without a baseline nobody knows who changed a row, only where it is, so `diff` shows other columns:
+
+| Column | Meaning |
+|---|---|
+| `local-only` | only on local; a forced push inserts it |
+| `differs` | on both sides, different; a forced push overwrites the remote's |
+| `remote-only` | only on the remote; kept, unless you add `--mirror` |
+| `same` | equal on both sides |
+
+Here `local-only + differs + same` is the local row count and `differs + remote-only + same` the remote's. The rows that differ are listed under `DIFFERENT ON BOTH SIDES` instead of `CONFLICTS`.
 
 `CONFLICTS (prod wins)` (named after the environment: `CONFLICTS (staging wins)` when you push to staging) lists every `remote-wins` row and file by name. Nothing has changed yet — `diff` only reads and reports.
 
@@ -225,6 +239,11 @@ What `--force` does when there is no baseline:
 | Only on local | Inserted on the remote |
 | On both sides, different | **Local overwrites the remote** |
 | Only on the remote | Kept. Nothing is deleted, unless you add `--mirror` |
+| A mu-plugin or drop-in | **Held back**, unless `--only` names `mu-plugins` or `--paths` names the file |
+
+Mu-plugins and drop-ins load on every request, rescue included, so a forced push leaves them out and its warning names what it held back. Check that each one belongs on the new host, then send them on their own: `wp envsync push prod --force --only=mu-plugins` for mu-plugins, `--paths=object-cache.php` (and so on) for drop-ins, which live outside `mu-plugins/`.
+
+The dry run lists what the remote keeps in `kept-remote` and says so in a warning: `staging keeps what only it has: 74 wp_posts rows, 9,030 wp_postmeta rows, 10 files (push --force --mirror deletes them)`. The manifest counts them in `summary.kept` and `summary.kept_files`. To see which rows they are, run `wp envsync diff staging --table=posts --list=remote-only`.
 
 ### Replacing what the remote already has: `--mirror`
 
@@ -448,7 +467,7 @@ Options for `add`:
 - `--exclude-options=<globs>`, `--add-exclude-options=`, `--remove-exclude-options=` — option name globs whose `wp_options` rows never travel. See [Leaving options out](#leaving-options-out).
 - `--tables=<tables>` — optional default table list, applied with `--only` when no scope flag is given. `--tables=` removes it.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
-- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two.
+- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two. A request that fails on the network is retried up to three times (after 2, 5 and 15 seconds): a DNS or connect failure on any request, since it never reached the remote, and a 429/502/503/504 or a timeout only on requests that read. A paged read (`/dump`, `/hash/*`) that times out asks for half the page. A 500 is never retried.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
@@ -499,7 +518,8 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 
 - `--details` — list every affected row id and file path.
 - `--format=json` (or `--json`) — print the manifest instead of the tables. See [For AI agents](#for-ai-agents).
-- `--table=<table> --id=<pk>` — field-by-field diff of a single row, useful for understanding one conflict.
+- `--table=<table> --id=<pk>` — where one row is (only here, only on the remote, on both sides and the same, different, or on neither) and its fields: the ones that differ, or all of them when only one side has it. The table name may leave out the prefix.
+- `--table=<table> --list=<column>` — the keys in one column: `local-only`, `differs`, `remote-only`, or `push`, `insert`, `delete`, `remote-wins`, `kept-remote`. Core tables add a few fields that name each row (for posts: type, status, date, title). Rows on the remote are looked up one request each, so only the first 50 get names.
 - `--flush-cache` — rehash all files.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
@@ -543,6 +563,15 @@ From 0.8.0, in both directions:
 - Larger files, and a file that grew past its batch since the plan, keep the chunked single-file path.
 
 Both sides need 0.8.0 or newer. Against an older remote the hub falls back on its own: a pull fetches one file per request, a push sends plain batches one at a time. The plan says which way the files will go, with a `TRANSFER` line, and names the version to upload when the remote is older. `status` flags a remote older than the hub.
+
+#### Mu-plugins and drop-ins
+
+Must-use plugins (`mu-plugins/`) and drop-ins (`db.php`, `object-cache.php`, `sunrise.php` and the rest of WordPress's list) load on every request, `rescue.php` included. A half-copied one takes the whole site down, so:
+
+- The plan lists them in their own **MU-PLUGINS AND DROP-INS** section, one row per file or top-level folder, marked `new`, `changed` or `delete`, and warns whenever a push sends one. The JSON manifest carries the same rows as `mu_plugins[]` (`slug`, `files`, `delete`, `bytes`, `change`).
+- A push sends them after every other file, one request at a time, each folder before the loader file that requires it. Deletes go the other way round: the loader first.
+- From 0.9.7 the remote writes them into the job's `stage/` folder and moves them into `wp-content` only at the end of the push, after the database. Deletes of mu-plugins and drop-ins wait for that moment too. A push that fails half-way leaves `mu-plugins/` untouched.
+- If one still crashes the site, `wp envsync rescue <env> --quarantine-mu` moves them aside without booting WordPress (see [rescue](#wp-envsync-rescue-env)).
 
 Batches finish in any order. A pull records every file that was written and verified, not a position in the list, so an interrupted pull resumes with exactly the files that did not land.
 
@@ -590,7 +619,8 @@ Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back �
 Recovers a remote that crashes on every request, through `rescue.php` (no plugins, no theme loaded). With no flag it only reports the active plugins, the lock and the last job.
 
 - `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
-- `--job=<id>` — roll back this job instead.
+- `--quarantine-mu` — for a site that a mu-plugin or drop-in crashes, which the other flags cannot reach because WordPress loads those even in rescue mode. Moves every mu-plugin and drop-in the last push (or `--job`) sent or deleted into the storage folder's `quarantine/<job>/`, and puts back the versions the push's snapshot kept. It never boots WordPress: it checks the token against a key the push left in the storage folder, and touches files only. Needs 0.9.7 on the remote when the push ran. The lock and the maintenance file stay: follow with `--rollback` to undo the rest of the push, or `unlock` to keep it.
+- `--job=<id>` — roll back or quarantine this job instead.
 - `--plugins-off` — deactivate every plugin except EnvSync.
 - `--restore-self` — put back the EnvSync folder the last self-update replaced. It obeys the same gates as a self-update (the opt-out, `DISALLOW_FILE_MODS`, no symlinked plugin folder) and only restores the version it names.
 - `--from=<version>` — with `--restore-self`: the version to put back. Default: the version the remote's backup holds.
@@ -633,11 +663,24 @@ wp envsync env add prod --add-exclude=uploads/rank-math/,cache/
 wp envsync env excludes prod
 ```
 
-`env excludes` shows the whole effective list and marks each entry as `always`, `default`, or `this env`. Only `this env` rows can be removed.
+`env excludes` shows the whole effective list and marks each entry as `always`, `default`, `host-specific`, or `this env`. Only `host-specific` and `this env` rows can be removed.
+
+### Host-specific files
+
+Managed hosts install their own mu-plugins and plugins, which only work on that host: Plesk WP Toolkit (`mu-plugins/wp-toolkit.php`, `mu-plugins/wp-toolkit/`), Imunify (`mu-plugins/imunify-security-bots.php`, `plugins/imunify-security/`, `imunify-security/`), and the mu-plugins of WP Engine, Kinsta, GoDaddy, Pantheon and Bluehost. Copied to another host, they can take the site down.
+
+EnvSync excludes that built-in list by default, on pull and push alike. `env excludes` shows each entry with its host. To sync one anyway, remove it for that environment, and add it back to exclude it again:
+
+```bash
+wp envsync env add staging --remove-exclude=mu-plugins/wp-toolkit.php,mu-plugins/wp-toolkit/
+wp envsync env add staging --add-exclude=mu-plugins/wp-toolkit.php,mu-plugins/wp-toolkit/
+```
+
+A plan that would send one of them to an environment that does not have it says so in its warnings.
 
 Paths are relative to wp-content. A trailing slash means the folder and everything under it, and nested paths work, such as `uploads/rank-math/`. A folder exclude matches only at that path: `cache/` is `wp-content/cache/`, not a plugin's own `src/cache/` folder. The exceptions are `.git/` and `node_modules/`, which are skipped wherever they appear.
 
-Some things are always excluded and cannot be synced: `wp-config.php`, `.htaccess`, `.env`, `debug.log`, drop-ins, `.git`, `node_modules`, this plugin's own folder, and its storage folder.
+Some things are always excluded and cannot be synced: `wp-config.php`, `.htaccess`, `.env`, `debug.log`, the `object-cache.php` and `advanced-cache.php` drop-ins, `.git`, `node_modules`, this plugin's own folder, and its storage folder.
 
 ---
 
@@ -718,7 +761,13 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 ## For AI agents
 
-A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Copy that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff.
+A skill describing this plugin for coding agents lives in [`skills/wp-envsync/SKILL.md`](skills/wp-envsync/SKILL.md). Link that folder into `~/.claude/skills/` so an agent can drive the sync correctly, including the rules about never pushing without a diff:
+
+```bash
+ln -s /path/to/ix-wp-envsync/skills/wp-envsync ~/.claude/skills/wp-envsync
+```
+
+Use a symlink rather than a copy. A copy freezes the skill at the version you copied, so it silently falls behind as new flags and workflows are documented here; a symlink follows the clone, and `git pull` keeps it current. If you already copied it, replace the copy with the link (`rm -r ~/.claude/skills/wp-envsync`, then the `ln -s` above).
 
 Agents should read files rather than terminal text:
 

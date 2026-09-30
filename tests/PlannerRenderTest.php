@@ -16,7 +16,8 @@ class PlannerRenderTest extends TestCase {
 		$this->assertStringContainsString( 'push 2', $txt );
 		$this->assertStringContainsString( 'insert 1', $txt );
 		$this->assertStringContainsString( 'remote-wins 1', $txt );
-		$this->assertStringContainsString( 'kept-remote 2', $txt );
+		$this->assertStringContainsString( 'kept-remote 1', $txt, 'row 9 counts once, as remote-wins' );
+		$this->assertStringContainsString( 'same 0', $txt );
 		$this->assertStringContainsString( 'themes/k/', $txt );
 		$this->assertStringContainsString( 'CONFLICTS', $txt );
 		$this->assertStringContainsString( '#9', $txt );
@@ -71,5 +72,34 @@ class PlannerRenderTest extends TestCase {
 		$this->assertStringNotContainsString( 'excluded by name', IXES_Planner::render_text( $plan ) );
 		$plan['options_excluded'] = [ 'wp_options' => 3 ];
 		$this->assertStringContainsString( 'wp_options: 3 row(s) excluded by name', IXES_Planner::render_text( $plan ) );
+	}
+	public function test_render_without_baseline_says_where_rows_are() {
+		$plan = [
+			'env' => 'staging', 'created' => 1, 'baseline_at' => null, 'algo' => 'sha1', 'two_way' => true,
+			'tables' => [ 'wp_posts' => [ 'pk' => 'ID', 'push' => [], 'insert' => [ 3 ], 'delete' => [], 'conflict' => [ 9 ], 'kept' => [ 9, 10 ], 'same' => 5, 'set_insert' => [] ] ],
+			'files' => [ 'push' => [], 'delete' => [], 'conflict' => [ 'themes/k/a.php' ], 'kept' => [ 'themes/k/a.php', 'uploads/x.jpg' ] ],
+			'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [],
+		];
+		$txt = IXES_Planner::render_text( $plan );
+		$this->assertStringContainsString( 'local-only 1', $txt );
+		$this->assertStringContainsString( 'differs 1', $txt );
+		$this->assertStringContainsString( 'remote-only 1', $txt );
+		$this->assertStringContainsString( 'same 5', $txt );
+		$this->assertStringContainsString( 'themes/k/                                differs 1', $txt );
+		$this->assertStringContainsString( 'uploads/x.jpg/                           remote-only 1', $txt );
+		$this->assertStringContainsString( 'DIFFERENT ON BOTH SIDES', $txt );
+		$this->assertStringNotContainsString( 'remote-wins', $txt );
+	}
+	public function test_without_baseline_keyless_rows_only_here_count_as_local_only() {
+		$plan = [
+			'env' => 'staging', 'created' => 1, 'baseline_at' => null, 'algo' => 'sha1', 'two_way' => true,
+			'tables' => [ 'wp_nokey' => [ 'pk' => null, 'push' => [], 'insert' => [], 'delete' => [], 'conflict' => [], 'kept' => [], 'same' => 2, 'set_insert' => [ 'h1', 'h2', 'h3' ] ] ],
+			'files' => [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ], 'active_plugins' => null, 'remote_hashes' => [], 'conflict_detail' => [],
+		];
+		$this->assertStringContainsString( 'local-only 3', IXES_Planner::render_text( $plan ) );
+		$r = IXES_Report::build( [ 'kind' => 'diff', 'env' => 'staging', 'url' => '', 'created' => 1, 'direction' => 'push', 'baseline_at' => null, 'first_deploy' => true, 'scope' => 'everything', 'scope_full' => true,
+			'tables' => [ 'wp_nokey' => IXES_Report::table_counts( $plan['tables']['wp_nokey'] ) ], 'rows' => null, 'files' => [], 'deletes' => [], 'sizes' => [], 'before' => null, 'source' => [ 'plugins' => [], 'themes' => [], 'stylesheet' => null ],
+			'active_before' => [], 'active_after' => [], 'stylesheet_after' => null, 'conflicts' => [], 'warnings' => [] ] );
+		$this->assertMatchesRegularExpression( '/wp_nokey\s*\|\s*3\s*\|\s*0\s*\|\s*0\s*\|\s*2/', IXES_Report::render_text( $r ) );
 	}
 }

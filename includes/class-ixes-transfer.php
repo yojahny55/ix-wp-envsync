@@ -594,10 +594,11 @@ class IXES_Transfer {
 		);
 	}
 
-	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256 ) {
+	/** $root: where $rel lands, WP_CONTENT_DIR unless the applier stages it (see IXES_Applier::write_root()). */
+	public static function write_file_chunk( $rel, $offset, $data, $final, $sha256, $root = null ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused' );
-		$dest = WP_CONTENT_DIR . '/' . $rel;
+		$dest = ( $root === null ? WP_CONTENT_DIR : $root ) . '/' . $rel;
 		$tmp  = $dest . '.ixes-tmp';
 		$dir  = dirname( $dest );
 		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return new WP_Error( 'io', self::io_hint( "cannot create directory {$dir}", $dir ) );

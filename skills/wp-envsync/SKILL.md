@@ -120,7 +120,7 @@ The user built the site locally, and the remote is a fresh WordPress install. Pu
 3. Tell the user three things before they approve:
    - Local users replace the remote's users, so they will log in with their **local** credentials.
    - Active local dev plugins go up too.
-   - Nothing on the remote is deleted, so an old site's content stays mixed in. If the user wants the remote to end up equal to local, add `--mirror` to the dry run and the push: rows and files only the remote has, within the scope, are deleted (orders and users included). Report the delete counts per table and folder before approval. `rollback` restores them.
+   - Nothing on the remote is deleted, so an old site's content stays mixed in. The dry run's warning and `summary.kept` say how many rows and files that is. If the user wants the remote to end up equal to local, add `--mirror` to the dry run and the push: rows and files only the remote has, within the scope, are deleted (orders and users included). Report the delete counts per table and folder before approval. `rollback` restores them.
 4. Run `push <env> --force --yes` (plus `--mirror` if used in the dry run) after approval.
 5. Run `pull <env> --yes` to record the baseline. From now on, use the normal loop and never `--force`.
 
@@ -153,13 +153,13 @@ wp --path=<site> envsync self-update prod --yes
 wp --path=<site> envsync diff prod --table=wp_posts --id=2231
 ```
 
-Shows the row field by field, on both sides.
+Says where the row is (only here, only on the remote, on both sides and the same, different, or on neither) and shows the fields that differ, or all of them when one side has it. To see which rows sit in one column, add `--list=<column>` instead of `--id`, for example `--table=posts --list=remote-only`.
 
 ## Reading a diff
 
 ```
-| table    | push | insert | delete | remote-wins | kept-remote |
-| wp_posts |   12 |      3 |      1 |           2 |          41 |
+| table    | push | insert | delete | remote-wins | kept-remote | same |
+| wp_posts |   12 |      3 |      1 |           2 |          39 |  611 |
 ```
 
 - `push`: the user's changes going up.
@@ -167,10 +167,13 @@ Shows the row field by field, on both sides.
 - `delete`: rows they deleted, which the remote has not touched.
 - `remote-wins`: both sides changed it, and the remote's version stays. Report these.
 - `kept-remote`: the remote changed it and the user did not. This is normal.
+- `same`: equal on both sides. Each row counts in one column only.
+
+Without a baseline the columns are `local-only`, `differs`, `remote-only` and `same`: nobody knows who changed a row, only where it is. A forced push inserts `local-only`, overwrites `differs` and keeps `remote-only` unless `--mirror` is added.
 
 `baseline: none` (in JSON, `baseline_at: null`) means no pull has been done. Pull first, unless this is a first deploy (`first_deploy: true` in the manifest).
 
-The wording names the environment: a push to staging prints `CONFLICTS (staging wins)` and `skipped (changed on staging during push)`. In JSON the keys stay `prod_wins` and `kept_prod` for every environment.
+The wording names the environment: a push to staging prints `CONFLICTS (staging wins)` and `skipped (changed on staging during push)`. In JSON the keys stay `prod_wins` and `kept_prod` for every environment (without a baseline they hold the `differs` and `remote-only` counts), next to `same`, and each table carries its keys per column under `ids`.
 
 Show the user the table output. For your own reasoning, read the manifest instead (next section).
 
@@ -182,7 +185,7 @@ Every `diff`, `push` and `pull` (including `--dry-run`) prints `manifest: <path>
   - Each plugin or theme entry has `slug`, `files`, `bytes`, `version: {before, after}`, `active: {before, after}` and `change` (`turns on`, `turns off`, `stays on`, `becomes active`, `stops being active`).
   - `before` is the site being changed. A version of `null` means not installed there, and `"?"` means that site's plugin is older than 0.5.1.
   - `--format=json` prints the same object.
-- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying.
+- `runs/<kind>-<env>-latest.json`: the outcome of a real push or pull: `{ok, job, phase, seconds, files, bytes, rows, stale[], error}`. It is written even when the command fails, so read it after any failure before retrying. `phase` says where it stopped: `plan` (before any job opened: nothing changed on the remote), `job` (mid-job: the push rolled back or was left as the error menu chose) or `done`. A dry run does not write it.
 
 What to report to the user from the manifest: plugins with `change` `turns on` or `turns off`, version changes on plugins and themes, `summary.delete` when it is not zero, and every entry in `conflicts`.
 
@@ -199,11 +202,11 @@ All commands take `--path=<site>`.
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
 | `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
-| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=]` | Preview a push. Changes nothing. |
+| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--table= --list=<column>] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=]` | Preview a push. Changes nothing. |
 | `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
-| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins) |
+| `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--quarantine-mu] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins; `--quarantine-mu` does not boot WordPress at all) |
 | `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
@@ -212,6 +215,8 @@ All commands take `--path=<site>`.
 ## Diagnosing failures
 
 Match the error, then act. Do not retry the same command blindly. When in doubt, run `status --json` again.
+
+Transient network failures are already retried inside the run, up to four attempts with 2, 5 and 15 second pauses, each logged as `retry <n> on <route>`. That covers DNS and connect failures on any request, and gateway errors (429, 502, 503, 504) and timeouts on requests that only read. A paged read that times out asks again for half the page. An error that reads `gave up after 4 attempts` means the remote stayed unreachable for about half a minute; check it with `status` before running again. A 500 is never retried: it is a crash on the remote (see rescue).
 
 **`prefix_mismatch`**: the two sites use different table prefixes and the remote runs a plugin older than 0.6.0. Tell the user to upload the current zip to that site; from 0.6.0 each site keeps its own prefix and the remote translates table names, `<prefix>user_roles` and prefixed usermeta keys. Do not rename tables to work around it. `status` shows `prefix <remote> → <hub>` once both sides can translate.
 
@@ -227,7 +232,7 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 Warn them that the `chmod 664` sweep strips execute bits from any scripts under wp-content.
 
-**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. If resume is refused (the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
+**A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. A resume keeps the interrupted pull's own scope, not the environment's default: `status` puts that scope's flags in `next.command`, and the same flags may be passed again. Different scope flags are refused. If resume is refused (a different scope, or the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
 **`cURL error 28: Operation timed out`** on a slow remote: pass `--timeout=<seconds>` on that one command, or set it once with `env add <name> --timeout=<seconds>` so every future pull/diff/push against it uses it (a one-off `--timeout` still overrides it). Default is 120s.
 
@@ -246,7 +251,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
    - `rescue <env> --plugins-off --yes` keeps the push and switches every plugin except EnvSync off; the user reactivates them in wp-admin.
 
    Wait for their choice.
-3. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
+3. If `rescue <env>` returns the same critical-error page, a mu-plugin or drop-in crashes (they load even in rescue mode). Offer `rescue <env> --quarantine-mu --yes`: it moves the mu-plugins and drop-ins the last push brought into quarantine without booting WordPress, and restores their previous versions. Then offer `--rollback` or `unlock` as above.
+4. If rescue does not answer, the remote runs a plugin older than 0.5.1, or the host blocks PHP under `wp-content/plugins`. Tell the user to rename the crashing plugin's folder with the host's file manager.
 
 A push that breaks the remote mid-way already rolls back through rescue by itself. Its error says so.
 
@@ -296,6 +302,8 @@ A host-only plugin's settings stay in `wp_options` even when its folder is exclu
 - Never pass `--yes` to a plan the user has not approved in this conversation.
 - Do not push to a `prod`-labelled environment without explicit approval in this conversation.
 - Use `--force` only for a first deploy onto a fresh install the user has confirmed. Use `--mirror` only when the user asked for the remote's extra content to be deleted.
+- A plan's `MU-PLUGINS AND DROP-INS` section lists files that load on every request, rescue included. Show it to the user before any push that has one, and ask whether each `new` row belongs on that host. A forced push holds them back unless `--only` names `mu-plugins` or `--paths` names the drop-in.
+- Host-specific mu-plugins and plugins (Plesk WP Toolkit, Imunify, WP Engine, Kinsta and others; `env excludes` lists them) are excluded by default. Only `--remove-exclude` one when the user asks and the target runs on that same host.
 - A plan's `DROP TABLES` section drops whole tables (checked, copied to `--backup-dir` and kept for rollback first). Show it to the user before any push or pull that has one. Use `--drop-tables` only for tables the user named.
 - Do not exclude `uploads/`, `themes/`, `plugins/`, `mu-plugins/` or `languages/` unless the user asks.
 - Never put a token in a file, a commit, or any message that leaves the machine.
