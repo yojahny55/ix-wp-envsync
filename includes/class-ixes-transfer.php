@@ -322,13 +322,13 @@ class IXES_Transfer {
 			$it = new RecursiveIteratorIterator( new RecursiveCallbackFilterIterator(
 				new RecursiveDirectoryIterator( $root . ( $base === '' ? '' : '/' . untrailingslashit( $base ) ), FilesystemIterator::SKIP_DOTS ),
 				function ( $f ) use ( $root, $excludes ) {
-					$rel = ltrim( substr( $f->getPathname(), strlen( $root ) ), '/' );
+					$rel = ltrim( substr( str_replace( '\\', '/', $f->getPathname() ), strlen( $root ) ), '/' );
 					if ( $f->isDir() ) $rel .= '/';
 					return ! self::excluded_path( $rel, $excludes );
 				}
 			) );
 			foreach ( $it as $f ) {
-				if ( $f->isFile() ) $out[] = ltrim( substr( $f->getPathname(), strlen( $root ) ), '/' );
+				if ( $f->isFile() ) $out[] = ltrim( substr( str_replace( '\\', '/', $f->getPathname() ), strlen( $root ) ), '/' );
 			}
 		}
 		$out = array_values( array_unique( $out ) );
