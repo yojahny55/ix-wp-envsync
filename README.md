@@ -772,6 +772,8 @@ sudo find wp-content -type f -exec chmod 664 {} +
 
 **Elementor's cache is cleared after every sync.** Elementor keeps rendered HTML in `_elementor_element_cache` post meta and generated CSS under `uploads/elementor/css/`, which WordPress's object-cache flush does not touch, so a site could keep rendering the old output (old URLs included) after a correct sync. From 0.9.12, when Elementor is active, the remote clears that cache at the end of a push and after a rollback, and the hub clears its own after a pull, the same as Elementor → Tools → Clear Files & Data. The output says `elementor: cache cleared`, or warns if the clear failed. The remote needs 0.9.12 for a push or rollback to clear it; `rescue --rollback` runs with plugins off and cannot. Clearing deletes those cache rows, so the next diff after a pull lists them as local deletions; they are regenerated on the next page view.
 
+**Sites on Windows need 0.9.13.** On Windows (WAMP, XAMPP, Laragon) PHP lists files with backslashes. Before 0.9.13 the file list kept them, so every file below the top level of wp-content failed to match its twin on the other side, and a mirrored push deleted those files on the remote although both sides had them. Update before syncing from or to a Windows site.
+
 **Keep both sides on the same plugin version.** Different versions can have different exclude rules. The hub filters anything it would refuse, so a mismatch is handled safely, but matching versions avoid surprises. `wp envsync self-update <env>` brings a remote up to the hub's version.
 
 ---
