@@ -322,18 +322,27 @@ class IXES_Transfer {
 			$it = new RecursiveIteratorIterator( new RecursiveCallbackFilterIterator(
 				new RecursiveDirectoryIterator( $root . ( $base === '' ? '' : '/' . untrailingslashit( $base ) ), FilesystemIterator::SKIP_DOTS ),
 				function ( $f ) use ( $root, $excludes ) {
-					$rel = ltrim( substr( str_replace( '\\', '/', $f->getPathname() ), strlen( $root ) ), '/' );
+					$rel = self::rel_path( $root, $f->getPathname() );
 					if ( $f->isDir() ) $rel .= '/';
 					return ! self::excluded_path( $rel, $excludes );
 				}
 			) );
 			foreach ( $it as $f ) {
-				if ( $f->isFile() ) $out[] = ltrim( substr( str_replace( '\\', '/', $f->getPathname() ), strlen( $root ) ), '/' );
+				if ( $f->isFile() ) $out[] = self::rel_path( $root, $f->getPathname() );
 			}
 		}
 		$out = array_values( array_unique( $out ) );
 		sort( $out, SORT_STRING );
 		return $out;
+	}
+
+	/**
+	 * $path relative to $root, with forward slashes. On Windows getPathname() returns backslashes;
+	 * left as is, every file below wp-content's top level missed its remote twin and a mirrored push
+	 * deleted it. The swap keeps the length, so $root's offset holds even when it mixes separators.
+	 */
+	public static function rel_path( $root, $path ) {
+		return ltrim( substr( str_replace( '\\', '/', $path ), strlen( $root ) ), '/' );
 	}
 
 	/** Whether $rel (under $root) passes through a symlinked folder, which a walk of all of wp-content never enters. */
