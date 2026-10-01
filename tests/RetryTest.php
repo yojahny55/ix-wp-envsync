@@ -108,6 +108,46 @@ class RetryTest extends TestCase {
 		$this->assertStringContainsString( '--timeout', $r->get_error_message() );
 	}
 
+	public function test_paging_shrinks_the_page_after_a_500_and_never_grows_back() {
+		$c = $this->client( [
+			self::status( 500 ),
+			self::ok( [ 'rows' => [ 1 => 'a' ], 'next' => 1 ] ),
+			self::ok( [ 'rows' => [ 2 => 'b' ], 'next' => null ] ),
+		] );
+		$rows = [];
+		$r = $c->paged( '/dump', [ 'table' => 'wp_posts', 'limit' => 5000, 'bytes' => 4194304 ], function ( $res ) use ( &$rows ) { $rows += $res['rows']; } );
+		$this->assertNull( $r );
+		$this->assertSame( [ 1 => 'a', 2 => 'b' ], $rows );
+		$retry = json_decode( $c->calls[1][1]['body'], true );
+		$this->assertNull( $retry['from'] );
+		$this->assertSame( 1250, $retry['limit'] );
+		$this->assertSame( 1048576, $retry['bytes'] );
+		// a fast page would double the limit again, but not past the size that crashed
+		$this->assertSame( 1250, json_decode( $c->calls[2][1]['body'], true )['limit'] );
+	}
+
+	public function test_paging_gives_up_on_a_500_at_the_page_floor() {
+		$c = $this->client( [ self::status( 500 ), self::ok() ] );
+		$r = $c->paged( '/dump', [ 'table' => 'wp_posts', 'limit' => 100 ], function () {} );
+		$this->assertSame( 'remote_500', $r->get_error_code() );
+		$this->assertCount( 1, $c->calls );
+	}
+
+	public function test_paging_names_memory_limit_when_smaller_pages_still_crash() {
+		$e = self::status( 500 );
+		$c = $this->client( [ $e, $e, $e, $e ] );
+		$r = $c->paged( '/dump', [ 'table' => 'wp_posts', 'limit' => 5000 ], function () {} );
+		$this->assertSame( 'remote_500', $r->get_error_code() );
+		$this->assertStringContainsString( 'memory_limit', $r->get_error_message() );
+	}
+
+	public function test_paging_does_not_retry_a_500_on_a_write_route() {
+		$c = $this->client( [ self::status( 500 ), self::ok() ] );
+		$r = $c->paged( '/job/step', [ 'limit' => 5000 ], function () {} );
+		$this->assertSame( 'remote_500', $r->get_error_code() );
+		$this->assertCount( 1, $c->calls );
+	}
+
 	public function test_paging_retries_a_failed_first_page() {
 		$c = $this->client( [ self::status( 503 ), self::ok( [ 'rows' => [ 1 => 'a' ], 'next' => null ] ) ] );
 		$rows = [];

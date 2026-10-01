@@ -66,6 +66,11 @@ class IXES_Client {
 		return $read && preg_match( '/cURL error (28|52|56):|timed out|Connection reset|Empty reply/i', $m ) === 1;
 	}
 
+	/** Whether a paged read that crashed the remote may succeed with a smaller page: a 500 on a read route, above the floor. */
+	public static function oversized( WP_Error $e, $route, $limit ) {
+		return self::err_code( $e ) === 500 && in_array( $route, self::READ_ROUTES, true ) && $limit > 100;
+	}
+
 	/** @return array [ url, wp_remote_request args ], signed on its own ts and body, so concurrent requests all verify */
 	private function prepare( $method, $route, $body, array $opts ) {
 		$path = '/' . IXES_Rest::NS . $route;
@@ -280,9 +285,20 @@ class IXES_Client {
 					$this->sleep_s( $w );
 					continue;
 				}
+				// a 500 on a read route is usually a page too big for the remote's memory_limit: reading it again
+				// changes nothing there, so ask a quarter as much, and never grow back past the size that crashed
+				if ( $waits && self::oversized( $res, $route, $limit ) ) {
+					$w = array_shift( $waits ); $tries++;
+					$limit = max( 100, (int) ( $limit / 4 ) );
+					$max   = $limit;
+					if ( isset( $body['bytes'] ) ) $body['bytes'] = max( 262144, (int) ( $body['bytes'] / 4 ) );
+					if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry on {$route} in {$w}s with {$limit} rows a page: " . $res->get_error_message() );
+					$this->sleep_s( $w );
+					continue;
+				}
 				$t = isset( $body['table'] ) ? " {$body['table']}" : '';
 				$at = $next === null ? 'the first page' : 'the page after ' . ( is_scalar( $next ) ? $next : wp_json_encode( $next ) );
-				return new WP_Error( $res->get_error_code(), "paging {$route}{$t} failed at {$at} after {$tries} attempt(s): " . $res->get_error_message() . ( self::transient( $res, $route ) ? '. A slow remote may need a larger --timeout.' : '' ), $res->get_error_data() );
+				return new WP_Error( $res->get_error_code(), "paging {$route}{$t} failed at {$at} after {$tries} attempt(s): " . $res->get_error_message() . ( self::transient( $res, $route ) ? '. A slow remote may need a larger --timeout.' : '' ) . ( $tries > 1 && self::oversized( $res, $route, PHP_INT_MAX ) ? '. Even a smaller page crashed the remote; check its PHP error log and memory_limit.' : '' ), $res->get_error_data() );
 			}
 			$waits = self::RETRY_WAIT; $tries = 1;
 			$dt  = microtime( true ) - $t0;
