@@ -110,7 +110,7 @@ class IXES_Planner {
 				if ( ! empty( $env['exclude_options'] ) ) {
 					$n = 0;
 					foreach ( $wpdb->get_col( "SELECT option_name FROM {$wpdb->options}" ) as $o ) {
-						foreach ( (array) $env['exclude_options'] as $g ) if ( fnmatch( $g, $o ) ) { $n++; break; }
+						if ( self::option_glob_hit( (array) $env['exclude_options'], $o ) ) $n++;
 					}
 					$plan['options_excluded'] = [ $name => $n ];
 				}
@@ -118,7 +118,9 @@ class IXES_Planner {
 				// a plugin whose folder is excluded there is that host's own: the remote keeps its activation state
 				$pinned = IXES_Differ::excluded_plugins( array_merge( $base_ap, $local_ap, $remote_ap ), $ex );
 				$merged = IXES_Differ::merge_active_plugins( $base_ap, $local_ap, $remote_ap, $pinned );
-				if ( array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
+				// an excluded active_plugins stays as the remote has it: the remote refuses that step and the push rolls back
+				$ap_excluded = self::option_glob_hit( (array) ( $env['exclude_options'] ?? [] ), 'active_plugins' );
+				if ( ! $ap_excluded && array_values( $merged ) !== array_values( $remote_ap ) ) $plan['active_plugins'] = $merged;
 				$plan['active_plugins_excluded'] = array_values( array_filter( $pinned, function ( $p ) use ( $local_ap, $remote_ap ) {
 					return in_array( $p, $local_ap, true ) !== in_array( $p, $remote_ap, true );
 				} ) );
@@ -169,6 +171,12 @@ class IXES_Planner {
 	/** A stable fingerprint of $value; serialize() only feeds md5 here, nothing is ever unserialized. */
 	private static function digest( $value ) {
 		return md5( serialize( $value ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- hashed, never unserialized
+	}
+
+	/** True when an option named $name matches one of the environment's exclude_options globs. */
+	private static function option_glob_hit( array $globs, $name ) {
+		foreach ( $globs as $g ) if ( fnmatch( $g, (string) $name ) ) return true;
+		return false;
 	}
 
 	/** The environment settings a plan depends on: a change to any of them means planning again. */
