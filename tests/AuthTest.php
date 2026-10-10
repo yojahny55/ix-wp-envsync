@@ -76,4 +76,24 @@ class AuthTest extends TestCase {
 		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '', '*' ), 'header widened' );
 		$this->assertSame( IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b' ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '', '' ), 'no excludes keeps the old signature' );
 	}
+
+	public function test_nonce_is_signed() {
+		$n = IXES_Auth::new_nonce();
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{32}$/', $n );
+		$sig = IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '', '', $n );
+		$this->assertTrue( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '', '', $n ) );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1 ), 'header stripped' );
+		$this->assertFalse( IXES_Auth::verify( wp_hash( $this->tok ), $this->tok, 'POST', '/x', 1, 'b', $sig, 1, '', '', '', IXES_Auth::new_nonce() ), 'header swapped' );
+		$this->assertSame( IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b' ), IXES_Auth::sign( $this->tok, 'POST', '/x', 1, 'b', '', '', '', '' ), 'no nonce keeps the old signature' );
+	}
+
+	public function test_fresh_nonce_refuses_a_replay() {
+		$dir = sys_get_temp_dir() . '/ixes-nonces-' . bin2hex( random_bytes( 4 ) );
+		$n = IXES_Auth::new_nonce();
+		$this->assertTrue( IXES_Auth::fresh_nonce( $dir, $n ) );
+		$this->assertFalse( IXES_Auth::fresh_nonce( $dir, $n ), 'same nonce twice' );
+		$this->assertTrue( IXES_Auth::fresh_nonce( $dir, IXES_Auth::new_nonce() ) );
+		$this->assertFalse( IXES_Auth::fresh_nonce( $dir, '../../x' ), 'not a nonce' );
+		array_map( 'unlink', glob( $dir . '/*' ) ); rmdir( $dir );
+	}
 }

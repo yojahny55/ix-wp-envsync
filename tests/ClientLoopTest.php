@@ -319,4 +319,23 @@ class ClientLoopTest extends TestCase {
 		$c->get( '/ping' );
 		$this->assertArrayNotHasKey( 'X-Envsync-Exclude-Options', $c->calls[0]['headers'] );
 	}
+
+	public function test_nonce_goes_out_signed_only_to_a_remote_with_the_cap() {
+		$ok = function () { return [ 'response' => [ 'code' => 200 ], 'body' => '{}', 'headers' => [] ]; };
+		$c = $this->client();
+		$c->set_caps( [ 'binary' ] );
+		$c->script = [ $ok ];
+		$c->post( '/hash/rows', [ 'a' => 1 ] );
+		$this->assertArrayNotHasKey( 'X-Envsync-Nonce', $c->calls[0]['headers'], 'an older remote would fail the extra signed line' );
+
+		$c = $this->client();
+		$c->set_caps( [ 'nonce' ] );
+		$c->script = [ $ok, $ok ];
+		$c->post( '/hash/rows', [ 'a' => 1 ] );
+		$c->post( '/hash/rows', [ 'a' => 1 ] );
+		$h = $c->calls[0]['headers'];
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{32}$/', $h['X-Envsync-Nonce'] );
+		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'POST', '/envsync/v1/hash/rows', $h['X-Envsync-Ts'], $c->calls[0]['body'], '', '', '', $h['X-Envsync-Nonce'] ), $h['X-Envsync-Sig'] );
+		$this->assertNotSame( $h['X-Envsync-Nonce'], $c->calls[1]['headers']['X-Envsync-Nonce'], 'each request its own nonce' );
+	}
 }

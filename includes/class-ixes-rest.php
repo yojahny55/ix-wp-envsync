@@ -43,14 +43,21 @@ class IXES_Rest {
 		self::$auth_via = $via;
 		$prefix = (string) $req->get_header( 'x-envsync-prefix' );
 		$excl   = (string) $req->get_header( 'x-envsync-exclude-options' );
+		$nonce  = (string) $req->get_header( 'x-envsync-nonce' );
 		if ( $prefix !== '' && ! IXES_Prefix::valid( $prefix ) ) return new WP_Error( 'prefix', 'bad prefix', [ 'status' => 400 ] );
 		$ok = IXES_Auth::verify(
 			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
 			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),
 			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ),
-			null, (string) $req->get_header( 'x-envsync-step' ), $prefix, $excl
+			null, (string) $req->get_header( 'x-envsync-step' ), $prefix, $excl, $nonce
 		);
 		if ( ! $ok ) return new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
+		// a hub that knows the 'nonce' cap signs each request once: the same request seen again is a replay
+		if ( $nonce !== '' ) {
+			$fresh = IXES_Auth::fresh_nonce( ixes_storage_dir() . '/nonces', $nonce );
+			if ( is_wp_error( $fresh ) ) return $fresh;
+			if ( ! $fresh ) return new WP_Error( 'auth', 'replayed request', [ 'status' => 401 ] );
+		}
 		// rescue.php's bare path (--quarantine-mu) cannot read the token hash from the database: a push leaves it this key
 		if ( substr( (string) $req->get_route(), -10 ) === '/job/start' ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP );
 		global $wpdb;

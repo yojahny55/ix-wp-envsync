@@ -82,6 +82,9 @@ class IXES_Client {
 		// can say why and self-update can fix it; every other request carries them signed, and that remote refuses it
 		$bare   = isset( $opts['url'] ) || $route === '/info' || strpos( $route, '/self-update/' ) === 0;
 		$excl   = $bare || empty( $this->env['exclude_options'] ) ? '' : implode( ',', (array) $this->env['exclude_options'] );
+		// only once /info said the remote keeps nonces: an older one would fail the extra signed line
+		$caps   = $this->caps !== null ? $this->caps : ( is_array( $this->info ) ? (array) ( $this->info['caps'] ?? [] ) : [] );
+		$nonce  = ! $bare && in_array( 'nonce', $caps, true ) ? IXES_Auth::new_nonce() : '';
 		if ( isset( $opts['raw_body'] ) ) { $raw = (string) $opts['raw_body']; $ctype = 'application/octet-stream'; }
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
 		$headers = [
@@ -89,7 +92,7 @@ class IXES_Client {
 			'Authorization' => ! empty( $this->env['basic_auth'] ) ? 'Basic ' . base64_encode( $this->env['basic_auth'] ) : 'Bearer ' . $this->env['token'],
 			'X-Envsync-Token' => $this->env['token'],
 			'X-Envsync-Ts'  => $ts,
-			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl ),
+			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl, $nonce ),
 			'Content-Type'  => $ctype,
 			'Accept'        => ( $opts['accept'] ?? 'json' ) === 'binary' ? 'application/octet-stream' : 'application/json',
 		];
@@ -97,6 +100,7 @@ class IXES_Client {
 		if ( $prefix !== '' ) $headers['X-Envsync-Prefix'] = $prefix;
 		// signed: stripped, the remote would overwrite host-only options; widened, it would skip rows the hub expects
 		if ( $excl !== '' ) $headers['X-Envsync-Exclude-Options'] = $excl;
+		if ( $nonce !== '' ) $headers['X-Envsync-Nonce'] = $nonce;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
 		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
