@@ -14,6 +14,16 @@ class ExcludeTest extends TestCase {
 		$this->assertFalse( $this->ex( 'plugins/some/upgrade/Upgrader.php' ) );
 	}
 
+	public function test_page_caches_and_generated_css_never_sync() {
+		$this->assertTrue( $this->ex( 'wp-cloudflare-super-page-cache/remote.test/index.html' ) );
+		$this->assertTrue( $this->ex( 'et-cache/12/et-core-unified-12.min.css' ) );
+		$this->assertTrue( $this->ex( 'litespeed/css/a.css' ) );
+		$this->assertTrue( $this->ex( 'uploads/elementor/css/post-12.css' ) );
+		// Elementor's other uploads are content
+		$this->assertFalse( $this->ex( 'uploads/elementor/screenshots/a.png' ) );
+		$this->assertFalse( $this->ex( 'plugins/litespeed-cache/litespeed-cache.php' ) );
+	}
+
 	public function test_dev_artifacts_match_at_any_depth() {
 		$this->assertTrue( $this->ex( 'themes/mk/node_modules/x/index.js' ) );
 		$this->assertTrue( $this->ex( 'plugins/p/.git/HEAD' ) );

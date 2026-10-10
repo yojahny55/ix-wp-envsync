@@ -48,11 +48,11 @@ class IXES_CLI {
 		return $path;
 	}
 	/** Run a push/pull and record its outcome in runs/<kind>-<env>-latest.json whatever happens. */
-	private function run_recorded( $kind, $env, array $report, callable $run ) {
+	private function run_recorded( $kind, $env, array $report, callable $run, ?IXES_Progress $progress = null ) {
 		$t0 = time();
 		$base = [ 'started' => $t0, 'files' => $report['summary']['files'], 'bytes' => $report['summary']['bytes'], 'rows' => $report['summary']['rows'] ];
 		$r = $run();
-		$end = [ 'finished' => time(), 'seconds' => time() - $t0 ];
+		$end = [ 'finished' => time(), 'seconds' => time() - $t0, 'notes' => $progress ? $progress->notes() : [] ];
 		if ( is_wp_error( $r ) ) {
 			IXES_Report::save_run( $kind, $env, [ 'ok' => false, 'job' => null, 'phase' => 'job' ] + $base + $end + [ 'stale' => [], 'error' => $r->get_error_message() ] );
 			WP_CLI::error( $r->get_error_message() );
@@ -337,7 +337,7 @@ class IXES_CLI {
 			WP_CLI::log( '  scope: ' . $sc->label() . ' (from the interrupted pull; the default for ' . $env['name'] . ' does not apply)' );
 			if ( ! empty( $assoc['dry-run'] ) ) return;
 			$this->confirm( $assoc, 'Resume?' );
-			$this->run_recorded( 'pull', $env['name'], IXES_Report::from_pull_plan( $plan ), function () use ( $env, $c, $plan, $state, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), $state, $progress, $par ); $progress->end(); return $r; } );
+			$this->run_recorded( 'pull', $env['name'], IXES_Report::from_pull_plan( $plan ), function () use ( $env, $c, $plan, $state, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), $state, $progress, $par ); $progress->end(); return $r; }, $progress );
 			$progress->finish();
 			$this->forget_status();
 			WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
@@ -370,7 +370,7 @@ class IXES_CLI {
 		WP_CLI::log( "manifest: {$manifest}" );
 		if ( ! empty( $assoc['dry-run'] ) ) return;
 		$this->confirm( $assoc, 'This OVERWRITES the local database and wp-content. Continue?' );
-		$this->run_recorded( 'pull', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), null, $progress, $par ); $progress->end(); return $r; } );
+		$this->run_recorded( 'pull', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $par ) { $r = IXES_Pull::run( $env, $c, $plan, $this->logger(), null, $progress, $par ); $progress->end(); return $r; }, $progress );
 		$progress->finish();
 		$this->forget_status();
 		WP_CLI::success( "pulled {$env['name']}; baseline recorded" );
@@ -657,7 +657,7 @@ class IXES_CLI {
 		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
 		// used once: after this push its remote hashes are the old ones, and every row would come back stale
 		IXES_Planner::forget_latest( $env['name'] );
-		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; } );
+		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; }, $progress );
 		$progress->finish();
 		IXES_Planner::mark_applied( $plan, $r['job'] );
 		if ( $r['stale'] ) WP_CLI::warning( "skipped (changed on {$env['name']} during push): " . implode( ', ', $r['stale'] ) );

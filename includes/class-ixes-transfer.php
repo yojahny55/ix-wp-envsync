@@ -754,6 +754,8 @@ class IXES_Transfer {
 	public static function after_import( $url, $abspath ) {
 		update_option( 'siteurl', $url ); update_option( 'home', $url );
 		wp_cache_flush();
-		flush_rewrite_rules();
+		// flushing here would build the rules of this process, which booted before the pull brought the site's
+		// plugins and theme (WooCommerce, post types): emptied, they are rebuilt on the next request with all loaded
+		delete_option( 'rewrite_rules' );
 	}
 }

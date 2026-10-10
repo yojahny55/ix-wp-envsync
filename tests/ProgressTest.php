@@ -86,4 +86,13 @@ class ProgressTest extends TestCase {
 		$this->assertNull( IXES_Progress::running( 'prod' ), 'a killed run leaves its file behind' );
 		$p->finish();
 	}
+
+	public function test_notes_are_kept_for_the_run_file() {
+		$lines = [];
+		$p = new IXES_Progress( 'summary', function ( $m ) use ( &$lines ) { $lines[] = $m; } );
+		$p->note( 'elementor: cache cleared' );
+		$p->note( 'warning: x' );
+		$this->assertSame( [ 'elementor: cache cleared', 'warning: x' ], $p->notes() );
+		$this->assertSame( $lines, $p->notes() );
+	}
 }
