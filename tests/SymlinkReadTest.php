@@ -41,8 +41,9 @@ class SymlinkReadTest extends TestCase {
 		$this->assertStringContainsString( 'real', $batch );
 	}
 
-	public function test_walk_leaves_out_a_file_link_out_of_wp_content() {
+	public function test_walk_still_lists_a_file_link_out_of_wp_content() {
+		// left out, the differ would take it for deleted on this side and remove it on the other
 		$all = IXES_Transfer::all_files( [], [ 'ixes-links/' ] );
-		$this->assertSame( [ 'ixes-links/in.txt', 'ixes-links/real.txt' ], $all );
+		$this->assertSame( [ 'ixes-links/in.txt', 'ixes-links/out.txt', 'ixes-links/real.txt' ], $all );
 	}
 }

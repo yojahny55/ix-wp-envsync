@@ -338,4 +338,21 @@ class ClientLoopTest extends TestCase {
 		$this->assertSame( IXES_Auth::sign( str_repeat( 'a', 64 ), 'POST', '/envsync/v1/hash/rows', $h['X-Envsync-Ts'], $c->calls[0]['body'], '', '', '', $h['X-Envsync-Nonce'] ), $h['X-Envsync-Sig'] );
 		$this->assertNotSame( $h['X-Envsync-Nonce'], $c->calls[1]['headers']['X-Envsync-Nonce'], 'each request its own nonce' );
 	}
+
+	public function test_a_remote_that_lost_the_nonce_cap_gets_the_request_again_without_it() {
+		$c = $this->client();
+		$c->set_caps( [ 'nonce', 'binary' ] );
+		$c->script = [
+			function () { return [ 'response' => [ 'code' => 401 ], 'body' => '{"code":"auth","message":"bad signature"}', 'headers' => [] ]; },
+			function () { return [ 'response' => [ 'code' => 200 ], 'body' => '{"ok":true}', 'headers' => [] ]; },
+		];
+		$this->assertSame( [ 'ok' => true ], $c->post( '/job/finish', [ 'job' => 'j' ] ) );
+		$this->assertArrayHasKey( 'X-Envsync-Nonce', $c->calls[0]['headers'] );
+		$this->assertArrayNotHasKey( 'X-Envsync-Nonce', $c->calls[1]['headers'] );
+		$this->assertSame( [ 'binary' ], $c->caps() );
+		// without a nonce a bad signature is final
+		$c->script = [ function () { return [ 'response' => [ 'code' => 401 ], 'body' => '{"code":"auth","message":"bad signature"}', 'headers' => [] ]; } ];
+		$this->assertInstanceOf( WP_Error::class, $c->post( '/job/finish', [ 'job' => 'j' ] ) );
+		$this->assertCount( 3, $c->calls );
+	}
 }

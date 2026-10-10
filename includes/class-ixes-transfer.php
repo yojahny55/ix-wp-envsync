@@ -328,11 +328,7 @@ class IXES_Transfer {
 				}
 			) );
 			foreach ( $it as $f ) {
-				if ( ! $f->isFile() ) continue;
-				$rel = self::rel_path( $root, $f->getPathname() );
-				// a symlinked file pointing out of wp-content is not listed: file_chunk() would refuse it
-				if ( $f->isLink() && self::served_path( $rel ) === null ) continue;
-				$out[] = $rel;
+				if ( $f->isFile() ) $out[] = self::rel_path( $root, $f->getPathname() );
 			}
 		}
 		$out = array_values( array_unique( $out ) );
@@ -363,6 +359,8 @@ class IXES_Transfer {
 	 * Absolute path of $rel when reading it stays inside wp-content, else null. A symlinked folder on the way is
 	 * refused (the walk never enters one, so no listed path goes through it), and so is a symlinked file that
 	 * resolves outside wp-content: a signed request names any path, not only the ones the manifest listed.
+	 * The walk still lists such a file link: left out, the differ would take it for deleted and remove it on
+	 * the other side. A pull skips it as bad_path instead.
 	 */
 	public static function served_path( $rel ) {
 		$root = untrailingslashit( WP_CONTENT_DIR );

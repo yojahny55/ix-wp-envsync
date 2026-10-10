@@ -43,6 +43,11 @@ class IXES_Client {
 			// signed again each time: a retry must not carry an old timestamp
 			list( $url, $args ) = $this->prepare( $method, $route, $body, $opts );
 			$r = $this->parse( $this->transport( $url, $args ), $route, $opts );
+			// the remote lost the 'nonce' cap mid-run (a self-update rolled back): drop it and sign once more without
+			if ( is_wp_error( $r ) && isset( $args['headers']['X-Envsync-Nonce'] ) && self::err_code( $r ) === 401 && strpos( $r->get_error_message(), 'bad signature' ) !== false ) {
+				$this->caps = array_values( array_diff( $this->caps !== null ? $this->caps : (array) ( $this->info['caps'] ?? [] ), [ 'nonce' ] ) );
+				continue;
+			}
 			if ( ! is_wp_error( $r ) || ! $waits || ! self::transient( $r, $route ) ) break;
 			$w = array_shift( $waits );
 			if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry {$n} on {$route} in {$w}s: " . $r->get_error_message() );
