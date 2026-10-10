@@ -50,8 +50,10 @@ if ( ! function_exists( 'wp_mkdir_p' ) ) { function wp_mkdir_p( $dir ) { return 
 if ( ! function_exists( 'get_option' ) ) { function get_option( $k, $d = false ) { return $GLOBALS['ixes_test_options'][ $k ] ?? $d; } }
 if ( ! function_exists( 'update_option' ) ) { function update_option( $k, $v, $autoload = null ) { $GLOBALS['ixes_test_options'][ $k ] = $v; return true; } }
 if ( ! function_exists( 'get_transient' ) ) { function get_transient( $k ) { return $GLOBALS['ixes_test_transients'][ $k ] ?? false; } }
+if ( ! function_exists( 'set_transient' ) ) { function set_transient( $k, $v, $e = 0 ) { $GLOBALS['ixes_test_transients'][ $k ] = $v; return true; } }
 if ( ! defined( 'IXES_VERSION' ) ) define( 'IXES_VERSION', '0.4.0' );
 if ( ! defined( 'ARRAY_A' ) ) define( 'ARRAY_A', 'ARRAY_A' );
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) define( 'HOUR_IN_SECONDS', 3600 );
 if ( ! defined( 'ARRAY_N' ) ) define( 'ARRAY_N', 'ARRAY_N' );
 if ( ! function_exists( 'home_url' ) ) { function home_url() { return 'http://hub.test'; } }
 
