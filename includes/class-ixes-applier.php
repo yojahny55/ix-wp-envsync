@@ -81,12 +81,30 @@ class IXES_Applier {
 
 	// ---------- remote side ----------
 
+	/**
+	 * Takes the push lock for $job unless another job holds it. Check and set run under a MySQL named lock: two
+	 * job_start calls at once both saw no lock and both went ahead. A server that refuses GET_LOCK (NULL) falls back
+	 * to the plain check; a timeout (0) means another job_start holds it, so this one is refused.
+	 */
+	public static function claim_lock( $job, $now = null ) {
+		global $wpdb;
+		$name = 'ixes_job_' . md5( ( defined( 'DB_NAME' ) ? DB_NAME : '' ) . $wpdb->prefix );
+		$got  = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $name ) );
+		if ( $got !== null && (int) $got !== 1 ) return false;
+		try {
+			if ( self::current_job() !== '' ) return false;
+			set_transient( self::LOCK, self::lock_value( $job, $now === null ? time() : $now ), HOUR_IN_SECONDS );
+			return true;
+		} finally {
+			if ( $got !== null ) $wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $name ) );
+		}
+	}
+
 	public static function job_start( array $p ) {
 		global $wpdb;
 		$p['plan_meta'] = self::plan_meta_shape( $p['plan_meta'] ?? null );
-		if ( self::current_job() !== '' ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
 		$job = date( 'Ymd-His' ) . '-' . substr( md5( uniqid() ), 0, 6 );
-		set_transient( self::LOCK, self::lock_value( $job, time() ), HOUR_IN_SECONDS );
+		if ( ! self::claim_lock( $job ) ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
 		$dir = self::job_dir( $job );
 		wp_mkdir_p( $dir . '/files' );
 		$meta = [ 'job' => $job, 'started' => time(), 'plan' => $p['plan_meta'], 'inserted' => [], 'created_files' => [] ];

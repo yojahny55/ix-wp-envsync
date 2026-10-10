@@ -87,7 +87,7 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', 'exclude_options', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', 'exclude_options', 'nonce', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
 			'self_dir'        => basename( dirname( IXES_FILE ) ), // a self-update zip's top folder must be this
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),
@@ -355,6 +355,25 @@ class IXES_Transfer {
 		return false;
 	}
 
+	/**
+	 * Absolute path of $rel when reading it stays inside wp-content, else null. A symlinked folder on the way is
+	 * refused (the walk never enters one, so no listed path goes through it), and so is a symlinked file that
+	 * resolves outside wp-content: a signed request names any path, not only the ones the manifest listed.
+	 * The walk still lists such a file link: left out, the differ would take it for deleted and remove it on
+	 * the other side. A pull skips it as bad_path instead.
+	 */
+	public static function served_path( $rel ) {
+		$root = untrailingslashit( WP_CONTENT_DIR );
+		$dir  = dirname( $rel );
+		if ( $dir !== '.' && self::through_link( $root, $dir ) ) return null;
+		$p = $root . '/' . $rel;
+		if ( ! is_link( $p ) ) return $p;
+		$real = realpath( $p ); $base = realpath( $root );
+		if ( $real === false || $base === false ) return null;
+		$real = str_replace( '\\', '/', $real ); $base = rtrim( str_replace( '\\', '/', $base ), '/' );
+		return strpos( $real, $base . '/' ) === 0 ? $p : null;
+	}
+
 	public static function file_manifest( $cursor, $limit, array $excludes, $algo, $with_sizes = false, array $roots = [] ) {
 		$all = self::all_files( $excludes, $roots );
 		$start = 0;
@@ -393,7 +412,8 @@ class IXES_Transfer {
 	public static function file_chunk( $rel, $offset, $size, $as_binary = false ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused', [ 'status' => 400 ] );
-		$p = WP_CONTENT_DIR . '/' . $rel;
+		$p = self::served_path( $rel );
+		if ( $p === null ) return new WP_Error( 'bad_path', 'path refused', [ 'status' => 400 ] );
 		if ( ! is_file( $p ) ) return new WP_Error( 'not_found', 'no such file', [ 'status' => 404 ] );
 		$fh = fopen( $p, 'rb' ); fseek( $fh, $offset ); $data = fread( $fh, $size ); fclose( $fh );
 		if ( $data === false ) $data = '';
@@ -415,7 +435,8 @@ class IXES_Transfer {
 			$rel  = (string) $rel;
 			$safe = self::safe_rel( $rel );
 			if ( ! $safe || self::excluded_path( $safe, IXES_Env::default_excludes() ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'bad_path' ], '' ]; continue; }
-			$p = WP_CONTENT_DIR . '/' . $safe;
+			$p = self::served_path( $safe );
+			if ( $p === null ) { $items[] = [ [ 'path' => $rel, 'err' => 'bad_path' ], '' ]; continue; }
 			if ( ! is_file( $p ) || ! is_readable( $p ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'not_found' ], '' ]; continue; }
 			// grown since the plan: the hub fetches it alone, in chunks
 			if ( $bytes + (int) filesize( $p ) > $max ) { $items[] = [ [ 'path' => $rel, 'err' => 'later' ], '' ]; continue; }

@@ -72,4 +72,41 @@ class ApplierLockTest extends TestCase {
 		$r = $row; $this->assertFalse( IXES_Applier::rekey_option( $r, 'blogname' ), 'a synced option at that id is a real conflict the planner saw' );
 		$this->assertSame( 131, $r['option_id'] );
 	}
+
+	private static function lock_db( $get_lock ) {
+		return new class( $get_lock ) {
+			public $prefix = 'wp_'; public $sql = []; private $r;
+			public function __construct( $r ) { $this->r = $r; }
+			public function prepare( $q, ...$a ) { return vsprintf( str_replace( '%s', "'%s'", $q ), $a ); }
+			public function get_var( $q ) { $this->sql[] = $q; return $this->r; }
+			public function query( $q ) { $this->sql[] = $q; return 1; }
+		};
+	}
+
+	public function test_claim_lock_takes_a_free_lock_under_the_named_lock() {
+		$saved = $GLOBALS['wpdb'] ?? null;
+		$GLOBALS['ixes_test_transients'] = [];
+		$GLOBALS['wpdb'] = $db = self::lock_db( '1' );
+		$this->assertTrue( IXES_Applier::claim_lock( 'j1', 1758535000 ) );
+		$this->assertSame( 'j1|1758535000', $GLOBALS['ixes_test_transients'][ IXES_Applier::LOCK ] );
+		$this->assertStringContainsString( 'GET_LOCK', $db->sql[0] );
+		$this->assertStringContainsString( 'RELEASE_LOCK', $db->sql[1] );
+		$this->assertFalse( IXES_Applier::claim_lock( 'j2' ), 'a held push lock refuses the next job' );
+		$this->assertSame( 'j1|1758535000', $GLOBALS['ixes_test_transients'][ IXES_Applier::LOCK ] );
+		$this->assertStringContainsString( 'RELEASE_LOCK', end( $db->sql ), 'released on refusal too' );
+		$GLOBALS['ixes_test_transients'] = []; $GLOBALS['wpdb'] = $saved;
+	}
+
+	public function test_claim_lock_refuses_while_another_start_holds_the_named_lock() {
+		$saved = $GLOBALS['wpdb'] ?? null;
+		$GLOBALS['ixes_test_transients'] = [];
+		$GLOBALS['wpdb'] = $db = self::lock_db( '0' );
+		$this->assertFalse( IXES_Applier::claim_lock( 'j1' ) );
+		$this->assertArrayNotHasKey( IXES_Applier::LOCK, $GLOBALS['ixes_test_transients'] );
+		$this->assertCount( 1, $db->sql, 'nothing to release' );
+		// a server without GET_LOCK answers NULL: the plain check still runs
+		$GLOBALS['wpdb'] = self::lock_db( null );
+		$this->assertTrue( IXES_Applier::claim_lock( 'j1' ) );
+		$GLOBALS['ixes_test_transients'] = []; $GLOBALS['wpdb'] = $saved;
+	}
 }

@@ -21,21 +21,45 @@ class IXES_Auth {
 	// as it did in 0.2 (no trailing "\n"), so their signatures keep verifying.
 	// $prefix: the hub's table prefix when it differs from the remote's (X-Envsync-Prefix), else ''.
 	// $excl: the raw X-Envsync-Exclude-Options header, else ''. Signed so nobody in between can strip or widen it.
-	public static function sign( $token, $method, $path, $ts, $body, $step = '', $prefix = '', $excl = '' ) {
+	// $nonce: X-Envsync-Nonce, sent only to a remote with the 'nonce' cap. Signed, so it cannot be stripped to dodge seen_nonce().
+	public static function sign( $token, $method, $path, $ts, $body, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
 		$msg = strtoupper( $method ) . "\n" . $path . "\n" . (int) $ts . "\n" . hash( 'sha256', (string) $body );
 		if ( (string) $step !== '' ) $msg .= "\n" . $step;
 		if ( (string) $prefix !== '' ) $msg .= "\nprefix:" . $prefix;
 		if ( (string) $excl !== '' ) $msg .= "\nexclude-options:" . $excl;
+		if ( (string) $nonce !== '' ) $msg .= "\nnonce:" . $nonce;
 		return hash_hmac( 'sha256', $msg, $token );
 	}
 
-	public static function verify( $token_hash, $presented_token, $method, $path, $ts, $body, $sig, $now = null, $step = '', $prefix = '', $excl = '' ) {
+	public static function verify( $token_hash, $presented_token, $method, $path, $ts, $body, $sig, $now = null, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
 		if ( $now === null ) $now = time();
 		if ( ! is_string( $token_hash ) || ! is_string( $presented_token ) || $presented_token === '' ) return false;
 		if ( ! hash_equals( $token_hash, wp_hash( $presented_token ) ) ) return false;
 		if ( abs( $now - (int) $ts ) > self::SKEW ) return false;
-		$expected = self::sign( $presented_token, $method, $path, $ts, $body, $step, $prefix, $excl );
+		$expected = self::sign( $presented_token, $method, $path, $ts, $body, $step, $prefix, $excl, $nonce );
 		return hash_equals( $expected, (string) $sig );
+	}
+
+	public static function new_nonce() { return bin2hex( random_bytes( 16 ) ); }
+
+	/**
+	 * Records $nonce in $dir; false when it was already there, i.e. the request is a replay. A file per nonce,
+	 * created with 'x', is atomic without the database. Kept for twice SKEW, the longest a signed ts stays valid.
+	 * @return bool|WP_Error true for a fresh nonce, false for a replay, WP_Error when the nonce cannot be recorded
+	 */
+	public static function fresh_nonce( $dir, $nonce, $now = null ) {
+		if ( $now === null ) $now = time();
+		if ( ! preg_match( '/^[0-9a-f]{32}$/', (string) $nonce ) ) return false;
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) return new WP_Error( 'nonce_io', 'cannot record the request nonce', [ 'status' => 500 ] );
+		$f = $dir . '/' . $nonce;
+		$fh = @fopen( $f, 'x' );
+		if ( ! $fh ) return file_exists( $f ) ? false : new WP_Error( 'nonce_io', 'cannot record the request nonce', [ 'status' => 500 ] );
+		fclose( $fh );
+		// a push sends thousands of requests: prune now and then, not on each one
+		if ( random_int( 1, 50 ) === 1 ) {
+			foreach ( (array) glob( $dir . '/*' ) as $old ) if ( @filemtime( $old ) < $now - 2 * self::SKEW ) @unlink( $old );
+		}
+		return true;
 	}
 
 	public static function https_ok( $url ) {

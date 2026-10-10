@@ -371,6 +371,8 @@ Run `wp envsync unlock prod` to clear it. Nothing is rolled back — `rollback` 
 
 Some hosts log request headers verbatim, so a request carrying `X-Envsync-Token` can put the token in full into that host's access logs — treat those logs as sensitive.
 
+Every request is signed with the token and a timestamp, and a remote refuses one more than five minutes off its own clock. From 0.9.16 the hub also signs a one-time nonce into each request to a remote that runs 0.9.16 or newer, and that remote refuses a request it has already seen, so a captured request cannot be sent again inside those five minutes. The remote keeps the nonces it saw for ten minutes in its storage folder (`wp-content/envsync-<suffix>/nonces/`).
+
 ```
   unreachable: remote 401 on /info: missing token
 ```
