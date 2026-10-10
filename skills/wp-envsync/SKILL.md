@@ -26,12 +26,12 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 ```json
 {
   "role": "both",
-  "hub_version": "0.6.2",
+  "hub_version": "0.9.16",
   "envs": {
     "prod": {
       "url": "https://client.com", "label": "prod",
       "reachable": true, "error": null,
-      "remote_version": "0.6.2", "version_ok": true, "auth_via": "authorization",
+      "remote_version": "0.9.16", "version_ok": true, "auth_via": "authorization",
       "baseline": { "created_at": 1789192836, "partial_at": null, "partial_scope": null, "scope": null, "age_days": 2 },
       "interrupted_pull": null,
       "remote_lock": null,
