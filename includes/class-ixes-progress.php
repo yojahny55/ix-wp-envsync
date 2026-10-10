@@ -12,7 +12,7 @@ class IXES_Progress {
 	private $mode; private $log; private $factory; private $clock;
 	private $label = ''; private $total = null; private $items_total = 0;
 	private $items = 0; private $bytes = 0; private $t0 = 0.0; private $bar = null; private $kb_ticked = 0;
-	private $file = null; private $run = []; private $written = 0.0;
+	private $file = null; private $run = []; private $written = 0.0; private $notes = [];
 	// seconds between two writes of the progress file; a stage change is always written
 	const FILE_EVERY = 3;
 
@@ -68,8 +68,11 @@ class IXES_Progress {
 		if ( $this->bar && $this->total === null ) $this->bar->tick( 1, $this->message() );
 	}
 
-	/** A line that must stay visible (retries, skips). */
-	public function note( $msg ) { call_user_func( $this->log, $msg ); }
+	/** A line that must stay visible (retries, skips); kept for the run file too. */
+	public function note( $msg ) { $this->notes[] = (string) $msg; call_user_func( $this->log, $msg ); }
+
+	/** Every note of this run, in order. */
+	public function notes() { return $this->notes; }
 
 	public function end() {
 		if ( $this->label === '' ) return;

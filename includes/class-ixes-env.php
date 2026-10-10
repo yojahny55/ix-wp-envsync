@@ -48,7 +48,9 @@ class IXES_Env {
 	public static function default_excludes() {
 		// '.git/' and 'node_modules/' are dev artifacts: syncing a repo into a public
 		// web directory leaks source and history, and node_modules wrecks the manifest.
-		return [ 'cache/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'envsync-', 'upgrade/', 'uploads/wc-logs/', '.git/', 'node_modules/' ];
+		// page caches and Elementor's generated CSS are rebuilt from the database, and hold the URLs of the side
+		// that wrote them: see IXES_Caches and IXES_Elementor, which empty the local copies after a pull.
+		return [ 'cache/', 'wp-cloudflare-super-page-cache/', 'et-cache/', 'litespeed/', 'uploads/elementor/css/', 'wp-config.php', '.htaccess', '.env', 'debug.log', 'object-cache.php', 'advanced-cache.php', 'envsync/', 'envsync-', 'upgrade/', 'uploads/wc-logs/', '.git/', 'node_modules/' ];
 	}
 
 	// extra_replace is a list of [prod_value, local_value]; returns the two index-aligned lists
