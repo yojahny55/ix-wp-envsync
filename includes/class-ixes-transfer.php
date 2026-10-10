@@ -328,7 +328,11 @@ class IXES_Transfer {
 				}
 			) );
 			foreach ( $it as $f ) {
-				if ( $f->isFile() ) $out[] = self::rel_path( $root, $f->getPathname() );
+				if ( ! $f->isFile() ) continue;
+				$rel = self::rel_path( $root, $f->getPathname() );
+				// a symlinked file pointing out of wp-content is not listed: file_chunk() would refuse it
+				if ( $f->isLink() && self::served_path( $rel ) === null ) continue;
+				$out[] = $rel;
 			}
 		}
 		$out = array_values( array_unique( $out ) );
@@ -353,6 +357,23 @@ class IXES_Transfer {
 			if ( is_link( $p ) ) return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Absolute path of $rel when reading it stays inside wp-content, else null. A symlinked folder on the way is
+	 * refused (the walk never enters one, so no listed path goes through it), and so is a symlinked file that
+	 * resolves outside wp-content: a signed request names any path, not only the ones the manifest listed.
+	 */
+	public static function served_path( $rel ) {
+		$root = untrailingslashit( WP_CONTENT_DIR );
+		$dir  = dirname( $rel );
+		if ( $dir !== '.' && self::through_link( $root, $dir ) ) return null;
+		$p = $root . '/' . $rel;
+		if ( ! is_link( $p ) ) return $p;
+		$real = realpath( $p ); $base = realpath( $root );
+		if ( $real === false || $base === false ) return null;
+		$real = str_replace( '\\', '/', $real ); $base = rtrim( str_replace( '\\', '/', $base ), '/' );
+		return strpos( $real, $base . '/' ) === 0 ? $p : null;
 	}
 
 	public static function file_manifest( $cursor, $limit, array $excludes, $algo, $with_sizes = false, array $roots = [] ) {
@@ -393,7 +414,8 @@ class IXES_Transfer {
 	public static function file_chunk( $rel, $offset, $size, $as_binary = false ) {
 		$rel = self::safe_rel( $rel );
 		if ( ! $rel || self::excluded_path( $rel, IXES_Env::default_excludes() ) ) return new WP_Error( 'bad_path', 'path refused', [ 'status' => 400 ] );
-		$p = WP_CONTENT_DIR . '/' . $rel;
+		$p = self::served_path( $rel );
+		if ( $p === null ) return new WP_Error( 'bad_path', 'path refused', [ 'status' => 400 ] );
 		if ( ! is_file( $p ) ) return new WP_Error( 'not_found', 'no such file', [ 'status' => 404 ] );
 		$fh = fopen( $p, 'rb' ); fseek( $fh, $offset ); $data = fread( $fh, $size ); fclose( $fh );
 		if ( $data === false ) $data = '';
@@ -415,7 +437,8 @@ class IXES_Transfer {
 			$rel  = (string) $rel;
 			$safe = self::safe_rel( $rel );
 			if ( ! $safe || self::excluded_path( $safe, IXES_Env::default_excludes() ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'bad_path' ], '' ]; continue; }
-			$p = WP_CONTENT_DIR . '/' . $safe;
+			$p = self::served_path( $safe );
+			if ( $p === null ) { $items[] = [ [ 'path' => $rel, 'err' => 'bad_path' ], '' ]; continue; }
 			if ( ! is_file( $p ) || ! is_readable( $p ) ) { $items[] = [ [ 'path' => $rel, 'err' => 'not_found' ], '' ]; continue; }
 			// grown since the plan: the hub fetches it alone, in chunks
 			if ( $bytes + (int) filesize( $p ) > $max ) { $items[] = [ [ 'path' => $rel, 'err' => 'later' ], '' ]; continue; }
