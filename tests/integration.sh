@@ -115,7 +115,7 @@ B envsync env list | grep -q "partial .*(uploads)" || die "partial pull not refl
 TS=$(date +%s); BODY='{"path":"themes/ixtest/style.css","offset":0,"size":1024}'
 MSG=$(printf 'POST\n/envsync/v1/file/get\n%s\n%s' "$TS" "$(printf '%s' "$BODY" | sha256sum | cut -d' ' -f1)")
 SIG=$(printf '%s' "$MSG" | openssl dgst -sha256 -hmac "$TOKEN" | sed 's/^.* //')
-OUT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "X-Envsync-Ts: $TS" -H "X-Envsync-Sig: $SIG" -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$BODY" "$IXES_A_URL/?rest_route=/envsync/v1/file/get")
+OUT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "X-Envsync-Token: $TOKEN" -H "X-Envsync-Ts: $TS" -H "X-Envsync-Sig: $SIG" -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$BODY" "$IXES_A_URL/?rest_route=/envsync/v1/file/get")
 echo "$OUT" | grep -q '"data":"' || die "JSON file/get no longer served: $OUT"
 echo "$OUT" | php -r '$j=json_decode(stream_get_contents(STDIN),true); exit(hash("sha256",base64_decode($j["data"]))===$j["sha256"]?0:1);' || die "JSON chunk hash mismatch"
 
@@ -144,11 +144,16 @@ B post update "$PX" --post_content="x-lock-test" >/dev/null
 B envsync push prod --yes >/dev/null || die "push after unlock failed"
 [ "$(A post get "$PX" --field=post_content)" = "x-lock-test" ] || die "push after unlock did not apply"
 
-# 12. Authorization header stripped: the X-Envsync-Token fallback carries the request
-wp --path="$IXES_A" config set ENVSYNC_TEST_DROP_AUTHORIZATION true --raw >/dev/null
+# 12. Authorization header stripped: a keyed hub sends no token, so its signed session carries the request;
+#     an older hub that still sends the token gets through on the X-Envsync-Token fallback
+wp --path="$IXES_A" config set ENVSYNC_TEST_DROP_AUTHORIZATION true --raw --anchor="require_once ABSPATH" --placement=before >/dev/null
 sleep 3   # A runs behind a long-lived php -S process with opcache.revalidate_freq=2s; give it time to notice the wp-config.php edit
-B envsync env ping prod | grep -q "auth via X-Envsync-Token" || die "ping did not report the fallback carrier"
+B envsync env ping prod | grep -q "auth via a signed session" || die "ping did not go through the signed session"
 B envsync pull prod --fresh --yes >/dev/null || die "pull failed with Authorization stripped"
+TS=$(date +%s); MSG=$(printf 'GET\n/envsync/v1/ping\n%s\n%s' "$TS" "$(printf '' | sha256sum | cut -d' ' -f1)")
+SIG=$(printf '%s' "$MSG" | openssl dgst -sha256 -hmac "$TOKEN" | sed 's/^.* //')
+OUT=$(curl -s -H "Authorization: Bearer $TOKEN" -H "X-Envsync-Token: $TOKEN" -H "X-Envsync-Ts: $TS" -H "X-Envsync-Sig: $SIG" "$IXES_A_URL/?rest_route=/envsync/v1/ping")
+echo "$OUT" | grep -q '"auth_via":"x-envsync-token"' || die "an older hub's token did not get through on the fallback carrier: $OUT"
 wp --path="$IXES_A" config delete ENVSYNC_TEST_DROP_AUTHORIZATION >/dev/null
 sleep 3
 
