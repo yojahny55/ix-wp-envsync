@@ -96,4 +96,54 @@ class AuthTest extends TestCase {
 		$this->assertFalse( IXES_Auth::fresh_nonce( $dir, '../../x' ), 'not a nonce' );
 		array_map( 'unlink', glob( $dir . '/*' ) ); rmdir( $dir );
 	}
+
+	private function needs_sodium() { if ( ! IXES_Auth::can_sign() ) $this->markTestSkipped( 'no sodium: set SODIUM_COMPAT' ); }
+
+	public function test_key_signature_verifies_against_the_public_key_only() {
+		$this->needs_sodium();
+		$pub = IXES_Auth::public_key( $this->tok );
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{64}$/', $pub );
+		$this->assertSame( $pub, IXES_Auth::public_key( $this->tok ), 'the token always derives the same key' );
+		$this->assertStringNotContainsString( $this->tok, $pub );
+		$n = IXES_Auth::new_nonce();
+		$sig = IXES_Auth::sign_key( $this->tok, 'POST', '/x', 1000, 'b', 's', 'ab_', 'o_*', $n );
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{128}$/', $sig );
+		$this->assertTrue( IXES_Auth::verify_key( $pub, 'POST', '/x', 1000, 'b', $sig, 1000, 's', 'ab_', 'o_*', $n ) );
+		$this->assertFalse( IXES_Auth::verify_key( $pub, 'POST', '/x', 1000, 'c', $sig, 1000, 's', 'ab_', 'o_*', $n ), 'body' );
+		$this->assertFalse( IXES_Auth::verify_key( $pub, 'POST', '/y', 1000, 'b', $sig, 1000, 's', 'ab_', 'o_*', $n ), 'path' );
+		$this->assertFalse( IXES_Auth::verify_key( $pub, 'POST', '/x', 1000, 'b', $sig, 1000, 's', 'ab_', 'o_*', IXES_Auth::new_nonce() ), 'nonce' );
+		$this->assertFalse( IXES_Auth::verify_key( $pub, 'POST', '/x', 1000, 'b', $sig, 1301, 's', 'ab_', 'o_*', $n ), 'clock' );
+		$this->assertFalse( IXES_Auth::verify_key( IXES_Auth::public_key( IXES_Auth::generate_token() ), 'POST', '/x', 1000, 'b', $sig, 1000, 's', 'ab_', 'o_*', $n ), 'another key' );
+		$this->assertFalse( IXES_Auth::verify_key( $pub, 'POST', '/x', 1000, 'b', 'zz', 1000, 's', 'ab_', 'o_*', $n ), 'not a signature' );
+		$this->assertFalse( IXES_Auth::verify_key( '', 'POST', '/x', 1000, 'b', $sig, 1000, 's', 'ab_', 'o_*', $n ), 'no key' );
+	}
+
+	public function test_learn_key_only_fills_an_empty_slot() {
+		$this->needs_sodium();
+		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = '';
+		IXES_Auth::learn_key( $this->tok );
+		$this->assertSame( IXES_Auth::public_key( $this->tok ), get_option( IXES_Auth::PUB_OPTION ) );
+		IXES_Auth::learn_key( IXES_Auth::generate_token() );
+		$this->assertSame( IXES_Auth::public_key( $this->tok ), get_option( IXES_Auth::PUB_OPTION ), 'a stored key is never replaced by learning' );
+	}
+
+	public function test_a_session_dies_with_the_key_it_was_opened_under() {
+		$this->needs_sodium();
+		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
+		$s = IXES_Auth::open_session( get_option( IXES_Auth::PUB_OPTION ) );
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{32}$/', $s['session'] );
+		$this->assertSame( $s['key'], IXES_Auth::session_key( $s['session'] ) );
+		$this->assertSame( '', IXES_Auth::session_key( str_repeat( '0', 32 ) ), 'unknown' );
+		$this->assertSame( '', IXES_Auth::session_key( '../x' ), 'not an id' );
+		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( IXES_Auth::generate_token() );
+		$this->assertSame( '', IXES_Auth::session_key( $s['session'] ), 'the token rotated' );
+	}
+
+	public function test_hmac_under_a_session_key() {
+		$k = bin2hex( random_bytes( 32 ) );
+		$sig = IXES_Auth::sign( $k, 'GET', '/x', 5, '', '', '', '', 'n' );
+		$this->assertTrue( IXES_Auth::verify_hmac( $k, 'GET', '/x', 5, '', $sig, 5, '', '', '', 'n' ) );
+		$this->assertFalse( IXES_Auth::verify_hmac( $k, 'GET', '/x', 5, '', $sig, 400, '', '', '', 'n' ), 'clock' );
+		$this->assertFalse( IXES_Auth::verify_hmac( '', 'GET', '/x', 5, '', $sig, 5, '', '', '', 'n' ), 'no key' );
+	}
 }

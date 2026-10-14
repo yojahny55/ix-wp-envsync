@@ -194,9 +194,17 @@ class IXES_Mu {
 
 	// ---------- rescue without WordPress ----------
 
-	/** Written on every authenticated request whose key differs: rescue.php's bare path verifies the token against it. @return bool whether it wrote */
-	public static function write_key( $storage, $token, $allow_http ) {
-		$body = json_encode( [ 'sha256' => hash( 'sha256', (string) $token ), 'allow_http' => (bool) $allow_http ] );
+	/**
+	 * Written by a push's /job/start, and on rotation: rescue.php's bare path checks a request against it. It holds a
+	 * hash of the token, for a hub that still sends one, and the public key, for one that signs with it; a push opened
+	 * on a session knows no token and leaves only the key. @return bool whether it wrote
+	 */
+	public static function write_key( $storage, $token, $allow_http, $pub = '' ) {
+		$k = [];
+		if ( (string) $token !== '' ) $k['sha256'] = hash( 'sha256', (string) $token );
+		if ( preg_match( '/^[0-9a-f]{64}$/', (string) $pub ) ) $k['ed25519'] = (string) $pub;
+		$k['allow_http'] = (bool) $allow_http;
+		$body = json_encode( $k );
 		$f = $storage . '/' . self::KEY_FILE;
 		// a storage folder left from an older suffix must not keep an older token working
 		foreach ( glob( dirname( $storage ) . '/envsync-*/' . self::KEY_FILE ) ?: [] as $old ) {
@@ -213,14 +221,27 @@ class IXES_Mu {
 		return [ 'allow_http' => ! empty( $k['allow_http'] ) ];
 	}
 
+	/** @return array|null [ pub, allow_http ] when the key file holds a public key */
+	public static function key_pub( $storage ) {
+		$k = json_decode( (string) @file_get_contents( $storage . '/' . self::KEY_FILE ), true );
+		if ( ! is_array( $k ) || ! is_string( $k['ed25519'] ?? null ) ) return null;
+		return [ 'pub' => $k['ed25519'], 'allow_http' => ! empty( $k['allow_http'] ) ];
+	}
+
 	/**
 	 * Authenticate a rescue request with no WordPress: the storage folder's key stands in for the token hash.
+	 * $token '' means the hub signed with its private key (X-Envsync-Auth: ed25519) and sent no token.
 	 * @return string|WP_Error the storage folder that holds the matching key
 	 */
 	public static function bare_auth( $content_dir, $token, $ts, $body, $sig, $https, $now = null ) {
 		$now = $now === null ? time() : $now;
 		foreach ( glob( $content_dir . '/envsync-*', GLOB_ONLYDIR ) ?: [] as $dir ) {
 			if ( ! preg_match( '/^envsync-[0-9a-f]{16}$/', basename( $dir ) ) ) continue;
+			if ( (string) $token === '' ) {
+				$k = self::key_pub( $dir );
+				if ( $k === null || ! IXES_Auth::verify_key( $k['pub'], 'POST', '/envsync/v1/rescue', $ts, $body, $sig, $now ) ) continue;
+				return $https || $k['allow_http'] ? $dir : new WP_Error( 'https', 'https required', [ 'status' => 403 ] );
+			}
 			$k = self::key_matches( $dir, $token );
 			if ( $k === null ) continue;
 			if ( ! $https && ! $k['allow_http'] ) return new WP_Error( 'https', 'https required', [ 'status' => 403 ] );

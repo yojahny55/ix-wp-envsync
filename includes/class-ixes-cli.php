@@ -177,6 +177,8 @@ class IXES_CLI {
 			$env['name'] = $args[1];
 			if ( ! empty( $args[2] ) )           $env['url']   = $args[2];
 			if ( ! empty( $assoc['token'] ) )    $env['token'] = $assoc['token'];
+			// a new token or address is a new key to prove: the next run tries a session first, and sends the token only if it must
+			if ( ! empty( $assoc['token'] ) || ! empty( $args[2] ) ) { unset( $env['keyed'] ); $env['probe'] = true; }
 			if ( ! empty( $assoc['label'] ) )    $env['label'] = $assoc['label'];
 			if ( isset( $assoc['only'] ) ) {
 				try { $only = IXES_Scope::default_only( $assoc['only'] === true ? '' : $assoc['only'] ); }
@@ -241,7 +243,7 @@ class IXES_CLI {
 			$c = $this->client( $args[1] );
 			$r = $this->fail_if_error( $c->get( '/ping' ) );
 			$info = $this->fail_if_error( $c->info() );
-			$via = ( $r['auth_via'] ?? 'authorization' ) === 'x-envsync-token' ? 'X-Envsync-Token (this host strips the Authorization header; that is fine)' : 'Authorization';
+			$via = [ 'x-envsync-token' => 'X-Envsync-Token (this host strips the Authorization header; that is fine)', 'session' => 'a signed session (the token is not sent)' ][ $r['auth_via'] ?? '' ] ?? 'Authorization';
 			WP_CLI::success( 'ok, remote time ' . wp_date( 'Y-m-d H:i:s T', (int) $r['time'] ) . ", remote {$info['plugin']}, auth via {$via}" );
 			if ( version_compare( (string) $info['plugin'], IXES_VERSION, '<' ) ) WP_CLI::warning( "remote runs {$info['plugin']}, hub runs " . IXES_VERSION . ': ' . ( in_array( 'self_update', (array) ( $info['caps'] ?? [] ), true ) ? "run wp envsync self-update {$args[1]}" : "upload the release zip to {$this->get_env( $args[1] )['url']}" ) );
 			elseif ( version_compare( (string) $info['plugin'], IXES_VERSION, '>' ) ) WP_CLI::log( "note: remote runs {$info['plugin']}, newer than this hub (" . IXES_VERSION . ')' );

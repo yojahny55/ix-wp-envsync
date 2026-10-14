@@ -147,6 +147,26 @@ class MuTest extends TestCase {
 		$this->assertSame( 401, IXES_Mu::bare_auth( $this->tmp, $token, $now - 1000, $body, IXES_Auth::sign( $token, 'POST', '/envsync/v1/rescue', $now - 1000, $body ), true, $now )->get_error_data()['status'] );
 	}
 
+	public function test_bare_auth_takes_a_key_signature_and_no_token() {
+		if ( ! IXES_Auth::can_sign() ) $this->markTestSkipped( 'no sodium: set SODIUM_COMPAT' );
+		$token = str_repeat( 'ab', 32 ); $pub = IXES_Auth::public_key( $token );
+		mkdir( $this->tmp . '/envsync-0123456789abcdef' );
+		// a push opened on a session knows no token: the key file then holds the public key alone
+		IXES_Mu::write_key( $this->tmp . '/envsync-0123456789abcdef', '', false, $pub );
+		$this->assertNull( IXES_Mu::key_matches( $this->tmp . '/envsync-0123456789abcdef', $token ) );
+		$this->assertSame( [ 'pub' => $pub, 'allow_http' => false ], IXES_Mu::key_pub( $this->tmp . '/envsync-0123456789abcdef' ) );
+		$body = '{"action":"quarantine_mu"}'; $now = 1790000000;
+		$sig = IXES_Auth::sign_key( $token, 'POST', '/envsync/v1/rescue', $now, $body );
+		$this->assertSame( $this->tmp . '/envsync-0123456789abcdef', IXES_Mu::bare_auth( $this->tmp, '', $now, $body, $sig, true, $now ) );
+		$this->assertSame( 403, IXES_Mu::bare_auth( $this->tmp, '', $now, $body, $sig, false, $now )->get_error_data()['status'] );
+		$this->assertSame( 401, IXES_Mu::bare_auth( $this->tmp, '', $now, '{}', $sig, true, $now )->get_error_data()['status'] );
+		$this->assertSame( 401, IXES_Mu::bare_auth( $this->tmp, '', $now, $body, IXES_Auth::sign_key( str_repeat( 'cd', 32 ), 'POST', '/envsync/v1/rescue', $now, $body ), true, $now )->get_error_data()['status'] );
+		// a token push writes both
+		IXES_Mu::write_key( $this->tmp . '/envsync-0123456789abcdef', $token, false, $pub );
+		$this->assertNotNull( IXES_Mu::key_matches( $this->tmp . '/envsync-0123456789abcdef', $token ) );
+		$this->assertNotNull( IXES_Mu::key_pub( $this->tmp . '/envsync-0123456789abcdef' ) );
+	}
+
 	public function test_quarantine_moves_what_the_job_brought_and_restores_the_snapshot() {
 		$store = 'envsync-0123456789abcdef';
 		$job = '20260930-120000-abcdef';

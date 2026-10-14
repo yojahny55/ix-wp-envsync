@@ -138,7 +138,7 @@ class IXES_Status {
 			$o[] = "{$name}  {$e['url']}  ({$e['label']})";
 			if ( ! $e['reachable'] ) { $o[] = "  unreachable: {$e['error']}"; }
 			else {
-				$via = $e['auth_via'] === 'x-envsync-token' ? 'X-Envsync-Token' : 'Authorization';
+				$via = [ 'x-envsync-token' => 'X-Envsync-Token', 'session' => 'signed session (no token sent)' ][ (string) $e['auth_via'] ] ?? 'Authorization';
 				$o[] = "  remote {$e['remote_version']}  hub {$r['hub_version']}  auth via {$via}" . ( $e['version_ok'] === false ? '  (remote is older)' : '' ) . ( ! empty( $e['prefix_map'] ) ? "  prefix {$e['prefix_map']}" : '' );
 			}
 			$b = $e['baseline'];

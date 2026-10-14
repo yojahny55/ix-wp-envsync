@@ -3,12 +3,13 @@
  * Rescue endpoint for a remote that a push left broken (a plugin fatals on every request, so REST is down too).
  *
  * WordPress boots here in installer mode: no plugins, no theme, no maintenance screen. The request is
- * authenticated exactly like the REST API (token + HMAC signature over the body), then one action runs:
+ * authenticated like the REST API (token + HMAC signature over the body, or, from a hub that sends no token, an
+ * Ed25519 signature checked against the public key), then one action runs:
  * status, plugins_off (keep only EnvSync active), rollback (restore a push's snapshot, clear its lock) or
  * restore_self (put back the plugin folder a self-update replaced; self_backup names its version). Both run before the main plugin
  * file loads, with only IXES_Auth and IXES_Selfupdate: the code it recovers from may be what fatals.
  * Must-use plugins and drop-ins still load there, so quarantine_mu skips WordPress altogether: it finds the
- * storage folder next to wp-content/plugins, checks the token against the key the last push left there
+ * storage folder next to wp-content/plugins, checks the token or signature against the key the last push left there
  * (IXES_Mu::write_key()) and moves the job's mu-plugins and drop-ins aside, touching files only.
  *
  * phpcs:ignoreFile -- standalone entry point that bootstraps WordPress itself
@@ -40,8 +41,15 @@ if ( ( $ixes_p['action'] ?? '' ) === 'quarantine_mu' ) {
 	$ixes_https = ( ! empty( $_SERVER['HTTPS'] ) && strtolower( (string) $_SERVER['HTTPS'] ) !== 'off' ) || (string) ( $_SERVER['SERVER_PORT'] ?? '' ) === '443'
 		|| strtolower( (string) ( $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '' ) ) === 'https';
 	$ixes_auth = (string) ( $_SERVER['HTTP_AUTHORIZATION'] ?? ( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '' ) );
-	list( $ixes_token ) = IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ?? '' ) );
-	if ( $ixes_token === '' ) $ixes_bare( 401, [ 'message' => 'missing token' ] );
+	$ixes_keyed = strtolower( (string) ( $_SERVER['HTTP_X_ENVSYNC_AUTH'] ?? '' ) ) === 'ed25519';
+	if ( $ixes_keyed && ! IXES_Auth::can_sign() ) {
+		// no WordPress here, so no sodium_compat unless we load it: from the core next to this wp-content, or ABSPATH's guess
+		foreach ( [ dirname( $ixes_content ), rtrim( ABSPATH, '/' ) ] as $ixes_root ) {
+			if ( is_file( $ixes_root . '/wp-includes/sodium_compat/autoload.php' ) ) { require_once $ixes_root . '/wp-includes/sodium_compat/autoload.php'; break; }
+		}
+	}
+	list( $ixes_token ) = $ixes_keyed ? [ '' ] : IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ?? '' ) );
+	if ( $ixes_token === '' && ! $ixes_keyed ) $ixes_bare( 401, [ 'message' => 'missing token' ] );
 	$ixes_store = IXES_Mu::bare_auth( $ixes_content, $ixes_token, (int) ( $_SERVER['HTTP_X_ENVSYNC_TS'] ?? 0 ), $ixes_body, (string) ( $_SERVER['HTTP_X_ENVSYNC_SIG'] ?? '' ), $ixes_https );
 	$ixes_r = $ixes_store instanceof WP_Error ? $ixes_store : IXES_Mu::quarantine( $ixes_content, $ixes_store, isset( $ixes_p['job'] ) ? (string) $ixes_p['job'] : null );
 	if ( $ixes_r instanceof WP_Error ) { $ixes_d = $ixes_r->get_error_data(); $ixes_bare( (int) ( $ixes_d['status'] ?? 500 ), [ 'code' => $ixes_r->get_error_code(), 'message' => $ixes_r->get_error_message() ] ); }
@@ -72,13 +80,15 @@ function ixes_rescue_send( $code, array $data ) {
 if ( ( $_SERVER['REQUEST_METHOD'] ?? '' ) !== 'POST' ) ixes_rescue_send( 405, [ 'message' => 'POST only' ] );
 if ( ! is_ssl() && ! ( defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP ) ) ixes_rescue_send( 403, [ 'message' => 'https required' ] );
 
-$ixes_auth = (string) ( $_SERVER['HTTP_AUTHORIZATION'] ?? ( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '' ) );
-list( $ixes_token ) = IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ?? '' ) );
-if ( $ixes_token === '' ) ixes_rescue_send( 401, [ 'message' => 'missing token' ] );
-$ixes_ok = IXES_Auth::verify(
-	(string) get_option( 'ixes_token_hash' ), $ixes_token, 'POST', '/envsync/v1/rescue', // IXES_Rest::NS, spelled out: that class is not loaded yet
-	(int) ( $_SERVER['HTTP_X_ENVSYNC_TS'] ?? 0 ), $ixes_body, (string) ( $_SERVER['HTTP_X_ENVSYNC_SIG'] ?? '' )
-);
+$ixes_signed = [ 'POST', '/envsync/v1/rescue', (int) ( $_SERVER['HTTP_X_ENVSYNC_TS'] ?? 0 ), $ixes_body, (string) ( $_SERVER['HTTP_X_ENVSYNC_SIG'] ?? '' ) ]; // IXES_Rest::NS, spelled out: that class is not loaded yet
+if ( strtolower( (string) ( $_SERVER['HTTP_X_ENVSYNC_AUTH'] ?? '' ) ) === 'ed25519' ) {
+	$ixes_ok = IXES_Auth::verify_key( (string) get_option( IXES_Auth::PUB_OPTION ), ...$ixes_signed );
+} else {
+	$ixes_auth = (string) ( $_SERVER['HTTP_AUTHORIZATION'] ?? ( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '' ) );
+	list( $ixes_token ) = IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ?? '' ) );
+	if ( $ixes_token === '' ) ixes_rescue_send( 401, [ 'message' => 'missing token' ] );
+	$ixes_ok = IXES_Auth::verify( (string) get_option( 'ixes_token_hash' ), $ixes_token, ...$ixes_signed );
+}
 if ( ! $ixes_ok ) ixes_rescue_send( 401, [ 'message' => 'bad signature' ] );
 
 if ( ( $ixes_p['action'] ?? '' ) === 'self_backup' ) {

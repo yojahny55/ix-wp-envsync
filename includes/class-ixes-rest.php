@@ -14,6 +14,7 @@ class IXES_Rest {
 		};
 		$r( '/ping',       'GET',  function () { return [ 'ok' => true, 'time' => time(), 'auth_via' => self::auth_via() ]; } );
 		$r( '/info',       'GET',  function () { return IXES_Transfer::info(); } );
+		$r( '/session',    'POST', [ __CLASS__, 'session' ] );
 		$r( '/hash/rows',  'POST', [ __CLASS__, 'hash_rows' ] );
 		$r( '/hash/tables', 'POST', [ __CLASS__, 'hash_tables' ] );
 		$r( '/hash/files', 'POST', [ __CLASS__, 'hash_files' ] );
@@ -35,22 +36,37 @@ class IXES_Rest {
 
 	public static function auth( WP_REST_Request $req ) {
 		if ( ! is_ssl() && ! ( defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP ) ) return new WP_Error( 'https', 'https required', [ 'status' => 403 ] );
-		$authorization = $req->get_header( 'authorization' );
-		// Test-only: simulates a host that strips the Authorization header, forcing the X-Envsync-Token fallback.
-		if ( defined( 'ENVSYNC_TEST_DROP_AUTHORIZATION' ) && ENVSYNC_TEST_DROP_AUTHORIZATION ) $authorization = '';
-		list( $token, $via ) = IXES_Auth::token_from_headers( $authorization, $req->get_header( 'x-envsync-token' ) );
-		if ( $token === '' ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
-		self::$auth_via = $via;
 		$prefix = (string) $req->get_header( 'x-envsync-prefix' );
 		$excl   = (string) $req->get_header( 'x-envsync-exclude-options' );
 		$nonce  = (string) $req->get_header( 'x-envsync-nonce' );
 		if ( $prefix !== '' && ! IXES_Prefix::valid( $prefix ) ) return new WP_Error( 'prefix', 'bad prefix', [ 'status' => 400 ] );
-		$ok = IXES_Auth::verify(
-			(string) get_option( 'ixes_token_hash' ), $token, $req->get_method(),
-			$req->get_route(), (int) $req->get_header( 'x-envsync-ts' ),
-			(string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ),
-			null, (string) $req->get_header( 'x-envsync-step' ), $prefix, $excl, $nonce
-		);
+		$signed = [ $req->get_method(), $req->get_route(), (int) $req->get_header( 'x-envsync-ts' ), (string) $req->get_body(), (string) $req->get_header( 'x-envsync-sig' ), null, (string) $req->get_header( 'x-envsync-step' ), $prefix, $excl, $nonce ];
+		$session = (string) $req->get_header( 'x-envsync-session' );
+		$token = '';
+		if ( $session !== '' || strtolower( (string) $req->get_header( 'x-envsync-auth' ) ) === 'ed25519' ) {
+			// a hub that sends no token: a session key it was handed, or its own private key to open that session.
+			// Both carry a nonce always: a replayed /session would hand whoever replays it a fresh session key.
+			if ( $nonce === '' ) return new WP_Error( 'auth', 'missing nonce', [ 'status' => 401 ] );
+			if ( $session !== '' ) {
+				$key = IXES_Auth::session_key( $session );
+				if ( $key === '' ) return new WP_Error( 'auth', 'unknown or expired session', [ 'status' => 401 ] );
+				$ok = IXES_Auth::verify_hmac( $key, ...$signed );
+				self::$auth_via = 'session';
+			} else {
+				$pub = (string) get_option( IXES_Auth::PUB_OPTION );
+				if ( $pub === '' || ! IXES_Auth::can_sign() ) return new WP_Error( 'auth', 'no signing key on this remote', [ 'status' => 401 ] );
+				$ok = IXES_Auth::verify_key( $pub, ...$signed );
+				self::$auth_via = 'ed25519';
+			}
+		} else {
+			$authorization = $req->get_header( 'authorization' );
+			// Test-only: simulates a host that strips the Authorization header, forcing the X-Envsync-Token fallback.
+			if ( defined( 'ENVSYNC_TEST_DROP_AUTHORIZATION' ) && ENVSYNC_TEST_DROP_AUTHORIZATION ) $authorization = '';
+			list( $token, $via ) = IXES_Auth::token_from_headers( $authorization, $req->get_header( 'x-envsync-token' ) );
+			if ( $token === '' ) return new WP_Error( 'auth', 'missing token', [ 'status' => 401 ] );
+			self::$auth_via = $via;
+			$ok = IXES_Auth::verify( (string) get_option( 'ixes_token_hash' ), $token, ...$signed );
+		}
 		if ( ! $ok ) return new WP_Error( 'auth', 'bad signature', [ 'status' => 401 ] );
 		// a hub that knows the 'nonce' cap signs each request once: the same request seen again is a replay
 		if ( $nonce !== '' ) {
@@ -58,14 +74,22 @@ class IXES_Rest {
 			if ( is_wp_error( $fresh ) ) return $fresh;
 			if ( ! $fresh ) return new WP_Error( 'auth', 'replayed request', [ 'status' => 401 ] );
 		}
+		// an older hub proved the token: keep its public key, so the next hub can stop sending the token
+		if ( $token !== '' ) IXES_Auth::learn_key( $token );
 		// rescue.php's bare path (--quarantine-mu) cannot read the token hash from the database: a push leaves it this key
-		if ( substr( (string) $req->get_route(), -10 ) === '/job/start' ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP );
+		if ( substr( (string) $req->get_route(), -10 ) === '/job/start' ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP, (string) get_option( IXES_Auth::PUB_OPTION ) );
 		global $wpdb;
 		// the hub speaks in its own table names; everything below translates through this for the rest of the request
 		IXES_Prefix::set_current( $prefix !== '' && $prefix !== $wpdb->prefix ? new IXES_Prefix( $wpdb->prefix, $prefix ) : null );
 		// the hub's exclude_options for this environment: those rows are neither hashed, read nor written here
 		IXES_Env::set_option_globs( IXES_Env::option_globs( $excl ) );
 		return true;
+	}
+
+	/** Opens a signed session. Only the hub's private key may: a session key, or the token, cannot mint another. */
+	public static function session() {
+		if ( self::$auth_via !== 'ed25519' ) return new WP_Error( 'auth', 'a session is opened with the signing key', [ 'status' => 403 ] );
+		return IXES_Auth::open_session( (string) get_option( IXES_Auth::PUB_OPTION ) );
 	}
 
 	private static function wants_binary( WP_REST_Request $req ) {
