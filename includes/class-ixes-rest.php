@@ -53,7 +53,7 @@ class IXES_Rest {
 				$ok = IXES_Auth::verify_hmac( $key, ...$signed );
 				self::$auth_via = 'session';
 			} else {
-				$pub = (string) get_option( IXES_Auth::PUB_OPTION );
+				$pub = IXES_Auth::current_pub();
 				if ( $pub === '' || ! IXES_Auth::can_sign() ) return new WP_Error( 'auth', 'no signing key on this remote', [ 'status' => 401 ] );
 				$ok = IXES_Auth::verify_key( $pub, ...$signed );
 				self::$auth_via = 'ed25519';
@@ -75,9 +75,10 @@ class IXES_Rest {
 			if ( ! $fresh ) return new WP_Error( 'auth', 'replayed request', [ 'status' => 401 ] );
 		}
 		// an older hub proved the token: keep its public key, so the next hub can stop sending the token
-		if ( $token !== '' ) IXES_Auth::learn_key( $token );
-		// rescue.php's bare path (--quarantine-mu) cannot read the token hash from the database: a push leaves it this key
-		if ( substr( (string) $req->get_route(), -10 ) === '/job/start' ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP, (string) get_option( IXES_Auth::PUB_OPTION ) );
+		$learned = $token !== '' && IXES_Auth::learn_key( $token );
+		// rescue.php's bare path (--quarantine-mu) cannot read the token hash from the database: a push leaves it this key,
+		// and so does a newly learned key, which replaces a stale one there too
+		if ( $learned || substr( (string) $req->get_route(), -10 ) === '/job/start' ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP, IXES_Auth::current_pub() );
 		global $wpdb;
 		// the hub speaks in its own table names; everything below translates through this for the rest of the request
 		IXES_Prefix::set_current( $prefix !== '' && $prefix !== $wpdb->prefix ? new IXES_Prefix( $wpdb->prefix, $prefix ) : null );
@@ -89,7 +90,7 @@ class IXES_Rest {
 	/** Opens a signed session. Only the hub's private key may: a session key, or the token, cannot mint another. */
 	public static function session() {
 		if ( self::$auth_via !== 'ed25519' ) return new WP_Error( 'auth', 'a session is opened with the signing key', [ 'status' => 403 ] );
-		return IXES_Auth::open_session( (string) get_option( IXES_Auth::PUB_OPTION ) );
+		return IXES_Auth::open_session( IXES_Auth::current_pub() );
 	}
 
 	private static function wants_binary( WP_REST_Request $req ) {

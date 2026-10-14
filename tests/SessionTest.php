@@ -34,7 +34,7 @@ class SessionHub extends IXES_Client {
 				return $r instanceof WP_Error ? self::res( $r->get_error_data()['status'], [ 'message' => $r->get_error_message() ] ) : self::res( 200, $r );
 			case '/info':
 				$caps = [ 'nonce' ];
-				if ( (string) get_option( IXES_Auth::PUB_OPTION ) !== '' ) $caps[] = IXES_Auth::CAP;
+				if ( IXES_Auth::current_pub() !== '' ) $caps[] = IXES_Auth::CAP;
 				return self::res( 200, [ 'plugin' => '1.0', 'caps' => $caps ] );
 			default:
 				return self::res( 200, [ 'ok' => true, 'time' => 1, 'auth_via' => IXES_Rest::auth_via() ] );
@@ -53,8 +53,7 @@ class SessionTest extends TestCase {
 		$GLOBALS['wpdb'] = $GLOBALS['wpdb'] ?? (object) [ 'prefix' => 'wp_' ];
 		$GLOBALS['ixes_test_transients'] = [];
 		$this->tok = IXES_Auth::generate_token();
-		$GLOBALS['ixes_test_options']['ixes_token_hash'] = wp_hash( $this->tok );
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = '';
+		ixes_test_set_token( $this->tok, false );
 	}
 
 	private function hub( array $extra = [] ) {
@@ -82,8 +81,23 @@ class SessionTest extends TestCase {
 		$this->assertCount( 3, $c->calls, 'the session is reused' );
 	}
 
+	public function test_a_key_left_by_an_old_rotation_is_replaced_and_stops_signing() {
+		$t1 = IXES_Auth::generate_token();
+		ixes_test_set_token( $t1 );
+		// rotated by a version from before the key: the hash moved to our token, the key stayed with t1
+		$GLOBALS['ixes_test_options']['ixes_token_hash'] = wp_hash( $this->tok );
+		$old = new SessionHub( [ 'name' => 'o', 'url' => 'https://p.test', 'token' => $t1, 'keyed' => true ] );
+		$old->hub_prefix = '';
+		$this->assertInstanceOf( WP_Error::class, $old->get( '/ping' ), 'the revoked token cannot open a session' );
+		$c = $this->hub( [ 'probe' => true ] );
+		$this->assertIsArray( $c->info() );
+		$this->assertTrue( $c->keyed() );
+		$this->assertSame( IXES_Auth::public_key( $this->tok ), IXES_Auth::current_pub() );
+		$this->assertSame( 'session', $c->get( '/ping' )['auth_via'], 'the current token gets its session' );
+	}
+
 	public function test_after_env_add_a_remote_that_holds_the_key_never_sees_the_token() {
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
+		ixes_test_set_token( $this->tok );
 		$c = $this->hub( [ 'probe' => true ] );
 		$this->assertIsArray( $c->info() );
 		$this->assertTrue( $c->keyed() );
@@ -111,7 +125,7 @@ class SessionTest extends TestCase {
 	}
 
 	public function test_an_expired_session_is_opened_again() {
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
+		ixes_test_set_token( $this->tok );
 		$c = $this->hub( [ 'keyed' => true ] );
 		$c->get( '/ping' );
 		$GLOBALS['ixes_test_transients'] = [];
@@ -121,22 +135,22 @@ class SessionTest extends TestCase {
 	}
 
 	public function test_rotating_the_token_ends_the_session() {
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
+		ixes_test_set_token( $this->tok );
 		$c = $this->hub( [ 'keyed' => true ] );
 		$c->get( '/ping' );
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( IXES_Auth::generate_token() );
+		ixes_test_set_token( IXES_Auth::generate_token() );
 		$this->assertInstanceOf( WP_Error::class, $c->get( '/ping' ) );
 	}
 
 	public function test_only_the_key_opens_a_session() {
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
+		ixes_test_set_token( $this->tok );
 		$this->hub()->info(); // signed with the token
 		$this->assertSame( 403, IXES_Rest::session()->get_error_data()['status'] );
 	}
 
 	public function test_a_session_request_without_a_nonce_or_seen_twice_is_refused() {
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
-		$s = IXES_Auth::open_session( get_option( IXES_Auth::PUB_OPTION ) );
+		ixes_test_set_token( $this->tok );
+		$s = IXES_Auth::open_session( IXES_Auth::current_pub() );
 		$route = '/' . IXES_Rest::NS . '/ping'; $ts = time();
 		$req = function ( $nonce ) use ( $s, $route, $ts ) {
 			$h = [ 'X-Envsync-Session' => $s['session'], 'X-Envsync-Ts' => $ts, 'X-Envsync-Sig' => IXES_Auth::sign( $s['key'], 'GET', $route, $ts, '', '', '', '', $nonce ) ];
@@ -152,7 +166,7 @@ class SessionTest extends TestCase {
 	public function test_a_keyed_rescue_sends_no_token() {
 		$c = $this->hub( [ 'keyed' => true ] );
 		$c->old_remote = false;
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
+		ixes_test_set_token( $this->tok );
 		$c->rescue_call(); // rescue.php is not routed here; only what the hub sends matters
 		$h = $c->calls[0];
 		$this->assertFalse( self::carries_token( $h ) );

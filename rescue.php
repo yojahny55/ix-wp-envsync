@@ -82,7 +82,7 @@ if ( ! is_ssl() && ! ( defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP ) )
 
 $ixes_signed = [ 'POST', '/envsync/v1/rescue', (int) ( $_SERVER['HTTP_X_ENVSYNC_TS'] ?? 0 ), $ixes_body, (string) ( $_SERVER['HTTP_X_ENVSYNC_SIG'] ?? '' ) ]; // IXES_Rest::NS, spelled out: that class is not loaded yet
 if ( strtolower( (string) ( $_SERVER['HTTP_X_ENVSYNC_AUTH'] ?? '' ) ) === 'ed25519' ) {
-	$ixes_ok = IXES_Auth::verify_key( (string) get_option( IXES_Auth::PUB_OPTION ), ...$ixes_signed );
+	$ixes_ok = IXES_Auth::verify_key( IXES_Auth::current_pub(), ...$ixes_signed );
 } else {
 	$ixes_auth = (string) ( $_SERVER['HTTP_AUTHORIZATION'] ?? ( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '' ) );
 	list( $ixes_token ) = IXES_Auth::token_from_headers( $ixes_auth, (string) ( $_SERVER['HTTP_X_ENVSYNC_TOKEN'] ?? '' ) );

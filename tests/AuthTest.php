@@ -118,24 +118,29 @@ class AuthTest extends TestCase {
 		$this->assertFalse( IXES_Auth::verify_key( '', 'POST', '/x', 1000, 'b', $sig, 1000, 's', 'ab_', 'o_*', $n ), 'no key' );
 	}
 
-	public function test_learn_key_only_fills_an_empty_slot() {
+	public function test_learn_key_fills_a_missing_or_stale_key_only() {
 		$this->needs_sodium();
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = '';
-		IXES_Auth::learn_key( $this->tok );
-		$this->assertSame( IXES_Auth::public_key( $this->tok ), get_option( IXES_Auth::PUB_OPTION ) );
-		IXES_Auth::learn_key( IXES_Auth::generate_token() );
-		$this->assertSame( IXES_Auth::public_key( $this->tok ), get_option( IXES_Auth::PUB_OPTION ), 'a stored key is never replaced by learning' );
+		ixes_test_set_token( $this->tok, false );
+		$this->assertTrue( IXES_Auth::learn_key( $this->tok ) );
+		$this->assertSame( IXES_Auth::public_key( $this->tok ), IXES_Auth::current_pub() );
+		$this->assertFalse( IXES_Auth::learn_key( $this->tok ), 'a current key is not derived again' );
+		// a version from before the key rotates the token: only the hash moves, and the old key must stop counting
+		$t2 = IXES_Auth::generate_token();
+		$GLOBALS['ixes_test_options']['ixes_token_hash'] = wp_hash( $t2 );
+		$this->assertSame( '', IXES_Auth::current_pub(), 'a key from the revoked token' );
+		$this->assertTrue( IXES_Auth::learn_key( $t2 ) );
+		$this->assertSame( IXES_Auth::public_key( $t2 ), IXES_Auth::current_pub() );
 	}
 
 	public function test_a_session_dies_with_the_key_it_was_opened_under() {
 		$this->needs_sodium();
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( $this->tok );
-		$s = IXES_Auth::open_session( get_option( IXES_Auth::PUB_OPTION ) );
+		ixes_test_set_token( $this->tok );
+		$s = IXES_Auth::open_session( IXES_Auth::current_pub() );
 		$this->assertMatchesRegularExpression( '/^[0-9a-f]{32}$/', $s['session'] );
 		$this->assertSame( $s['key'], IXES_Auth::session_key( $s['session'] ) );
 		$this->assertSame( '', IXES_Auth::session_key( str_repeat( '0', 32 ) ), 'unknown' );
 		$this->assertSame( '', IXES_Auth::session_key( '../x' ), 'not an id' );
-		$GLOBALS['ixes_test_options'][ IXES_Auth::PUB_OPTION ] = IXES_Auth::public_key( IXES_Auth::generate_token() );
+		ixes_test_set_token( IXES_Auth::generate_token() );
 		$this->assertSame( '', IXES_Auth::session_key( $s['session'] ), 'the token rotated' );
 	}
 

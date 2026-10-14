@@ -89,7 +89,7 @@ class IXES_Transfer {
 			'plugin'          => IXES_VERSION,
 			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', 'exclude_options', 'nonce', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps(),
 				// a hub that sees this stops sending the token: it opens a session with its private key from then on
-				IXES_Auth::can_sign() && (string) get_option( IXES_Auth::PUB_OPTION ) !== '' ? [ IXES_Auth::CAP ] : [] ),
+				IXES_Auth::can_sign() && IXES_Auth::current_pub() !== '' ? [ IXES_Auth::CAP ] : [] ),
 			'self_dir'        => basename( dirname( IXES_FILE ) ), // a self-update zip's top folder must be this
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),

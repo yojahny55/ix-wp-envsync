@@ -5,6 +5,8 @@ class IXES_Auth {
 	const SKEW = 300;
 	// The remote's public key. The token never reaches it again once a hub signs with the matching private key.
 	const PUB_OPTION = 'ixes_sign_pub';
+	// the ixes_token_hash the public key was derived with: a version from before the key rotates only the hash
+	const PUB_FOR = 'ixes_sign_pub_for';
 	// /info lists this when the remote holds a public key and opens signed sessions: see open_session().
 	const CAP = 'session';
 	const SESSION_TTL = 21600; // six hours: a long push outlives one hour, and the hub opens a new one before this runs out
@@ -17,9 +19,9 @@ class IXES_Auth {
 		$token = self::generate_token();
 		update_option( 'ixes_token_hash', wp_hash( $token ), false );
 		// the old key goes with the old token, and with it every session it opened (session() checks the key)
-		update_option( self::PUB_OPTION, self::can_sign() ? self::public_key( $token ) : '', false );
+		self::store_key( $token );
 		// the old token must stop opening rescue.php's bare path too
-		if ( function_exists( 'ixes_storage_dir' ) ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP, (string) get_option( self::PUB_OPTION ) );
+		if ( function_exists( 'ixes_storage_dir' ) ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP, self::current_pub() );
 		set_transient( 'ixes_token_show', $token, 600 );
 		return $token;
 	}
@@ -91,13 +93,31 @@ class IXES_Auth {
 		} catch ( Exception $e ) { return false; } catch ( Error $e ) { return false; }
 	}
 
+	private static function store_key( $token ) {
+		update_option( self::PUB_OPTION, self::can_sign() ? self::public_key( $token ) : '', false );
+		update_option( self::PUB_FOR, (string) get_option( 'ixes_token_hash' ), false );
+	}
+
 	/**
-	 * A remote that predates the public key learns it from the first request that proves the token, i.e. the first
-	 * one an older hub signs. Only when it has none: rotating sets both together, so a stored key is never stale.
+	 * The public key, or '' when it was not derived from the current token. A version from before the key that
+	 * rotates the token leaves the old key behind: the token it was meant to revoke must not keep signing.
+	 */
+	public static function current_pub() {
+		$pub = (string) get_option( self::PUB_OPTION );
+		$hash = (string) get_option( 'ixes_token_hash' );
+		return $pub !== '' && $hash !== '' && hash_equals( $hash, (string) get_option( self::PUB_FOR ) ) ? $pub : '';
+	}
+
+	/**
+	 * A remote without a current key learns it from the first request that proves the token, i.e. the first one an
+	 * older hub signs, or the first after a rotation the key missed. A current key is never touched: deriving one
+	 * costs ~30 ms without the sodium extension, too much for every token request.
+	 * @return bool whether it stored a key
 	 */
 	public static function learn_key( $token ) {
-		if ( ! self::can_sign() || (string) get_option( self::PUB_OPTION ) !== '' ) return;
-		update_option( self::PUB_OPTION, self::public_key( $token ), false );
+		if ( ! self::can_sign() || self::current_pub() !== '' ) return false;
+		self::store_key( $token );
+		return true;
 	}
 
 	/**
@@ -116,7 +136,7 @@ class IXES_Auth {
 	public static function session_key( $id ) {
 		if ( ! preg_match( '/^[0-9a-f]{32}$/', (string) $id ) ) return '';
 		$s = get_transient( 'ixes_session_' . $id );
-		$pub = (string) get_option( self::PUB_OPTION );
+		$pub = self::current_pub();
 		if ( ! is_array( $s ) || $pub === '' || ! hash_equals( $pub, (string) ( $s['pub'] ?? '' ) ) ) return '';
 		return (string) ( $s['key'] ?? '' );
 	}
