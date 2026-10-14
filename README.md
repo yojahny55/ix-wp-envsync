@@ -369,9 +369,9 @@ Run `wp envsync unlock prod` to clear it. Nothing is rolled back — `rollback` 
 
 **"missing token" on a host that strips the Authorization header.** The plugin also sends the token as `X-Envsync-Token`, so most hosts recover on their own. If a remote still rejects every request, `status` reports it as unreachable:
 
-Some hosts log request headers verbatim, so a request carrying `X-Envsync-Token` can put the token in full into that host's access logs — treat those logs as sensitive.
+Some hosts log request headers verbatim, so a request carrying `X-Envsync-Token` can put the token in full into that host's access logs — treat those logs as sensitive. From 0.9.18 on both sides the token stops travelling at all: see [The token stays on the hub](#the-token-stays-on-the-hub).
 
-Every request is signed with the token and a timestamp, and a remote refuses one more than five minutes off its own clock. From 0.9.16 the hub also signs a one-time nonce into each request to a remote that runs 0.9.16 or newer, and that remote refuses a request it has already seen, so a captured request cannot be sent again inside those five minutes. The remote keeps the nonces it saw for ten minutes in its storage folder (`wp-content/envsync-<suffix>/nonces/`).
+Every request is signed and timestamped, and a remote refuses one more than five minutes off its own clock. From 0.9.16 the hub also signs a one-time nonce into each request to a remote that runs 0.9.16 or newer, and that remote refuses a request it has already seen, so the identical request cannot be sent twice. The remote keeps the nonces it saw for ten minutes in its storage folder (`wp-content/envsync-<suffix>/nonces/`).
 
 ```
   unreachable: remote 401 on /info: missing token
@@ -381,6 +381,13 @@ Re-register the token from that remote's Tools → EnvSync page:
 
 ```bash
 wp envsync env add prod --token=<new token>
+wp envsync status prod
+```
+
+**"This hub signs with a key the remote no longer accepts".** The hub stopped sending this remote the token (see [The token stays on the hub](#the-token-stays-on-the-hub)) and the remote now refuses its signature. The remote was restored from a backup older than its key, its EnvSync was downgraded below 0.9.18, or its token was rotated. The hub never falls back to sending the token on its own. Register the remote's current token again:
+
+```bash
+wp envsync env add prod --token=<token>
 wp envsync status prod
 ```
 
@@ -636,7 +643,7 @@ Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back �
 Recovers a remote that crashes on every request, through `rescue.php` (no plugins, no theme loaded). With no flag it only reports the active plugins, the lock and the last job.
 
 - `--rollback` — restore the locked push (or the last one), then clear the lock and the maintenance file.
-- `--quarantine-mu` — for a site that a mu-plugin or drop-in crashes, which the other flags cannot reach because WordPress loads those even in rescue mode. Moves every mu-plugin and drop-in the last push (or `--job`) sent or deleted into the storage folder's `quarantine/<job>/`, and puts back the versions the push's snapshot kept. It never boots WordPress: it checks the token against a key the push left in the storage folder, and touches files only. Needs 0.9.7 on the remote when the push ran. The lock and the maintenance file stay: follow with `--rollback` to undo the rest of the push, or `unlock` to keep it.
+- `--quarantine-mu` — for a site that a mu-plugin or drop-in crashes, which the other flags cannot reach because WordPress loads those even in rescue mode. Moves every mu-plugin and drop-in the last push (or `--job`) sent or deleted into the storage folder's `quarantine/<job>/`, and puts back the versions the push's snapshot kept. It never boots WordPress: it checks the token, or from 0.9.18 the hub's signature, against a key the push left in the storage folder, and touches files only. Needs 0.9.7 on the remote when the push ran. The lock and the maintenance file stay: follow with `--rollback` to undo the rest of the push, or `unlock` to keep it.
 - `--job=<id>` — roll back or quarantine this job instead.
 - `--plugins-off` — deactivate every plugin except EnvSync.
 - `--restore-self` — put back the EnvSync folder the last self-update replaced. It obeys the same gates as a self-update (the opt-out, `DISALLOW_FILE_MODS`, no symlinked plugin folder) and only restores the version it names.
@@ -753,6 +760,16 @@ Options that are specific to one environment stay put on both sides: `siteurl`, 
 ## Things worth knowing
 
 **The token is an admin-level credential.** It grants write access to the database and to wp-content, including plugin PHP, and from 0.9.4 the power to install a new EnvSync unless the site turned self-update off. Treat it like a password. Rotate it if it leaks.
+
+<a id="the-token-stays-on-the-hub"></a>**The token stays on the hub (0.9.18).** Before 0.9.18 every request carried the token, and the token was also the key that signed the requests. Anyone who read one request's headers, in a proxy or WAF log for example, could sign new requests of their own. From 0.9.18, when both sides run it:
+
+- The token derives an Ed25519 key pair. The remote keeps only the public key; neither a request nor the remote's database can sign for the hub.
+- The hub opens a session with one signature by its private key. The remote answers with a random session key in the response body, which header logs do not record, and every later request is signed with that key. Sessions last six hours, and the hub opens a new one before then.
+- Session requests always carry a nonce, so no request is accepted twice.
+- After `env add`, the hub tries a session first, so a remote installed with 0.9.18 never sees the token. A remote upgraded from an older version learns its public key from the first request that still carries the token, and the hub stops sending the token from then on.
+- Rotating the token replaces the public key and ends every open session.
+
+Once a remote has the key, the hub never sends it the token again, even when the remote refuses the signature. Re-run `env add` with the token to start over (see the troubleshooting entry above). Without PHP's `sodium` extension, WordPress's own polyfill signs instead, at about 25 ms per signature: once per session, not once per request.
 
 **A pull that stops partway leaves the local site half-updated until you finish it.** Files may be only partly copied, which can leave a plugin half-updated and the site erroring. Fix the cause and run the same pull again; it resumes where it stopped (see [If a pull is interrupted](#if-a-pull-is-interrupted)). A push does not have this problem, because it snapshots first and can be rolled back.
 

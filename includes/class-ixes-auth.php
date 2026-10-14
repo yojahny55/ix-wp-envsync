@@ -3,6 +3,13 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class IXES_Auth {
 	const SKEW = 300;
+	// The remote's public key. The token never reaches it again once a hub signs with the matching private key.
+	const PUB_OPTION = 'ixes_sign_pub';
+	// the ixes_token_hash the public key was derived with: a version from before the key rotates only the hash
+	const PUB_FOR = 'ixes_sign_pub_for';
+	// /info lists this when the remote holds a public key and opens signed sessions: see open_session().
+	const CAP = 'session';
+	const SESSION_TTL = 21600; // six hours: a long push outlives one hour, and the hub opens a new one before this runs out
 
 	public static function generate_token() {
 		return bin2hex( random_bytes( 32 ) );
@@ -11,8 +18,10 @@ class IXES_Auth {
 	public static function install_token() {
 		$token = self::generate_token();
 		update_option( 'ixes_token_hash', wp_hash( $token ), false );
+		// the old key goes with the old token, and with it every session it opened (session() checks the key)
+		self::store_key( $token );
 		// the old token must stop opening rescue.php's bare path too
-		if ( function_exists( 'ixes_storage_dir' ) ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP );
+		if ( function_exists( 'ixes_storage_dir' ) ) IXES_Mu::write_key( ixes_storage_dir(), $token, defined( 'ENVSYNC_ALLOW_HTTP' ) && ENVSYNC_ALLOW_HTTP, self::current_pub() );
 		set_transient( 'ixes_token_show', $token, 600 );
 		return $token;
 	}
@@ -23,21 +32,113 @@ class IXES_Auth {
 	// $excl: the raw X-Envsync-Exclude-Options header, else ''. Signed so nobody in between can strip or widen it.
 	// $nonce: X-Envsync-Nonce, sent only to a remote with the 'nonce' cap. Signed, so it cannot be stripped to dodge seen_nonce().
 	public static function sign( $token, $method, $path, $ts, $body, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
+		return hash_hmac( 'sha256', self::message( $method, $path, $ts, $body, $step, $prefix, $excl, $nonce ), $token );
+	}
+
+	/** What every signature covers, whichever key signs it. */
+	public static function message( $method, $path, $ts, $body, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
 		$msg = strtoupper( $method ) . "\n" . $path . "\n" . (int) $ts . "\n" . hash( 'sha256', (string) $body );
 		if ( (string) $step !== '' ) $msg .= "\n" . $step;
 		if ( (string) $prefix !== '' ) $msg .= "\nprefix:" . $prefix;
 		if ( (string) $excl !== '' ) $msg .= "\nexclude-options:" . $excl;
 		if ( (string) $nonce !== '' ) $msg .= "\nnonce:" . $nonce;
-		return hash_hmac( 'sha256', $msg, $token );
+		return $msg;
 	}
 
 	public static function verify( $token_hash, $presented_token, $method, $path, $ts, $body, $sig, $now = null, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
-		if ( $now === null ) $now = time();
 		if ( ! is_string( $token_hash ) || ! is_string( $presented_token ) || $presented_token === '' ) return false;
 		if ( ! hash_equals( $token_hash, wp_hash( $presented_token ) ) ) return false;
+		return self::verify_hmac( $presented_token, $method, $path, $ts, $body, $sig, $now, $step, $prefix, $excl, $nonce );
+	}
+
+	/** An HMAC under a key both sides already hold: the token (old hubs) or a session key. */
+	public static function verify_hmac( $key, $method, $path, $ts, $body, $sig, $now = null, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
+		if ( $now === null ) $now = time();
+		if ( ! is_string( $key ) || $key === '' || abs( $now - (int) $ts ) > self::SKEW ) return false;
+		return hash_equals( self::sign( $key, $method, $path, $ts, $body, $step, $prefix, $excl, $nonce ), (string) $sig );
+	}
+
+	/**
+	 * Ed25519, so the remote keeps only a public key: neither a captured request nor the remote's own database or
+	 * storage folder can sign for the hub. WordPress ships sodium_compat, so this holds without the PHP extension,
+	 * but there a signature costs ~25 ms: the hub signs once per session with it, and HMACs every request after.
+	 */
+	public static function can_sign() {
+		return function_exists( 'sodium_crypto_sign_seed_keypair' ) && function_exists( 'sodium_crypto_sign_verify_detached' );
+	}
+
+	private static $keypairs = [];
+	private static function keypair( $token ) {
+		$k = hash( 'sha256', (string) $token );
+		if ( ! isset( self::$keypairs[ $k ] ) ) self::$keypairs[ $k ] = sodium_crypto_sign_seed_keypair( hash( 'sha256', "ixes-sign\n" . $token, true ) );
+		return self::$keypairs[ $k ];
+	}
+
+	/** The public half of the key the token derives, as 64 hex. */
+	public static function public_key( $token ) {
+		return bin2hex( sodium_crypto_sign_publickey( self::keypair( $token ) ) );
+	}
+
+	/** An Ed25519 signature (128 hex) by the token's private key over message(). */
+	public static function sign_key( $token, $method, $path, $ts, $body, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
+		return bin2hex( sodium_crypto_sign_detached( self::message( $method, $path, $ts, $body, $step, $prefix, $excl, $nonce ), sodium_crypto_sign_secretkey( self::keypair( $token ) ) ) );
+	}
+
+	public static function verify_key( $pub, $method, $path, $ts, $body, $sig, $now = null, $step = '', $prefix = '', $excl = '', $nonce = '' ) {
+		if ( $now === null ) $now = time();
+		if ( ! self::can_sign() || ! preg_match( '/^[0-9a-f]{64}$/', (string) $pub ) || ! preg_match( '/^[0-9a-f]{128}$/', (string) $sig ) ) return false;
 		if ( abs( $now - (int) $ts ) > self::SKEW ) return false;
-		$expected = self::sign( $presented_token, $method, $path, $ts, $body, $step, $prefix, $excl, $nonce );
-		return hash_equals( $expected, (string) $sig );
+		try {
+			return sodium_crypto_sign_verify_detached( hex2bin( $sig ), self::message( $method, $path, $ts, $body, $step, $prefix, $excl, $nonce ), hex2bin( $pub ) );
+		} catch ( Exception $e ) { return false; } catch ( Error $e ) { return false; }
+	}
+
+	private static function store_key( $token ) {
+		update_option( self::PUB_OPTION, self::can_sign() ? self::public_key( $token ) : '', false );
+		update_option( self::PUB_FOR, (string) get_option( 'ixes_token_hash' ), false );
+	}
+
+	/**
+	 * The public key, or '' when it was not derived from the current token. A version from before the key that
+	 * rotates the token leaves the old key behind: the token it was meant to revoke must not keep signing.
+	 */
+	public static function current_pub() {
+		$pub = (string) get_option( self::PUB_OPTION );
+		$hash = (string) get_option( 'ixes_token_hash' );
+		return $pub !== '' && $hash !== '' && hash_equals( $hash, (string) get_option( self::PUB_FOR ) ) ? $pub : '';
+	}
+
+	/**
+	 * A remote without a current key learns it from the first request that proves the token, i.e. the first one an
+	 * older hub signs, or the first after a rotation the key missed. A current key is never touched: deriving one
+	 * costs ~30 ms without the sodium extension, too much for every token request.
+	 * @return bool whether it stored a key
+	 */
+	public static function learn_key( $token ) {
+		if ( ! self::can_sign() || self::current_pub() !== '' ) return false;
+		self::store_key( $token );
+		return true;
+	}
+
+	/**
+	 * A fresh session key, handed back in the body of an Ed25519-signed /session request. Response bodies stay out
+	 * of the header logs that leaked the token. Bound to the public key, so rotating the token ends every session.
+	 * @return array [ session, key, ttl ]
+	 */
+	public static function open_session( $pub ) {
+		$id  = bin2hex( random_bytes( 16 ) );
+		$key = bin2hex( random_bytes( 32 ) );
+		set_transient( 'ixes_session_' . $id, [ 'key' => $key, 'pub' => (string) $pub ], self::SESSION_TTL );
+		return [ 'session' => $id, 'key' => $key, 'ttl' => self::SESSION_TTL ];
+	}
+
+	/** The session's key, or '' for an unknown or expired session, or one opened under a key since rotated. */
+	public static function session_key( $id ) {
+		if ( ! preg_match( '/^[0-9a-f]{32}$/', (string) $id ) ) return '';
+		$s = get_transient( 'ixes_session_' . $id );
+		$pub = self::current_pub();
+		if ( ! is_array( $s ) || $pub === '' || ! hash_equals( $pub, (string) ( $s['pub'] ?? '' ) ) ) return '';
+		return (string) ( $s['key'] ?? '' );
 	}
 
 	public static function new_nonce() { return bin2hex( random_bytes( 16 ) ); }

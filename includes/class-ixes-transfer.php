@@ -87,7 +87,9 @@ class IXES_Transfer {
 			'tables'          => $tables,
 			'php'             => [ 'time_limit' => (int) ini_get( 'max_execution_time' ), 'memory' => ini_get( 'memory_limit' ), 'version' => PHP_VERSION ],
 			'plugin'          => IXES_VERSION,
-			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', 'exclude_options', 'nonce', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps() ),
+			'caps'            => array_merge( [ 'binary', 'scope', 'batch', 'create_table', 'rescue', 'prefix_map', 'delete_set', 'hash_batch', 'drop_table', 'schema', 'file_batch', 'exclude_options', 'nonce', IXES_Hasher::CAP ], function_exists( 'gzinflate' ) ? [ 'packed' ] : [], IXES_Selfupdate::caps(),
+				// a hub that sees this stops sending the token: it opens a session with its private key from then on
+				IXES_Auth::can_sign() && IXES_Auth::current_pub() !== '' ? [ IXES_Auth::CAP ] : [] ),
 			'self_dir'        => basename( dirname( IXES_FILE ) ), // a self-update zip's top folder must be this
 			'active_plugins'  => (array) get_option( 'active_plugins', [] ),
 			'lock'            => IXES_Applier::lock_info(),

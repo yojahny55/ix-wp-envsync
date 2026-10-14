@@ -10,6 +10,9 @@ class IXES_Client {
 	const READ_ROUTES = [ '/ping', '/info', '/hash/rows', '/hash/tables', '/hash/files', '/schema', '/dump', '/file/get', '/file/batch', '/dirs' ];
 
 	private $env; private $info = null; private $caps = null;
+	/** @var array|null [ id, key, until ]: the signed session every request rides once the remote holds our public key */
+	private $session = null;
+	private $tried_session = false;
 	private $prefix_header = '';
 	/** This site's table prefix; null reads $wpdb. Set by tests. */
 	public $hub_prefix = null;
@@ -39,12 +42,17 @@ class IXES_Client {
 	 */
 	private function request( $method, $route, $body = null, array $opts = [] ) {
 		$waits = empty( $opts['no_retry'] ) ? self::RETRY_WAIT : [];
+		$reopened = false;
 		for ( $n = 1; ; $n++ ) {
+			$ready = $this->ready( $route, $opts );
+			if ( is_wp_error( $ready ) ) return $ready;
 			// signed again each time: a retry must not carry an old timestamp
 			list( $url, $args ) = $this->prepare( $method, $route, $body, $opts );
 			$r = $this->parse( $this->transport( $url, $args ), $route, $opts );
+			// the session ran out, or the remote's object cache dropped it: a 401 applied nothing, so open another once
+			if ( ! $reopened && self::session_lost( $r, $args ) ) { $this->session = null; $reopened = true; continue; }
 			// the remote lost the 'nonce' cap mid-run (a self-update rolled back): drop it and sign once more without
-			if ( is_wp_error( $r ) && isset( $args['headers']['X-Envsync-Nonce'] ) && self::err_code( $r ) === 401 && strpos( $r->get_error_message(), 'bad signature' ) !== false ) {
+			if ( is_wp_error( $r ) && isset( $args['headers']['X-Envsync-Token'], $args['headers']['X-Envsync-Nonce'] ) && self::err_code( $r ) === 401 && strpos( $r->get_error_message(), 'bad signature' ) !== false ) {
 				$this->caps = array_values( array_diff( $this->caps !== null ? $this->caps : (array) ( $this->info['caps'] ?? [] ), [ 'nonce' ] ) );
 				continue;
 			}
@@ -76,6 +84,52 @@ class IXES_Client {
 		return self::err_code( $e ) === 500 && in_array( $route, self::READ_ROUTES, true ) && $limit > 100;
 	}
 
+	/** Whether this environment's remote holds our public key: it then never sees the token again. */
+	public function keyed() { return ! empty( $this->env['keyed'] ); }
+
+	private function mark_keyed() { $this->set_env( 'keyed', true ); }
+
+	private function set_env( $key, $value ) {
+		$this->env[ $key ] = $value;
+		if ( isset( $this->env['name'] ) && function_exists( 'update_option' ) ) IXES_Env::set_field( $this->env['name'], $key, $value );
+	}
+
+	private static function session_lost( $r, array $args ) {
+		return is_wp_error( $r ) && isset( $args['headers']['X-Envsync-Session'] ) && self::err_code( $r ) === 401 && strpos( $r->get_error_message(), 'unknown or expired session' ) !== false;
+	}
+
+	/**
+	 * Before a request: a keyed environment needs an open session. One just added tries to open one first, so a
+	 * remote that already holds our public key never sees the token. A remote too old for sessions answers 404 and
+	 * the token goes as before; once keyed there is no way back to it short of env add (see parse()).
+	 * @return true|WP_Error
+	 */
+	private function ready( $route, array $opts ) {
+		if ( isset( $opts['url'] ) || $route === '/session' ) return true;
+		if ( ! $this->keyed() ) {
+			// only right after env add: a remote too old for sessions would otherwise cost a 404 on every run
+			if ( empty( $this->env['probe'] ) || $this->tried_session || ! IXES_Auth::can_sign() ) return true;
+			$this->tried_session = true;
+			if ( ! is_wp_error( $this->open_session( [ 'no_retry' => true ] ) ) ) $this->mark_keyed();
+			$this->set_env( 'probe', false );
+			return true;
+		}
+		if ( $this->session !== null && $this->session['until'] > time() ) return true;
+		if ( ! IXES_Auth::can_sign() ) return new WP_Error( 'session', 'this environment signs with a key and this PHP cannot (no sodium)' );
+		$r = $this->open_session();
+		return is_wp_error( $r ) ? $r : true;
+	}
+
+	/** @return array|WP_Error the remote's answer to /session, kept in $this->session */
+	private function open_session( array $opts = [] ) {
+		$r = $this->request( 'POST', '/session', null, $opts );
+		if ( is_wp_error( $r ) ) return $r;
+		if ( ! preg_match( '/^[0-9a-f]{32}$/', (string) ( $r['session'] ?? '' ) ) || ! preg_match( '/^[0-9a-f]{64}$/', (string) ( $r['key'] ?? '' ) ) ) return new WP_Error( 'session', 'the remote opened no session' );
+		// a minute short of the remote's own expiry, measured on this clock
+		$this->session = [ 'id' => $r['session'], 'key' => $r['key'], 'until' => time() + max( 60, (int) ( $r['ttl'] ?? 0 ) - 60 ) ];
+		return $r;
+	}
+
 	/** @return array [ url, wp_remote_request args ], signed on its own ts and body, so concurrent requests all verify */
 	private function prepare( $method, $route, $body, array $opts ) {
 		$path = '/' . IXES_Rest::NS . $route;
@@ -89,15 +143,29 @@ class IXES_Client {
 		$excl   = $bare || empty( $this->env['exclude_options'] ) ? '' : implode( ',', (array) $this->env['exclude_options'] );
 		// only once /info said the remote keeps nonces: an older one would fail the extra signed line
 		$caps   = $this->caps !== null ? $this->caps : ( is_array( $this->info ) ? (array) ( $this->info['caps'] ?? [] ) : [] );
-		$nonce  = ! $bare && in_array( 'nonce', $caps, true ) ? IXES_Auth::new_nonce() : '';
+		// ed25519: /session, and rescue.php once keyed; session: everything else once keyed; token: a remote not yet keyed
+		$mode   = isset( $opts['url'] ) ? ( $this->keyed() ? 'ed25519' : 'token' ) : ( $route === '/session' ? 'ed25519' : ( $this->session !== null ? 'session' : 'token' ) );
+		// a remote that opens sessions keeps nonces too, and requires one; rescue.php keeps none
+		$nonce  = isset( $opts['url'] ) ? '' : ( $mode !== 'token' || ( ! $bare && in_array( 'nonce', $caps, true ) ) ? IXES_Auth::new_nonce() : '' );
 		if ( isset( $opts['raw_body'] ) ) { $raw = (string) $opts['raw_body']; $ctype = 'application/octet-stream'; }
 		else { $raw = $body === null ? '' : wp_json_encode( $body ); $ctype = 'application/json'; }
-		$headers = [
-			// A remote behind HTTP Basic Auth needs Authorization for the proxy; the token then travels only in X-Envsync-Token
-			'Authorization' => ! empty( $this->env['basic_auth'] ) ? 'Basic ' . base64_encode( $this->env['basic_auth'] ) : 'Bearer ' . $this->env['token'],
-			'X-Envsync-Token' => $this->env['token'],
+		$headers = [];
+		// A remote behind HTTP Basic Auth needs Authorization for the proxy; the token then travels only in X-Envsync-Token
+		if ( ! empty( $this->env['basic_auth'] ) ) $headers['Authorization'] = 'Basic ' . base64_encode( $this->env['basic_auth'] );
+		if ( $mode === 'token' ) {
+			if ( empty( $this->env['basic_auth'] ) ) $headers['Authorization'] = 'Bearer ' . $this->env['token'];
+			$headers['X-Envsync-Token'] = $this->env['token'];
+			$sig = IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl, $nonce );
+		} elseif ( $mode === 'session' ) {
+			$headers['X-Envsync-Session'] = $this->session['id'];
+			$sig = IXES_Auth::sign( $this->session['key'], $method, $path, $ts, $raw, $step, $prefix, $excl, $nonce );
+		} else {
+			$headers['X-Envsync-Auth'] = 'ed25519';
+			$sig = IXES_Auth::sign_key( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl, $nonce );
+		}
+		$headers += [
 			'X-Envsync-Ts'  => $ts,
-			'X-Envsync-Sig' => IXES_Auth::sign( $this->env['token'], $method, $path, $ts, $raw, $step, $prefix, $excl, $nonce ),
+			'X-Envsync-Sig' => $sig,
 			'Content-Type'  => $ctype,
 			'Accept'        => ( $opts['accept'] ?? 'json' ) === 'binary' ? 'application/octet-stream' : 'application/json',
 		];
@@ -125,6 +193,8 @@ class IXES_Client {
 			if ( $code === 401 && ! is_array( $json ) && stripos( (string) wp_remote_retrieve_header( $res, 'www-authenticate' ), 'basic' ) === 0 ) {
 				$msg = empty( $this->env['basic_auth'] ) ? 'the site is behind HTTP Basic Auth; register its credentials with --basic-auth=<user:pass>' : 'HTTP Basic Auth rejected the --basic-auth credentials';
 			}
+			// fail closed: a keyed hub never falls back to sending the token, it says how to start over
+			if ( $code === 401 && $this->keyed() ) $msg .= '. This hub signs with a key the remote no longer accepts (restored from a backup, downgraded, or its token rotated): register its current token again with wp envsync env add ' . ( $this->env['name'] ?? '<name>' ) . ' --token=<token>';
 			return new WP_Error( 'remote_' . $code, "remote {$code} on {$route}: {$msg}", [ 'status' => $code ] );
 		}
 		// Request intent decides what we asked for; the response content-type confirms what we actually got.
@@ -185,10 +255,19 @@ class IXES_Client {
 			return $out;
 		}
 		foreach ( array_chunk( $reqs, max( 1, (int) $parallel ), true ) as $set ) {
+			$ready = $this->ready( reset( $set )[1], reset( $set )[3] ?? [] );
+			if ( is_wp_error( $ready ) ) { foreach ( $set as $k => $r ) $out[ $k ] = $ready; continue; }
 			$wire = [];
 			foreach ( $set as $k => $r ) $wire[ $k ] = $this->prepare( $r[0], $r[1], $r[2], $r[3] ?? [] );
 			$res = $this->transport_multi( $wire );
-			foreach ( $set as $k => $r ) $out[ $k ] = $this->parse( $res[ $k ] ?? new WP_Error( 'http_request_failed', 'no response' ), $r[1], $r[3] ?? [] );
+			foreach ( $set as $k => $r ) {
+				$out[ $k ] = $this->parse( $res[ $k ] ?? new WP_Error( 'http_request_failed', 'no response' ), $r[1], $r[3] ?? [] );
+				// the session ran out mid-set: request() opens another and sends that one again
+				if ( self::session_lost( $out[ $k ], $wire[ $k ][1] ) ) {
+					if ( $this->session !== null && $this->session['id'] === $wire[ $k ][1]['headers']['X-Envsync-Session'] ) $this->session = null;
+					$out[ $k ] = $this->request( $r[0], $r[1], $r[2], $r[3] ?? [] );
+				}
+			}
 		}
 		return $out;
 	}
@@ -215,6 +294,8 @@ class IXES_Client {
 			$t = $timeout !== null ? (int) $timeout : max( 30, $this->raw_timeout() );
 			// a caller's own short timeout (the admin Status panel) wants a quick answer, not three retries
 			$this->info = $this->map_prefix( $this->request( 'GET', '/info', null, [ 'timeout' => $t, 'no_retry' => $timeout !== null ] ) );
+			// the remote just learned our public key from this request's token: it is the last one to carry it
+			if ( is_array( $this->info ) && ! $this->keyed() && IXES_Auth::can_sign() && in_array( IXES_Auth::CAP, (array) ( $this->info['caps'] ?? [] ), true ) ) $this->mark_keyed();
 			// remember where rescue.php lives while the remote still answers: it is needed exactly when it no longer does
 			$u = is_array( $this->info ) ? (string) ( $this->info['rescue_url'] ?? '' ) : '';
 			if ( $u !== '' && $u !== ( $this->env['rescue_url'] ?? '' ) && isset( $this->env['name'] ) && function_exists( 'update_option' ) ) {

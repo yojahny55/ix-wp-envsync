@@ -56,6 +56,15 @@ if ( ! defined( 'ARRAY_A' ) ) define( 'ARRAY_A', 'ARRAY_A' );
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) define( 'HOUR_IN_SECONDS', 3600 );
 if ( ! defined( 'ARRAY_N' ) ) define( 'ARRAY_N', 'ARRAY_N' );
 if ( ! function_exists( 'home_url' ) ) { function home_url() { return 'http://hub.test'; } }
+// Ed25519 needs sodium. CI's PHP has the extension; a PHP without it can point this at WordPress's own polyfill
+// (SODIUM_COMPAT=/path/to/wp-includes/sodium_compat/autoload.php). Without either, the tests that sign are skipped.
+if ( ! function_exists( 'sodium_crypto_sign_seed_keypair' ) && getenv( 'SODIUM_COMPAT' ) ) require_once getenv( 'SODIUM_COMPAT' );
+/** A remote's token as IXES_Auth::install_token() leaves it: the hash, and the public key bound to it. */
+function ixes_test_set_token( $token, $with_key = true ) {
+	$GLOBALS['ixes_test_options']['ixes_token_hash'] = wp_hash( $token );
+	$GLOBALS['ixes_test_options']['ixes_sign_pub'] = $with_key ? IXES_Auth::public_key( $token ) : '';
+	$GLOBALS['ixes_test_options']['ixes_sign_pub_for'] = $with_key ? wp_hash( $token ) : '';
+}
 
 spl_autoload_register( function ( $class ) {
 	if ( strpos( $class, 'IXES_' ) !== 0 ) return;
