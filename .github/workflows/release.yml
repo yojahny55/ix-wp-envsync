@@ -13,7 +13,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Tag must match the plugin header and the version constant
         run: |
@@ -27,7 +27,7 @@ jobs:
         with:
           php-version: '8.3'
           coverage: none
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@v4
       - name: Gates must be green on the tagged commit
         run: |
           git ls-files '*.php' | grep -v '^tests/' | xargs -n1 -P4 php -l
