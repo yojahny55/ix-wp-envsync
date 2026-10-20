@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 1200 640" width="1200" height="640"><rect width="1200" height="640" rx="14" fill="#0f172a"/><circle cx="28" cy="26" r="7" fill="#ef4444"/><circle cx="52" cy="26" r="7" fill="#f59e0b"/><circle cx="76" cy="26" r="7" fill="#22c55e"/>
+<g font-family="DejaVu Sans Mono,monospace" font-size="17" fill="#cbd5e1"><text x="32" y="82" fill="#38bdf8">$ wp envsync diff prod</text>
+<text x="32" y="122" fill="#f8fafc">prod  ←  local</text><text x="32" y="148">  baseline: 2026-09-08 02:06</text><text x="32" y="174">  512 files · 38.4 MB · 131 rows</text>
+<text x="32" y="222" fill="#f8fafc">DATABASE</text>
+<text x="32" y="252">table         push  insert  delete  remote-wins  kept-remote   same</text>
+<text x="32" y="278">wp_posts        12       3       1            2           39    611</text>
+<text x="32" y="304">wp_postmeta     87      19       4            0          310   8904</text>
+<text x="32" y="352" fill="#f8fafc">PLUGINS</text>
+<text x="32" y="382">plugin          files  size    version         active</text>
+<text x="32" y="408">polylang          535  9.8 MB  3.6.1 → 3.7.0   stays on</text>
+<text x="32" y="434">wp-mail-smtp      875  7.2 MB  — → 4.4.0       turns on</text>
+<text x="32" y="482" fill="#f8fafc">THEMES</text>
+<text x="32" y="512">mk-adventure       14  0.3 MB  1.4             active</text>
+<text x="32" y="568" fill="#22c55e">Nothing moved. Run wp envsync push prod to apply this plan.</text></g></svg>

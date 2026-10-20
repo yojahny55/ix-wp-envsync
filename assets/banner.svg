@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1544 500" width="1544" height="500"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#172554"/></linearGradient></defs><rect width="1544" height="500" fill="url(#g)"/>
+<g transform="translate(120 122)"><g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="20"><path d="M56 92h134" stroke="#38bdf8"/><path d="M174 62l32 30-32 30" stroke="#38bdf8"/><path d="M200 164H66" stroke="#f8fafc"/><path d="M82 134l-32 30 32 30" stroke="#f8fafc"/></g></g>
+<text x="440" y="232" font-family="Helvetica,Arial,sans-serif" font-size="96" font-weight="700" fill="#f8fafc">IX WP EnvSync</text>
+<text x="444" y="298" font-family="Helvetica,Arial,sans-serif" font-size="36" fill="#94a3b8">Pull a snapshot. Work locally. Push only your changes.</text>
+<text x="444" y="350" font-family="Helvetica,Arial,sans-serif" font-size="36" fill="#38bdf8">Prod always wins. Preview before every sync.</text></svg>

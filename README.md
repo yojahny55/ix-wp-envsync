@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo-wordmark.svg" alt="IX WP EnvSync" width="420"></p>
+
 # IX WP EnvSync
 
 Sync a WordPress site between local, staging and production without exporting archives by hand.
@@ -12,13 +14,7 @@ Built for freelance work across mixed hosting (Hostinger, IONOS, Plesk, Coolify)
 
 One plugin runs on every site you sync. The site you run commands from is the **hub**. Every other site — usually production or staging — is a **remote**. The hub needs WP-CLI; a remote needs only the plugin and a token.
 
-```
-   your laptop (hub)                    client hosting (remote)
-   ┌──────────────────┐   pull  ◄──     ┌──────────────────┐
-   │ WordPress + WP-CLI│                 │ WordPress + token │
-   │ runs the commands │   push  ──►     │ answers over REST │
-   └──────────────────┘                 └──────────────────┘
-```
+![Hub pulls from and pushes to a remote](assets/diagrams/hub-remote.svg)
 
 ---
 
@@ -34,6 +30,8 @@ wp envsync status
 ```
 
 `status` reports whether the connection works, and tells you what to run next.
+
+![Tools → EnvSync admin page](assets/screenshots/screenshot-1.svg)
 
 ### Rotating a token
 
@@ -56,6 +54,8 @@ Re-running `env add` updates only the options you pass. Your excludes, label and
 prod  ←  local
   baseline: 2026-09-08 02:06
 ```
+
+![Baseline, local and prod merge into one plan](assets/diagrams/three-way.svg)
 
 **Pull before push.** Without a baseline, diff can only compare two sides, not three. It says so instead of guessing.
 
@@ -98,6 +98,10 @@ wp envsync diff prod
 ```
 
 prints a plan like this:
+
+![wp envsync diff prod output](assets/screenshots/screenshot-2.svg)
+
+As plain text:
 
 ```
 prod  ←  local
@@ -842,3 +846,9 @@ The design document is in `docs/superpowers/specs/`.
 ## License
 
 GPL-2.0-or-later.
+
+---
+
+## Contributing and license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Licensed under [GPL-2.0-or-later](LICENSE).
