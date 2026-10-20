@@ -3,6 +3,11 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
+## 0.9.19 — 2026-10-20
+- Documentation and branding assets: logo, icons, banners, diagrams, screenshots, LICENSE, CONTRIBUTING.
+- CI actions moved to Node 24 releases.
+- No change to plugin behaviour.
+
 ## 0.9.18 — 2026-10-14
 - Signed sessions: once a remote holds the hub's public key, the token stops travelling.
 - The public key is bound to the token it was derived from.
