@@ -5,6 +5,7 @@ All notable changes to IX WP EnvSync. Versions follow the plugin header. Release
 
 ## 0.9.19 — 2026-10-20
 - Documentation and branding assets: logo, icons, banners, diagrams, screenshots, LICENSE, CONTRIBUTING.
+- Redrawn diagrams: aligned arrows, a joined three-way merge, and what each side holds.
 - CI actions moved to Node 24 releases.
 - No change to plugin behaviour.
 
