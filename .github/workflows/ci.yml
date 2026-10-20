@@ -17,7 +17,7 @@ jobs:
       matrix:
         php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -25,20 +25,20 @@ jobs:
           coverage: none
       - name: Syntax check every shipped PHP file
         run: git ls-files '*.php' | grep -v '^tests/' | xargs -n1 -P4 php -l
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@v4
       - run: vendor/bin/phpunit
 
   phpcs:
     name: Security / compatibility sniffs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
           coverage: none
           tools: cs2pr
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@v4
       # cs2pr turns checkstyle output into inline PR annotations
       - run: vendor/bin/phpcs -q --no-colors --report=checkstyle | cs2pr
 
@@ -49,7 +49,7 @@ jobs:
       contents: read
       pull-requests: write # the action posts its findings as a PR comment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the exact archive a release would ship
         run: |
           git archive --format=tar --prefix=ix-wp-envsync/ HEAD | tar -x -C "$RUNNER_TEMP"
@@ -76,7 +76,7 @@ jobs:
     name: Version header matches constant
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           H=$(sed -n 's/^ \* Version: *//p' ix-wp-envsync.php)
           C=$(sed -n "s/^define( 'IXES_VERSION', '\([^']*\)' );/\1/p" ix-wp-envsync.php)
