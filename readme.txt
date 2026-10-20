@@ -4,7 +4,7 @@ Tags: sync, deploy, staging, migration, wp-cli
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 0.9.18
+Stable tag: 0.9.19
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -59,6 +59,9 @@ Yes. Run `wp envsync rollback <env>` from the hub.
 See CHANGELOG.md in the repository.
 
 == Upgrade Notice ==
+
+= 0.9.19 =
+Documentation, branding and CI only; no change to plugin behaviour.
 
 = 0.9.18 =
 Signed sessions: the token stops travelling once the remote holds the hub's public key.
