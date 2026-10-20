@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720"><rect width="1200" height="720" fill="#f0f0f1"/>
+<rect width="1200" height="32" fill="#1d2327"/><text x="16" y="21" font-family="Helvetica,Arial,sans-serif" font-size="13" fill="#c3c4c7">Example Site</text>
+<rect y="32" width="160" height="688" fill="#1d2327"/><g font-family="Helvetica,Arial,sans-serif" font-size="14" fill="#c3c4c7"><text x="20" y="72">Dashboard</text><text x="20" y="108">Posts</text><text x="20" y="144">Plugins</text><text x="20" y="180" fill="#fff" font-weight="700">Tools</text></g><rect x="160" y="196" width="120" height="0" fill="none"/>
+<g font-family="Helvetica,Arial,sans-serif"><text x="200" y="90" font-size="26" fill="#1d2327">EnvSync</text>
+<text x="200" y="136" font-size="18" font-weight="600" fill="#1d2327">This site's token</text>
+<rect x="200" y="148" width="940" height="44" rx="3" fill="#fff" stroke="#c3c4c7"/><text x="216" y="176" font-family="DejaVu Sans Mono,monospace" font-size="14" fill="#2c3338">ixes_3f9a1c70b2d84e56a91c0d7e5b4f8a23</text>
+<text x="200" y="236" font-size="18" font-weight="600" fill="#1d2327">Environments</text>
+<rect x="200" y="248" width="940" height="38" fill="#fff" stroke="#c3c4c7"/><g font-size="13" font-weight="700" fill="#1d2327"><text x="216" y="272">Name</text><text x="360" y="272">Label</text><text x="500" y="272">URL</text><text x="900" y="272">Baseline</text></g>
+<rect x="200" y="286" width="940" height="38" fill="#f6f7f7" stroke="#c3c4c7"/><g font-size="13" fill="#2c3338"><text x="216" y="310">prod</text><text x="360" y="310">production</text><text x="500" y="310">https://example.com</text><text x="900" y="310">2026-09-08 02:06</text></g>
+<rect x="200" y="324" width="940" height="38" fill="#fff" stroke="#c3c4c7"/><g font-size="13" fill="#2c3338"><text x="216" y="348">staging</text><text x="360" y="348">staging</text><text x="500" y="348">https://staging.example.com</text><text x="900" y="348">2026-09-02 11:40</text></g>
+<text x="200" y="412" font-size="18" font-weight="600" fill="#1d2327">Last pushes</text>
+<g font-size="14" fill="#2c3338"><text x="216" y="446">• prod · 2026-09-08 02:31 · 131 rows, 512 files</text><text x="216" y="474">• staging · 2026-09-02 12:05 · 24 rows, 3 files</text></g>
+<text x="200" y="540" font-size="18" font-weight="600" fill="#1d2327">Sync excludes</text>
+<text x="200" y="566" font-size="13" fill="#50575e">Ticked folders are skipped by pull, diff and push.</text>
+<g font-size="14" fill="#2c3338"><rect x="216" y="584" width="16" height="16" fill="#2271b1"/><text x="242" y="597">cache</text><rect x="216" y="614" width="16" height="16" fill="#2271b1"/><text x="242" y="627">backups</text><rect x="216" y="644" width="16" height="16" fill="#fff" stroke="#8c8f94"/><text x="242" y="657">uploads</text></g></g></svg>
