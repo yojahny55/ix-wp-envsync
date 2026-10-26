@@ -122,6 +122,12 @@ class IXES_Client {
 		return is_wp_error( $r ) ? $r : true;
 	}
 
+	/** Whether the remote answers 404 on /session: it runs a version from before sessions. Any other failure says nothing. */
+	public function lacks_sessions() {
+		$r = $this->open_session( [ 'no_retry' => true ] );
+		return is_wp_error( $r ) && self::err_code( $r ) === 404;
+	}
+
 	/** @return array|WP_Error the remote's answer to /session, kept in $this->session */
 	private function open_session( array $opts = [] ) {
 		$r = $this->request( 'POST', '/session', null, $opts );
