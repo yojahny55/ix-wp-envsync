@@ -3,6 +3,10 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
+## 0.9.20 — 2026-10-26
+- A self-update rolled back by the health check no longer leaves a keyed remote answering 404 on `/session` with no guidance: the 404 now says to run `env add --token`.
+- After the rollback the hub forgets the key only when the restored remote answers 404 on `/session`; any other failure keeps it, so a slow or failing remote is not silently downgraded to token mode.
+
 ## 0.9.19 — 2026-10-20
 - Documentation and branding assets: logo, icons, banners, diagrams, screenshots, LICENSE, CONTRIBUTING.
 - Redrawn diagrams: aligned arrows, a joined three-way merge, and what each side holds.
