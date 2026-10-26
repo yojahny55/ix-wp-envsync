@@ -124,6 +124,18 @@ class SessionTest extends TestCase {
 		foreach ( $c->calls as $h ) $this->assertFalse( self::carries_token( $h ) );
 	}
 
+	public function test_lacks_sessions_is_true_only_for_a_404_on_session() {
+		$old = $this->hub( [ 'keyed' => true ] );
+		$old->old_remote = true;
+		$this->assertTrue( $old->lacks_sessions() );
+		ixes_test_set_token( $this->tok );
+		$this->assertFalse( $this->hub( [ 'keyed' => true ] )->lacks_sessions(), 'a remote that opens sessions' );
+		$down = new class( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => $this->tok, 'keyed' => true ] ) extends SessionHub {
+			protected function transport( $url, array $args ) { return [ 'response' => [ 'code' => 503 ], 'body' => '{}', 'headers' => [] ]; }
+		};
+		$this->assertFalse( $down->lacks_sessions(), 'a 5xx proves nothing about sessions' );
+	}
+
 	public function test_an_expired_session_is_opened_again() {
 		ixes_test_set_token( $this->tok );
 		$c = $this->hub( [ 'keyed' => true ] );

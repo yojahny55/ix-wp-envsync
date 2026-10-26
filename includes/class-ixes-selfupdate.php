@@ -444,6 +444,11 @@ class IXES_Selfupdate {
 		if ( is_wp_error( $x ) ) {
 			return new WP_Error( 'health_failed', "{$head}\nRestoring {$plan['from']} through the rescue endpoint failed too (" . $x->get_error_message() . "). Next: wp envsync rescue {$name} --restore-self --from={$plan['from']}; if rescue does not answer, copy wp-content/envsync-*/self-update/backup/{$plan['top']}/ over wp-content/plugins/{$plan['top']}/ with the host's file manager." );
 		}
+		// the restored version may predate sessions: forget the key only when /session says so (404), so a failed or slow answer cannot downgrade a keyed remote to the token
+		if ( ! empty( $env['keyed'] ) && $fresh()->lacks_sessions() ) {
+			IXES_Env::set_field( $name, 'keyed', false );
+			IXES_Env::set_field( $name, 'probe', true );
+		}
 		$again = self::health( $fresh(), $plan['url'], $before );
 		$tail = $again['why'] === null ? "the site answers again on {$again['version']}." : "the site still looks unhealthy: {$again['why']}. Next: wp envsync rescue {$name}";
 		return new WP_Error( 'health_failed', "{$head}\nRestored {$plan['from']} through the rescue endpoint; {$tail}" );

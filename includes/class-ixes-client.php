@@ -117,7 +117,15 @@ class IXES_Client {
 		if ( $this->session !== null && $this->session['until'] > time() ) return true;
 		if ( ! IXES_Auth::can_sign() ) return new WP_Error( 'session', 'this environment signs with a key and this PHP cannot (no sodium)' );
 		$r = $this->open_session();
+		// a remote restored to a version without sessions answers 404 on /session; say how to recover instead of leaving a bare 404
+		if ( is_wp_error( $r ) && self::err_code( $r ) === 404 ) return new WP_Error( 'session', $r->get_error_message() . '. The remote no longer opens sessions (downgraded or restored from a backup): register its current token again with wp envsync env add ' . ( $this->env['name'] ?? '<name>' ) . ' --token=<token>', $r->get_error_data() );
 		return is_wp_error( $r ) ? $r : true;
+	}
+
+	/** Whether the remote answers 404 on /session: it runs a version from before sessions. Any other failure says nothing. */
+	public function lacks_sessions() {
+		$r = $this->open_session( [ 'no_retry' => true ] );
+		return is_wp_error( $r ) && self::err_code( $r ) === 404;
 	}
 
 	/** @return array|WP_Error the remote's answer to /session, kept in $this->session */
