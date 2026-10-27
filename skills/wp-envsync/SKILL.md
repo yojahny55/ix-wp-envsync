@@ -26,12 +26,12 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 ```json
 {
   "role": "both",
-  "hub_version": "0.9.16",
+  "hub_version": "0.9.20",
   "envs": {
     "prod": {
       "url": "https://client.com", "label": "prod",
       "reachable": true, "error": null,
-      "remote_version": "0.9.16", "version_ok": true, "auth_via": "authorization",
+      "remote_version": "0.9.20", "version_ok": true, "auth_via": "session",
       "baseline": { "created_at": 1789192836, "partial_at": null, "partial_scope": null, "scope": null, "age_days": 2 },
       "interrupted_pull": null,
       "remote_lock": null,
@@ -48,6 +48,7 @@ Always pass `--path=<site root>`. The hub is the site you run commands from.
 - `next.why` is the reason. Quote it to the user.
 - `reachable: false`: `error` says why (DNS, 401 bad token, TLS).
 - `version_ok: false`: the remote runs an older plugin.
+- `auth_via`: `session` means the hub signs with a key and the token no longer travels (remote and hub on 0.9.18 or newer). `authorization` or `x-envsync-token` means the token is still sent: the remote is older, or `env add` has not run since it was upgraded.
 - `self_update`: `"on"` when the remote can install a newer EnvSync itself (`self-update <env>`), `"off"` when its owner turned that off, `null` when the remote is older than 0.9.4 and cannot.
 - `baseline.created_at: null`: no pull has been done for this environment.
 - `remote_lock`: `{job, started, age_minutes}` means a push is running or died there.
@@ -283,6 +284,8 @@ A push that breaks the remote mid-way already rolls back through rescue by itsel
 - The one exception is `wp_options#…` rows skipped on a first deploy by a hub older than 0.5.3. That was a bug (option-id collision with the remote's transients), not a real change. Before anyone pulls, tell the user to upgrade both sides and push again. A pull after such a push copies the missing options back over the hub's own copy.
 
 **401 / "missing token"**: the token is wrong or was rotated. Ask the user for the current one from the remote's Tools → EnvSync page, then run `env add <name> --token=<new>`. You do not need the URL again.
+
+**401 with "This hub signs with a key the remote no longer accepts"**, or a bare `404` on `/session`: the environment is keyed (the remote holds the hub's public key, so the hub never sends the token) and the remote lost it. Causes: its token was rotated, it was restored from a backup, or it was downgraded below 0.9.18. Ask the user for the current token from the remote's Tools → EnvSync page and run `env add <name> --token=<token>`. The hub does not fall back to sending the token by itself. A self-update rolled back by its health check is handled for you: the hub forgets the key only when the restored remote answers 404 on `/session`.
 
 **401 with "behind HTTP Basic Auth"**: the web server itself asks for a password before WordPress loads. The token is fine. Ask the user for that user and password, then run `env add <name> --basic-auth=<user:pass>`. Both sides need 0.5.6 or newer (0.5.7 on the hub, where the option first parses).
 
