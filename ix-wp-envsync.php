@@ -47,7 +47,17 @@ register_activation_hook( __FILE__, function () {
 	}
 } );
 
+register_deactivation_hook( __FILE__, function () {
+	wp_clear_scheduled_hook( 'ixes_prune_jobs' );
+} );
+
 add_action( 'rest_api_init', [ 'IXES_Rest', 'register' ] );
+// Daily, besides every push: a remote no hub pushes to again still drops the snapshots it holds.
+// Scheduled on init, not on activation, so a self-update that never reactivates picks it up too.
+add_action( 'ixes_prune_jobs', [ 'IXES_Applier', 'prune_jobs' ] );
+add_action( 'init', function () {
+	if ( ! wp_next_scheduled( 'ixes_prune_jobs' ) ) wp_schedule_event( time(), 'daily', 'ixes_prune_jobs' );
+} );
 // A hub request through an HTTP Basic Auth proxy arrives with PHP_AUTH_USER set to the proxy's user.
 // WordPress would try it as an application password and fail the request with 401 before EnvSync
 // checks its token, so application passwords are skipped for requests that carry an EnvSync token.

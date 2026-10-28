@@ -6,6 +6,8 @@ class IXES_Applier {
 	const LOCK = 'ixes_lock';
 	const ORDER = [ 'users', 'usermeta', 'terms', 'term_taxonomy', 'posts', 'postmeta', 'term_relationships', 'termmeta', 'comments', 'commentmeta' ];
 	const UNLOCK_MIN_AGE = 120; // seconds: a lock younger than this is a live push
+	const KEEP_JOBS = 3;        // received pushes kept for rollback; IXES_KEEP_JOBS in wp-config overrides
+	const JOB_TTL_DAYS = 14;    // a kept job older than this goes too; IXES_JOB_TTL_DAYS in wp-config overrides
 
 	// Lock transient value is "job|started". 0.3 wrote the bare job id; parse_lock() accepts both.
 	public static function lock_value( $job, $started ) { return $job . '|' . (int) $started; }
@@ -32,6 +34,87 @@ class IXES_Applier {
 
 	private static function jobs_dir() { $d = ixes_storage_dir() . '/jobs'; wp_mkdir_p( $d ); return $d; }
 	private static function job_dir( $job ) { $job = preg_replace( '/[^a-z0-9-]/', '', $job ); return $job ? self::jobs_dir() . '/' . $job : null; }
+	/**
+	 * Deletes received-push job folders: all but the newest KEEP_JOBS (or $keep), and any older than JOB_TTL_DAYS.
+	 * The locked job always stays. Runs at every job start, finish, abort and unlock and once a day, so the
+	 * snapshot of a push that died half-way does not sit in wp-content for good (one can weigh hundreds of MB).
+	 * @return string[] the job ids removed, or that would be with $dry
+	 */
+	public static function prune_jobs( $dry = false, $now = null, $keep = null ) {
+		$root = ixes_storage_dir() . '/jobs';
+		if ( ! is_dir( $root ) ) return [];
+		$keep = max( 1, (int) ( $keep ?? ( defined( 'IXES_KEEP_JOBS' ) ? IXES_KEEP_JOBS : self::KEEP_JOBS ) ) );
+		$ttl  = max( 1, (int) ( defined( 'IXES_JOB_TTL_DAYS' ) ? IXES_JOB_TTL_DAYS : self::JOB_TTL_DAYS ) ) * 86400;
+		$now  = $now === null ? time() : $now;
+		$locked = self::current_job();
+		$jobs = glob( $root . '/*', GLOB_ONLYDIR ) ?: [];
+		rsort( $jobs ); // job ids start with Ymd-His: newest first
+		$removed = []; $kept = 0;
+		foreach ( $jobs as $dir ) {
+			$job = basename( $dir );
+			if ( $job === $locked ) continue;
+			// a rolled-back job neither counts as the one kept nor stays: replaying it again would undo later edits
+			if ( ! self::rolled_back( $dir ) && $kept < $keep && $now - self::job_time( $dir ) < $ttl ) { $kept++; continue; }
+			if ( ! $dry ) {
+				// the daily cron and a push can prune at once: a folder the other one removed is not an error here,
+				// and a throw must never reach job_start or job_finish, where it fails a push that went fine
+				try { self::rrmdir( $dir ); } catch ( \Throwable $e ) { continue; }
+			}
+			$removed[] = $job;
+		}
+		return $removed;
+	}
+	/** When the job started: the Ymd-His its id begins with (job_start writes it with date(), in PHP's zone), else the folder's mtime. */
+	private static function job_time( $dir ) {
+		$t = preg_match( '/^(\d{8}-\d{6})-/', basename( $dir ), $m ) ? DateTime::createFromFormat( 'Ymd-His', $m[1] ) : false;
+		return $t ? $t->getTimestamp() : (int) filemtime( $dir );
+	}
+	private static function rolled_back( $dir ) {
+		$meta = json_decode( (string) @file_get_contents( $dir . '/meta.json' ), true );
+		return is_array( $meta ) && ! empty( $meta['rolled_back'] );
+	}
+	/**
+	 * The job folders on disk, newest first, for the admin page.
+	 * state: running (the locked push), finished, rolled_back, unlocked, or unknown: an EnvSync older than 0.9.21
+	 * recorded none, and a push that died half-way never got to.
+	 * @return array<int,array{job:string,started:int,bytes:int,state:string}>
+	 */
+	public static function jobs_list() {
+		$jobs = glob( ixes_storage_dir() . '/jobs/*', GLOB_ONLYDIR ) ?: [];
+		rsort( $jobs );
+		$locked = self::current_job();
+		$out = [];
+		foreach ( $jobs as $dir ) {
+			$job  = basename( $dir );
+			$meta = json_decode( (string) @file_get_contents( $dir . '/meta.json' ), true );
+			$meta = is_array( $meta ) ? $meta : [];
+			$state = $job === $locked ? 'running' : ( ! empty( $meta['rolled_back'] ) ? 'rolled_back' : ( ! empty( $meta['finished'] ) ? 'finished' : ( ! empty( $meta['unlocked'] ) ? 'unlocked' : 'unknown' ) ) );
+			$out[] = [ 'job' => $job, 'started' => self::job_time( $dir ), 'bytes' => self::dir_bytes( $dir ), 'state' => $state ];
+		}
+		return $out;
+	}
+	/** @return array{count:int,bytes:int} the job folders on disk and what they weigh */
+	public static function jobs_usage() {
+		$jobs = self::jobs_list();
+		return [ 'count' => count( $jobs ), 'bytes' => array_sum( array_column( $jobs, 'bytes' ) ) ];
+	}
+	/** @return true|WP_Error */
+	public static function delete_job( $job ) {
+		$dir = self::job_dir( (string) $job );
+		if ( ! $dir || ! is_dir( $dir ) ) return new WP_Error( 'nojob', 'no such job' );
+		if ( basename( $dir ) === self::current_job() ) return new WP_Error( 'locked', 'that push is still running' );
+		try { self::rrmdir( $dir ); } catch ( \Throwable $e ) { return new WP_Error( 'delete_failed', $e->getMessage() ); }
+		// unlink() and rmdir() only warn when the host's permissions refuse them
+		clearstatcache();
+		return is_dir( $dir ) ? new WP_Error( 'delete_failed', 'could not remove every file of that job; check the storage folder permissions' ) : true;
+	}
+	private static function dir_bytes( $dir ) {
+		$bytes = 0;
+		try {
+			foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ) ) as $f ) $bytes += $f->getSize();
+		} catch ( \Throwable $e ) {} // pruned while we walked it
+		return $bytes;
+	}
 	private static function maintenance( $on ) {
 		$f = ABSPATH . '.maintenance';
 		if ( $on ) file_put_contents( $f, self::maintenance_body( time() ) );
@@ -105,6 +188,7 @@ class IXES_Applier {
 		$p['plan_meta'] = self::plan_meta_shape( $p['plan_meta'] ?? null );
 		$job = date( 'Ymd-His' ) . '-' . substr( md5( uniqid() ), 0, 6 );
 		if ( ! self::claim_lock( $job ) ) return new WP_Error( 'locked', 'another job running', [ 'status' => 423 ] );
+		self::prune_jobs();
 		$dir = self::job_dir( $job );
 		wp_mkdir_p( $dir . '/files' );
 		$meta = [ 'job' => $job, 'started' => time(), 'plan' => $p['plan_meta'], 'inserted' => [], 'created_files' => [] ];
@@ -521,8 +605,8 @@ class IXES_Applier {
 		$elementor = IXES_Elementor::clear_cache();
 		self::maintenance( false );
 		delete_transient( self::LOCK );
-		$jobs = glob( self::jobs_dir() . '/*', GLOB_ONLYDIR ); sort( $jobs );
-		foreach ( array_slice( $jobs, 0, max( 0, count( $jobs ) - 3 ) ) as $old ) self::rrmdir( $old );
+		if ( is_array( $meta ) ) { $meta['finished'] = time(); file_put_contents( self::job_dir( $p['job'] ) . '/meta.json', json_encode( $meta ) ); }
+		self::prune_jobs();
 		return [ 'ok' => true, 'elementor' => $elementor ];
 	}
 
@@ -530,6 +614,7 @@ class IXES_Applier {
 		$r = self::rollback( $p );
 		self::maintenance( false );
 		delete_transient( self::LOCK );
+		self::prune_jobs();
 		return $r;
 	}
 
@@ -540,6 +625,10 @@ class IXES_Applier {
 		if ( $age !== null && $age < self::UNLOCK_MIN_AGE ) return new WP_Error( 'too_recent', "lock is only {$age}s old; a push may still be running", [ 'status' => 409 ] );
 		self::maintenance( false );
 		delete_transient( self::LOCK );
+		$dir = self::job_dir( $l['job'] );
+		$meta = $dir ? json_decode( (string) @file_get_contents( $dir . '/meta.json' ), true ) : null;
+		if ( is_array( $meta ) ) { $meta['unlocked'] = time(); file_put_contents( $dir . '/meta.json', json_encode( $meta ) ); }
+		self::prune_jobs();
 		return [ 'ok' => true, 'job' => $l['job'], 'age_minutes' => $age === null ? null : (int) floor( $age / 60 ) ];
 	}
 
@@ -612,10 +701,13 @@ class IXES_Applier {
 			if ( IXES_Transfer::valid_table( $table ) && ! self::create_table_refusal( $table, "CREATE TABLE `{$table}` (", $wpdb->prefix, false ) ) { $wpdb->query( "DROP TABLE `{$table}`" ); $n++; }
 		}
 		wp_cache_flush();
+		// a clean rollback marks the job so prune_jobs drops it; one with errors stays as it was, to be retried
+		if ( ! $errors ) { $meta['rolled_back'] = time(); file_put_contents( $dir . '/meta.json', json_encode( $meta ) ); }
 		return [ 'restored' => $n, 'job' => $job, 'errors' => $errors, 'elementor' => IXES_Elementor::clear_cache() ];
 	}
 
 	private static function rrmdir( $d ) {
+		if ( ! is_dir( $d ) ) return;
 		foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $d, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::CHILD_FIRST ) as $f ) {
 			$f->isDir() ? rmdir( $f->getPathname() ) : unlink( $f->getPathname() );
 		}

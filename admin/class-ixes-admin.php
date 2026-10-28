@@ -11,10 +11,12 @@ class IXES_Admin {
 		if ( isset( $_POST['ixes_rotate'] ) && check_admin_referer( 'ixes_rotate' ) ) IXES_Auth::install_token();
 		if ( isset( $_POST['ixes_refresh_dirs'] ) && check_admin_referer( 'ixes_excludes' ) ) self::forget_dir_sizes();
 		if ( isset( $_POST['ixes_self_update'] ) && check_admin_referer( 'ixes_self_update' ) ) update_option( IXES_Selfupdate::OPTION, sanitize_key( wp_unslash( $_POST['ixes_self_update'] ) ) === 'off' ? 1 : 0, false );
+		$jobs_notice = self::handle_jobs();
 		list( $saved_excludes, $excludes_error ) = self::save_excludes();
 		$token = get_transient( 'ixes_token_show' );
 		echo '<div class="wrap"><h1>EnvSync</h1>';
 		if ( $excludes_error ) echo '<div class="notice notice-error"><p>' . esc_html( $excludes_error ) . '</p></div>';
+		if ( $jobs_notice ) printf( '<div class="notice notice-%s"><p>%s</p></div>', esc_attr( $jobs_notice[0] ), esc_html( $jobs_notice[1] ) );
 		self::status_section();
 
 		echo '<h2>This site\'s token</h2>';
@@ -54,7 +56,44 @@ class IXES_Admin {
 			sort( $rjobs ); $m = json_decode( file_get_contents( end( $rjobs ) ), true );
 			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ?? '' ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ?? 0 ) ), count( (array) ( $m['plan']['tables'] ?? [] ) ) );
 		}
+		self::jobs_section();
 		echo '</div>';
+	}
+
+	/** @return array{0:string,1:string}|null notice type and text after a delete from the push snapshots table */
+	private static function handle_jobs() {
+		if ( isset( $_POST['ixes_delete_job'] ) && check_admin_referer( 'ixes_jobs' ) ) {
+			$job = sanitize_key( wp_unslash( $_POST['ixes_delete_job'] ) );
+			$r = IXES_Applier::delete_job( $job );
+			return is_wp_error( $r ) ? [ 'error', "Job {$job}: " . $r->get_error_message() ] : [ 'success', "Deleted the snapshot of job {$job}." ];
+		}
+		if ( isset( $_POST['ixes_prune_jobs'] ) && check_admin_referer( 'ixes_jobs' ) ) {
+			$gone = IXES_Applier::prune_jobs( false, null, 1 );
+			return [ 'success', $gone ? 'Deleted ' . count( $gone ) . ' snapshot(s); the last push stays.' : 'Nothing to delete.' ];
+		}
+		return null;
+	}
+
+	/** The rollback copies this site keeps of the pushes it received: size, state, and a delete per job. */
+	private static function jobs_section() {
+		$jobs = IXES_Applier::jobs_list();
+		if ( ! $jobs ) return;
+		$labels = [ 'running' => 'running', 'finished' => 'finished', 'rolled_back' => 'rolled back', 'unlocked' => 'unlocked half-way', 'unknown' => 'not recorded (older EnvSync, or the push died)' ];
+		$keep = defined( 'IXES_KEEP_JOBS' ) ? (int) IXES_KEEP_JOBS : IXES_Applier::KEEP_JOBS;
+		$ttl  = defined( 'IXES_JOB_TTL_DAYS' ) ? (int) IXES_JOB_TTL_DAYS : IXES_Applier::JOB_TTL_DAYS;
+		echo '<h2>Push snapshots</h2>';
+		printf( '<p>Before each push this site copies what the push overwrites or deletes, so <code>wp envsync rollback &lt;env&gt;</code> can restore it. The copies hold database rows (users included) and files. The last %d are kept, none older than %d days; deleting one here means that push can no longer be rolled back.</p>', (int) $keep, (int) $ttl );
+		echo '<form method="post">'; wp_nonce_field( 'ixes_jobs' );
+		echo '<table class="widefat striped"><thead><tr><th>Job</th><th>Started</th><th>State</th><th>Size</th><th></th></tr></thead><tbody>';
+		$total = 0;
+		foreach ( $jobs as $j ) {
+			$total += $j['bytes'];
+			$button = $j['state'] === 'running' ? '' : '<button type="submit" class="button button-small" name="ixes_delete_job" value="' . esc_attr( $j['job'] ) . '">Delete</button>';
+			printf( '<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>', esc_html( $j['job'] ), esc_html( wp_date( 'Y-m-d H:i', $j['started'] ) ), esc_html( $labels[ $j['state'] ] ?? $j['state'] ), esc_html( size_format( $j['bytes'] ) ), $button ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $button is built from escaped parts above
+		}
+		printf( '</tbody><tfoot><tr><th colspan="3">Total</th><th>%s</th><th></th></tr></tfoot></table>', esc_html( size_format( $total ) ) );
+		if ( count( $jobs ) > 1 ) { echo '<p>'; submit_button( 'Delete all but the last', 'secondary', 'ixes_prune_jobs', false ); echo '</p>'; }
+		echo '</form>';
 	}
 
 	/** The self-update switch and its log. Installing code is more than the sync itself does, so a site can refuse it. */

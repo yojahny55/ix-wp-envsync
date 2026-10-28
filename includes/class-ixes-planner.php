@@ -133,8 +133,9 @@ class IXES_Planner {
 		$plan['files'] = [ 'push' => [], 'delete' => [], 'conflict' => [], 'kept' => [] ];
 		$plan['remote_file_hashes'] = [];
 		if ( $scope->files_wanted() ) {
-			$remote_files = [];
-			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'roots' => $scope->roots() ], function ( $res ) use ( &$remote_files ) { $remote_files += $res['files']; }, 'cursor' );
+			$remote_files = []; $remote_sizes = [];
+			// sizes only size the rollback copy below; a remote too old to send them leaves $remote_sizes null
+			$r = $c->paged( '/hash/files', [ 'excludes' => $ex, 'algo' => $algo, 'limit' => 2000, 'sizes' => true, 'roots' => $scope->roots() ], function ( $res ) use ( &$remote_files, &$remote_sizes ) { $remote_files += $res['files']; if ( isset( $res['sizes'] ) && $remote_sizes !== null ) $remote_sizes += $res['sizes']; else $remote_sizes = null; }, 'cursor' );
 			if ( is_wp_error( $r ) ) return $r;
 			$remote_files = self::in_scope( IXES_Pull::drop_excluded( $remote_files, $ex ), $scope );
 			$local_files  = self::in_scope( IXES_Transfer::local_manifest( $ex, $algo, $scope->roots() ), $scope );
@@ -144,10 +145,42 @@ class IXES_Planner {
 			if ( $mirror ) $fd = IXES_Differ::mirror( $fd, $local_files, $remote_files );
 			$plan['files'] = [ 'push' => array_merge( $fd['push'], $fd['insert'] ), 'delete' => $fd['delete'], 'conflict' => $fd['conflict'], 'kept' => $fd['kept'] ];
 			foreach ( array_merge( $plan['files']['push'], $plan['files']['delete'] ) as $rel ) $plan['remote_file_hashes'][ $rel ] = $remote_files[ $rel ] ?? null;
+			$plan['snapshot'] = self::snapshot_estimate( array_merge( $plan['files']['push'], $plan['files']['delete'] ), $remote_files, $remote_sizes );
+			$big = self::snapshot_warning( $plan['snapshot'], $env['name'] );
+			if ( $big ) $plan['warnings'][] = $big;
 			// only after env add --remove-exclude took a host's own path back into the sync
 			$plan['warnings'] = array_merge( $plan['warnings'], IXES_Mu::host_warnings( $plan['files']['push'], $plan['remote_file_hashes'], $env['name'] ) );
 		}
 		return $plan;
+	}
+
+	/**
+	 * What the remote copies aside before this push so it can be rolled back: every file the push overwrites or
+	 * deletes that it already holds. bytes is null when the remote sent no sizes.
+	 * @return array{files:int,bytes:int|null}
+	 */
+	public static function snapshot_estimate( array $rels, array $remote_files, ?array $remote_sizes ) {
+		$files = 0; $bytes = 0;
+		foreach ( $rels as $rel ) {
+			if ( ! isset( $remote_files[ $rel ] ) ) continue;
+			$files++;
+			if ( $remote_sizes !== null ) $bytes += (int) ( $remote_sizes[ $rel ] ?? 0 );
+		}
+		return [ 'files' => $files, 'bytes' => $remote_sizes === null ? null : $bytes ];
+	}
+
+	/**
+	 * A --mirror push that deletes thousands of files makes a rollback copy just as big on the remote.
+	 * Past IXES_SNAPSHOT_WARN_MB (default 200) or IXES_SNAPSHOT_WARN_FILES (default 1000) the plan says so.
+	 * @return string|null
+	 */
+	public static function snapshot_warning( array $snapshot, $env_name ) {
+		$mb    = (int) ( defined( 'IXES_SNAPSHOT_WARN_MB' ) ? IXES_SNAPSHOT_WARN_MB : 200 );
+		$files = (int) ( defined( 'IXES_SNAPSHOT_WARN_FILES' ) ? IXES_SNAPSHOT_WARN_FILES : 1000 );
+		$n = (int) ( $snapshot['files'] ?? 0 ); $b = $snapshot['bytes'] ?? null;
+		if ( $n < $files && ( $b === null || $b < $mb * 1048576 ) ) return null;
+		$size = $b === null ? '' : ' (' . round( $b / 1048576 ) . ' MB)';
+		return "{$env_name} keeps a rollback copy of the {$n} file(s) this push overwrites or deletes{$size} in its storage folder until it is pruned; check the deletes before you confirm";
 	}
 
 	/** Local row hashes of $name; $byte_keys turns true when its key holds bytes JSON cannot carry. */
