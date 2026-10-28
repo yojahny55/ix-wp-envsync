@@ -4,7 +4,7 @@ Tags: sync, deploy, staging, migration, wp-cli
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 0.9.20
+Stable tag: 0.9.21
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -59,6 +59,9 @@ Yes. Run `wp envsync rollback <env>` from the hub.
 See CHANGELOG.md in the repository.
 
 == Upgrade Notice ==
+
+= 0.9.21 =
+Remotes prune old push snapshots and list them under Tools → EnvSync.
 
 = 0.9.20 =
 Fixes recovery of a keyed remote after a self-update rollback.
