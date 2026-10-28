@@ -290,9 +290,9 @@ class IXES_Client {
 	}
 
 	/** A JSON job step; deflated into an octet-stream body when the remote can unpack it (see IXES_Rest::unpack_step). */
-	public function step( array $body ) {
-		if ( ! function_exists( 'gzdeflate' ) || ! in_array( 'packed', $this->caps(), true ) ) return $this->post( '/job/step', $body );
-		return $this->post( '/job/step', null, [ 'raw_body' => gzdeflate( wp_json_encode( $body ), 6 ), 'step' => wp_json_encode( [ 'job' => $body['job'] ?? '', 'kind' => 'packed' ] ) ] );
+	public function step( array $body, array $opts = [] ) {
+		if ( ! function_exists( 'gzdeflate' ) || ! in_array( 'packed', $this->caps(), true ) ) return $this->post( '/job/step', $body, $opts );
+		return $this->post( '/job/step', null, [ 'raw_body' => gzdeflate( wp_json_encode( $body ), 6 ), 'step' => wp_json_encode( [ 'job' => $body['job'] ?? '', 'kind' => 'packed' ] ) ] + $opts );
 	}
 	public function post( $route, $body, $opts = [] ) { return $this->request( 'POST', $route, $body, $opts ); }
 

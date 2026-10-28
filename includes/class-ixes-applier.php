@@ -534,11 +534,87 @@ class IXES_Applier {
 		if ( $kind === 'option' ) {
 			if ( IXES_Env::option_excluded( $p['name'] ) ) return new WP_Error( 'refused', 'option excluded' );
 			self::record_option_before( $p['job'] ?? '', $p['name'] );
+			if ( $p['name'] === 'active_plugins' ) return self::set_active_plugins( (array) $p['value'], (string) $p['job'] );
 			update_option( $p['name'], $p['value'] );
 			return [ 'ok' => true ];
 		}
 
 		return new WP_Error( 'bad_kind', 'unknown step' );
+	}
+
+	/**
+	 * Writes the merged active_plugins, then turns on each plugin this push adds through activate_plugin(), as an
+	 * administrator. Written raw, a plugin skipped its activation hook: WooCommerce then ran its first install on
+	 * the next request, our own /job/finish with no user, and Elementor Pro's capability check in that install threw
+	 * a fatal. The same fatal would have hit every visitor until someone logged in.
+	 * An install can take minutes: the hub gives this step a batch timeout, and once the job is no longer the locked
+	 * one (the hub gave up and aborted) the step puts back the list the job started from and stops: activate_plugin()
+	 * writes the list it read before the abort, so it would undo the rollback's own restore.
+	 * @return array|WP_Error
+	 */
+	private static function set_active_plugins( array $want, $job ) {
+		$want  = array_values( array_filter( $want, 'is_string' ) );
+		$had   = (array) get_option( 'active_plugins', [] );
+		$meta  = json_decode( (string) @file_get_contents( self::job_dir( $job ) . '/meta.json' ), true );
+		$prior = is_array( $meta['options_before']['active_plugins'] ?? null ) ? $meta['options_before']['active_plugins'] : $had;
+		$new   = array_values( array_diff( $want, $had ) );
+		update_option( 'active_plugins', array_values( array_diff( $want, $new ) ) );
+		if ( ! $new ) return [ 'ok' => true ];
+		if ( ! function_exists( 'activate_plugin' ) ) require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		ignore_user_abort( true );
+		$gone   = function () use ( $prior ) {
+			// the cached copy is the one activate_plugin() wrote; drop it so this write is not skipped as unchanged
+			wp_cache_delete( 'alloptions', 'options' ); wp_cache_delete( 'active_plugins', 'options' );
+			update_option( 'active_plugins', $prior );
+			return new WP_Error( 'nojob', 'job not active', [ 'status' => 409 ] );
+		};
+		$user   = get_current_user_id();
+		$admins = get_users( [ 'role' => 'administrator', 'number' => 1, 'orderby' => 'ID', 'fields' => 'ID' ] );
+		if ( $admins ) wp_set_current_user( (int) $admins[0] );
+		$plugin = ''; $missing = [];
+		try {
+			// passes: a plugin whose Requires Plugins dependency arrives in the same push waits until that one is on
+			$todo = $new;
+			while ( $todo ) {
+				$later = []; $why = null;
+				foreach ( $todo as $plugin ) {
+					// no files here (a --only=db push): listed as before, WordPress skips it until they arrive
+					if ( validate_plugin( $plugin ) !== 0 ) { $missing[] = $plugin; continue; }
+					if ( ! self::lock_held( $job ) ) return $gone();
+					$r = activate_plugin( $plugin );
+					if ( is_wp_error( $r ) && $r->get_error_code() === 'plugin_missing_dependencies' ) { $later[] = $plugin; $why = $r; continue; }
+					// unexpected_output comes back after the plugin is already on: a notice echoed by its hook, not a failure
+					if ( is_wp_error( $r ) && $r->get_error_code() !== 'unexpected_output' ) {
+						return new WP_Error( 'activate_failed', "could not activate {$plugin}: " . $r->get_error_message(), [ 'status' => 500 ] );
+					}
+				}
+				if ( $later && count( $later ) === count( $todo ) ) {
+					return new WP_Error( 'activate_failed', 'could not activate ' . implode( ', ', $later ) . ': ' . $why->get_error_message(), [ 'status' => 500 ] );
+				}
+				$todo = $later;
+			}
+		} catch ( \Throwable $e ) {
+			return new WP_Error( 'activate_failed', "activating {$plugin} threw " . get_class( $e ) . ': ' . $e->getMessage() . ' (' . $e->getFile() . ':' . $e->getLine() . ')', [ 'status' => 500 ] );
+		} finally {
+			wp_set_current_user( $user );
+		}
+		// activate_plugin() sorts the list; keep the order the hub planned, or the next diff sees a change that is not one.
+		// A list that differs otherwise was changed by an activation hook, and stays as that hook left it.
+		if ( ! self::lock_held( $job ) ) return $gone();
+		$a = array_values( array_unique( array_merge( (array) get_option( 'active_plugins', [] ), $missing ) ) ); $b = $want;
+		$sorted = $a; sort( $sorted ); sort( $b );
+		update_option( 'active_plugins', $sorted === $b ? $want : $a );
+		return [ 'ok' => true ];
+	}
+
+	/**
+	 * Whether $job still holds the lock, as another request sees it: get_transient() answers from this request's
+	 * option cache, which never sees the /job/abort the hub sent meanwhile. A persistent object cache keeps
+	 * transients out of the table, so ask it directly, past its in-request copy.
+	 */
+	private static function lock_held( $job ) {
+		$l = wp_using_ext_object_cache() ? self::parse_lock( wp_cache_get( self::LOCK, 'transient', true ) ) : self::raw_lock();
+		return $l['job'] === (string) $job;
 	}
 
 	private static function raw_lock() {
@@ -959,7 +1035,9 @@ class IXES_Applier {
 
 		if ( $plan['active_plugins'] !== null ) {
 			$step = [ 'job' => $job, 'kind' => 'option', 'name' => 'active_plugins', 'value' => $plan['active_plugins'] ];
-			$r = $call( function () use ( $c, $step ) { return $c->step( $step ); } );
+			// the remote runs each new plugin's activation here, and a first install (WooCommerce) can take minutes
+			$opts = [ 'timeout' => max( IXES_Client::BATCH_TIMEOUT, $c->effective_timeout() ) ];
+			$r = $call( function () use ( $c, $step, $opts ) { return $c->step( $step, $opts ); } );
 			if ( is_wp_error( $r ) ) return $fail( $r );
 			$progress->item( 'active_plugins' );
 		}
