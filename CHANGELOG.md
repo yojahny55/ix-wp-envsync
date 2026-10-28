@@ -3,6 +3,14 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
+## 0.9.22 — 2026-10-28
+- A push that turns on a plugin the remote had installed but never activated now runs its activation as the first administrator, through `activate_plugin()`, instead of writing `active_plugins` raw. Before, the plugin's first install ran on the next request with no user, and a plugin like Elementor Pro could fail it with `Access denied.` (#85). Plugins are activated in passes, so one listed before the plugin it `Requires Plugins` waits for it. A plugin whose files are not on the remote is listed without activation. An activation error fails the step with the plugin named, and the hub rolls back. If the hub aborts during the step, the remote writes back the list the job started from.
+- The hub sends that step with the batch timeout, since a plugin's first install can take minutes.
+- `wp envsync jobs <env>` lists a remote's push snapshots with state and size, and `--delete=<job>` deletes one. The running push's job is refused.
+- `wp envsync prune-jobs <env>` applies the retention rules on the remote now. `--keep=<n>` keeps only the newest n after asking (`--yes` skips the question), and `--dry-run` lists what would go.
+- `status <env>` shows a `snapshots:` line and recommends `prune-jobs <env> --keep=1` when more than one snapshot weighs 500 MB or more (`IXES_SNAPSHOTS_WARN_MB`). A push ends with the same warning.
+- New REST routes `GET /jobs`, `POST /jobs/prune` and `POST /jobs/delete`, announced by the `jobs` cap. A remote older than 0.9.22 gets a message to run `self-update`.
+
 ## 0.9.21 — 2026-10-28
 - Push snapshots no longer pile up on the remote: it keeps the last three jobs (`IXES_KEEP_JOBS`) and none older than 14 days (`IXES_JOB_TTL_DAYS`). It prunes at every job start, finish, abort and unlock, and once a day by cron, so an aborted, unlocked or crashed push no longer leaves its copy behind for good. The locked job is never touched, and a rolled-back job does not count toward the three.
 - Each job's `meta.json` records whether it finished, was rolled back cleanly or was unlocked.
