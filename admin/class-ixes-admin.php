@@ -53,6 +53,8 @@ class IXES_Admin {
 		if ( $rjobs ) {
 			sort( $rjobs ); $m = json_decode( file_get_contents( end( $rjobs ) ), true );
 			if ( is_array( $m ) ) printf( '<h2>Last received push</h2><p>Job %s at %s, %d tables touched. Rollback with <code>wp envsync rollback &lt;env&gt;</code> from the hub.</p>', esc_html( $m['job'] ?? '' ), esc_html( wp_date( 'Y-m-d H:i', $m['started'] ?? 0 ) ), count( (array) ( $m['plan']['tables'] ?? [] ) ) );
+			$u = IXES_Applier::jobs_usage();
+			printf( '<p>%d push snapshot(s) kept, %s on disk. Older ones are deleted on each push and daily; <code>wp envsync prune-jobs</code> does it now.</p>', (int) $u['count'], esc_html( size_format( $u['bytes'] ) ) );
 		}
 		echo '</div>';
 	}
