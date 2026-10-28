@@ -703,6 +703,8 @@ class IXES_CLI {
 	 *
 	 * [--dry-run]
 	 * : List what would go and delete nothing.
+	 *
+	 * @subcommand prune-jobs
 	 */
 	public function prune_jobs( $args, $assoc ) {
 		$dry = ! empty( $assoc['dry-run'] );
@@ -710,10 +712,10 @@ class IXES_CLI {
 		$gone = IXES_Applier::prune_jobs( $dry );
 		foreach ( $gone as $job ) WP_CLI::log( ( $dry ? 'would delete ' : 'deleted ' ) . $job );
 		$after = IXES_Applier::jobs_usage();
-		$mb = function ( $b ) { return round( $b / 1048576, 1 ) . ' MB'; };
+		$size = function ( $b ) { return size_format( max( 0, $b ) ); };
 		WP_CLI::success( $dry
-			? count( $gone ) . " of {$before['count']} jobs would go ({$mb( $before['bytes'] )} on disk now)"
-			: count( $gone ) . " jobs deleted, {$mb( $before['bytes'] - $after['bytes'] )} freed; {$after['count']} left ({$mb( $after['bytes'] )})" );
+			? count( $gone ) . " of {$before['count']} jobs would go ({$size( $before['bytes'] )} on disk now)"
+			: count( $gone ) . " jobs deleted, {$size( $before['bytes'] - $after['bytes'] )} freed; {$after['count']} left ({$size( $after['bytes'] )})" );
 	}
 
 	/**
