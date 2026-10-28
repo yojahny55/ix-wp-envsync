@@ -27,6 +27,23 @@ class IXES_Rest {
 			$r( '/job/' . $op, 'POST', function ( $req ) use ( $op ) { return self::applier( 'job_' . $op, self::step_params( $req ) ); } );
 		}
 		$r( '/rollback', 'POST', function ( $req ) { return self::applier( 'rollback', $req->get_json_params() ); } );
+		// the push snapshots this remote holds (IXES_Applier::prune_jobs), so a hub can see and free them without a shell there
+		$r( '/jobs', 'GET', function () {
+			$jobs = IXES_Applier::jobs_list(); // walks every snapshot file: once is enough
+			return [ 'ok' => true, 'jobs' => $jobs, 'usage' => [ 'count' => count( $jobs ), 'bytes' => array_sum( array_column( $jobs, 'bytes' ) ) ] ];
+		} );
+		$r( '/jobs/prune', 'POST', function ( $req ) {
+			$p = (array) $req->get_json_params();
+			// a keep that is not a whole number >= 1 must not turn into 1 and drop every snapshot but the newest
+			if ( isset( $p['keep'] ) && ( ! is_int( $p['keep'] ) || $p['keep'] < 1 ) ) return new WP_Error( 'bad_keep', 'keep must be a whole number of 1 or more', [ 'status' => 400 ] );
+			$before = IXES_Applier::jobs_usage();
+			$gone = IXES_Applier::prune_jobs( ! empty( $p['dry'] ), null, $p['keep'] ?? null );
+			return [ 'ok' => true, 'removed' => $gone, 'before' => $before, 'after' => IXES_Applier::jobs_usage() ];
+		} );
+		$r( '/jobs/delete', 'POST', function ( $req ) {
+			$r = IXES_Applier::delete_job( (string) ( ( (array) $req->get_json_params() )['job'] ?? '' ) );
+			return is_wp_error( $r ) ? new WP_Error( $r->get_error_code(), $r->get_error_message(), [ 'status' => [ 'nojob' => 404, 'locked' => 409 ][ $r->get_error_code() ] ?? 500 ] ) : [ 'ok' => true, 'usage' => IXES_Applier::jobs_usage() ];
+		} );
 		// installing code is a power of its own: both refuse with 403 when the site turned self-update off
 		$r( '/self-update/chunk',   'POST', function ( $req ) { return IXES_Selfupdate::receive( self::step_params( $req ) ); } );
 		$r( '/self-update/install', 'POST', function ( $req ) { $p = $req->get_json_params(); return IXES_Selfupdate::install( is_array( $p ) ? $p : [] ); } );

@@ -668,6 +668,8 @@ class IXES_CLI {
 		foreach ( (array) ( $r['kept_tables'] ?? [] ) as $t => $why ) WP_CLI::warning( "kept table {$t} on {$env['name']}: {$why}" );
 		$line = IXES_Elementor::line( $r['elementor'] ?? null );
 		if ( $line ) WP_CLI::log( $line );
+		$heavy = IXES_Status::snapshots_note( $r['jobs'] ?? null, $env['name'] );
+		if ( $heavy ) WP_CLI::warning( $heavy );
 		if ( ! empty( $r['dropped'] ) ) WP_CLI::log( 'dropped on ' . $env['name'] . ': ' . implode( ', ', $r['dropped'] ) . "\nlocal copies:\n  " . implode( "\n  ", (array) $r['backups'] ) );
 		update_option( 'ixes_last_jobs', array_slice( array_merge( [ [ 'env' => $env['name'], 'job' => $r['job'], 'at' => time(), 'stale' => $r['stale'] ] ], (array) get_option( 'ixes_last_jobs', [] ) ), 0, 5 ), false );
 		$this->forget_status();
@@ -698,24 +700,90 @@ class IXES_CLI {
 	}
 
 	/**
-	 * Delete the push snapshots this site holds as a remote: all but the newest IXES_KEEP_JOBS (default 3), and any older than IXES_JOB_TTL_DAYS (default 14). The locked job always stays. Pushes and a daily cron do this already; run it to free the space now.
+	 * Delete the push snapshots a remote holds: all but the newest IXES_KEEP_JOBS (default 3), and any older than IXES_JOB_TTL_DAYS (default 14). The locked job always stays. Pushes and a daily cron do this already; run it to free the space now.
 	 * ## OPTIONS
+	 *
+	 * [<env>]
+	 * : Prune that environment from this hub. Without it, prune this site's own snapshots (run on the remote).
+	 *
+	 * [--keep=<n>]
+	 * : Keep the newest n jobs instead of IXES_KEEP_JOBS. Asks first: the pushes it drops can no longer be rolled back.
 	 *
 	 * [--dry-run]
 	 * : List what would go and delete nothing.
 	 *
+	 * [--yes]
+	 * : Skip the confirmation --keep asks for.
+	 *
 	 * @subcommand prune-jobs
 	 */
 	public function prune_jobs( $args, $assoc ) {
-		$dry = ! empty( $assoc['dry-run'] );
-		$before = IXES_Applier::jobs_usage();
-		$gone = IXES_Applier::prune_jobs( $dry );
+		$dry  = ! empty( $assoc['dry-run'] );
+		$keep = null;
+		if ( isset( $assoc['keep'] ) ) {
+			// never let a typo become --keep=1, which drops every snapshot but the newest
+			if ( ! ctype_digit( (string) $assoc['keep'] ) || (int) $assoc['keep'] < 1 ) WP_CLI::error( '--keep must be a whole number of 1 or more' );
+			$keep = (int) $assoc['keep'];
+			if ( ! $dry ) $this->confirm( $assoc, "Delete every push snapshot " . ( isset( $args[0] ) ? "on {$args[0]} " : '' ) . "but the newest {$keep}? Those pushes can no longer be rolled back." );
+		}
+		if ( isset( $args[0] ) ) {
+			$env = $this->get_env( $args[0] );
+			$r = $this->fail_if_error( $this->jobs_client( $args[0] )->post( '/jobs/prune', [ 'dry' => $dry, 'keep' => $keep ] ) );
+			$before = (array) $r['before']; $gone = (array) $r['removed']; $after = (array) $r['after'];
+			$this->forget_status();
+		} else {
+			$before = IXES_Applier::jobs_usage();
+			$gone = IXES_Applier::prune_jobs( $dry, null, $keep );
+			$after = IXES_Applier::jobs_usage();
+		}
 		foreach ( $gone as $job ) WP_CLI::log( ( $dry ? 'would delete ' : 'deleted ' ) . $job );
-		$after = IXES_Applier::jobs_usage();
 		$size = function ( $b ) { return size_format( max( 0, $b ) ); };
+		$where = isset( $env ) ? " on {$env['name']}" : '';
 		WP_CLI::success( $dry
-			? count( $gone ) . " of {$before['count']} jobs would go ({$size( $before['bytes'] )} on disk now)"
-			: count( $gone ) . " jobs deleted, {$size( $before['bytes'] - $after['bytes'] )} freed; {$after['count']} left ({$size( $after['bytes'] )})" );
+			? count( $gone ) . " of {$before['count']} jobs would go{$where} ({$size( $before['bytes'] )} on disk now)"
+			: count( $gone ) . " jobs deleted{$where}, {$size( $before['bytes'] - $after['bytes'] )} freed; {$after['count']} left ({$size( $after['bytes'] )})" );
+	}
+
+	/**
+	 * List the push snapshots a remote holds, with their state and size, or delete one.
+	 * ## OPTIONS
+	 *
+	 * [<env>]
+	 * : That environment, from this hub. Without it, this site's own snapshots.
+	 *
+	 * [--delete=<job>]
+	 * : Delete that job's snapshot; its push can no longer be rolled back. The running push's job is refused.
+	 *
+	 * [--format=<format>]
+	 * : table (default) or json.
+	 */
+	public function jobs( $args, $assoc ) {
+		$c = isset( $args[0] ) ? $this->jobs_client( $args[0] ) : null;
+		if ( isset( $assoc['delete'] ) ) {
+			$job = (string) $assoc['delete'];
+			if ( $c ) $this->fail_if_error( $c->post( '/jobs/delete', [ 'job' => $job ] ) );
+			else { $r = IXES_Applier::delete_job( $job ); if ( is_wp_error( $r ) ) WP_CLI::error( $r->get_error_message() ); }
+			if ( $c ) $this->forget_status();
+			WP_CLI::success( "deleted the snapshot of job {$job}" . ( $c ? " on {$args[0]}" : '' ) );
+			return;
+		}
+		$jobs = $c ? (array) ( $this->fail_if_error( $c->get( '/jobs' ) )['jobs'] ?? [] ) : IXES_Applier::jobs_list();
+		if ( ( $assoc['format'] ?? 'table' ) === 'json' ) { WP_CLI::line( wp_json_encode( $jobs, JSON_PRETTY_PRINT ) ); return; }
+		if ( ! $jobs ) { WP_CLI::log( 'no push snapshots' ); return; }
+		$rows = array_map( function ( $j ) {
+			return [ 'job' => $j['job'], 'started' => wp_date( 'Y-m-d H:i', (int) $j['started'] ), 'state' => $j['state'], 'size' => size_format( (int) $j['bytes'] ) ];
+		}, $jobs );
+		WP_CLI\Utils\format_items( 'table', $rows, [ 'job', 'started', 'state', 'size' ] );
+		WP_CLI::log( 'total ' . size_format( array_sum( array_column( $jobs, 'bytes' ) ) ) );
+	}
+
+	/** A client for $name whose remote has the /jobs routes, or an error saying how to get them there. */
+	private function jobs_client( $name ) {
+		$this->get_env( $name );
+		$c = $this->client( $name );
+		$this->fail_if_error( $c->info() );
+		if ( ! in_array( 'jobs', $c->caps(), true ) ) WP_CLI::error( "{$name} runs an EnvSync older than 0.9.22, which cannot list or prune its snapshots from here. Update it: wp envsync self-update {$name}" );
+		return $c;
 	}
 
 	/**

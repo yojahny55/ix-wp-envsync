@@ -683,7 +683,8 @@ class IXES_Applier {
 		delete_transient( self::LOCK );
 		if ( is_array( $meta ) ) { $meta['finished'] = time(); file_put_contents( self::job_dir( $p['job'] ) . '/meta.json', json_encode( $meta ) ); }
 		self::prune_jobs();
-		return [ 'ok' => true, 'elementor' => $elementor ];
+		// what the snapshots weigh after the prune, so the hub can say when they need freeing
+		return [ 'ok' => true, 'elementor' => $elementor, 'jobs' => self::jobs_usage() ];
 	}
 
 	public static function job_abort( array $p ) {
@@ -1046,6 +1047,7 @@ class IXES_Applier {
 		$r = $call( function () use ( $c, $job ) { return $c->post( '/job/finish', [ 'job' => $job ] ); } );
 		if ( is_wp_error( $r ) ) return $fail( $r );
 		$elementor = $r['elementor'] ?? null;
+		$jobs = isset( $r['jobs'] ) ? (array) $r['jobs'] : null;
 
 		if ( $dropped ) {
 			// fresh urls: a page cache must not answer this round with the healthy pages of the first one
@@ -1061,6 +1063,6 @@ class IXES_Applier {
 			}
 		}
 
-		return [ 'job' => $job, 'stale' => $stale, 'dropped' => $dropped, 'kept_tables' => $kept_tables, 'backups' => $backups, 'elementor' => $elementor ];
+		return [ 'job' => $job, 'stale' => $stale, 'dropped' => $dropped, 'kept_tables' => $kept_tables, 'backups' => $backups, 'elementor' => $elementor, 'jobs' => $jobs ];
 	}
 }
