@@ -135,7 +135,7 @@ wp --path=<site> envsync rollback prod --yes           # the last push
 wp --path=<site> envsync rollback prod --job=<id> --yes
 ```
 
-Restores the snapshot the remote took before the push. Only the last job is kept (`IXES_KEEP_JOBS`), and none older than 7 days (`IXES_JOB_TTL_DAYS`): the remote prunes on every push and daily. `wp envsync prune-jobs` on the remote frees the space now.
+Restores the snapshot the remote took before the push. Only the last three jobs are kept (`IXES_KEEP_JOBS`), and none older than 14 days (`IXES_JOB_TTL_DAYS`): the remote prunes on every push and daily. `wp envsync prune-jobs` on the remote, or Tools → EnvSync → Push snapshots, frees the space now. A plan whose rollback copy passes 200 MB or 1000 files (`IXES_SNAPSHOT_WARN_MB`, `IXES_SNAPSHOT_WARN_FILES`) says so before you confirm.
 
 ### Upgrade the remote's EnvSync
 

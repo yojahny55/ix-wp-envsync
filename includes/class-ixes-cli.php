@@ -656,7 +656,9 @@ class IXES_CLI {
 		if ( $note !== '' ) WP_CLI::log( $note );
 		if ( IXES_Planner::is_empty( $plan ) ) { WP_CLI::success( 'nothing to push' ); return; }
 		if ( ! empty( $assoc['dry-run'] ) ) { if ( isset( $saved_path ) ) self::reuse_hint( $env['name'], $saved_path ); return; }
-		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" );
+		$big = isset( $plan['snapshot'] ) ? IXES_Planner::snapshot_warning( (array) $plan['snapshot'], $env['name'] ) : null;
+		if ( $big && ! empty( $assoc['yes'] ) ) WP_CLI::warning( $big );
+		$this->confirm( $assoc, "Apply this plan (scope: " . IXES_Scope::from_array( (array) ( $plan['scope'] ?? [] ), '' )->label() . ") to {$env['name']} ({$env['url']})?" . ( $big ? "\n  {$big}" : '' ) );
 		// used once: after this push its remote hashes are the old ones, and every row would come back stale
 		IXES_Planner::forget_latest( $env['name'] );
 		$r = $this->run_recorded( 'push', $env['name'], $report, function () use ( $env, $c, $plan, $progress, $assoc, $par ) { $r = IXES_Applier::apply( $env, $c, $plan, $this->logger(), $progress, $this->error_menu( $assoc ), $par ); $progress->end(); return $r; }, $progress );
@@ -696,7 +698,7 @@ class IXES_CLI {
 	}
 
 	/**
-	 * Delete the push snapshots this site holds as a remote: all but the newest IXES_KEEP_JOBS (default 1), and any older than IXES_JOB_TTL_DAYS (default 7). The locked job always stays. Pushes and a daily cron do this already; run it to free the space now.
+	 * Delete the push snapshots this site holds as a remote: all but the newest IXES_KEEP_JOBS (default 3), and any older than IXES_JOB_TTL_DAYS (default 14). The locked job always stays. Pushes and a daily cron do this already; run it to free the space now.
 	 * ## OPTIONS
 	 *
 	 * [--dry-run]
