@@ -71,6 +71,7 @@ In a push plan, `new_tables` lists tables the push will create on the remote (sh
 | `wp envsync pull <env>` | an interrupted pull can be resumed | Run `pull <env> --dry-run` (it shows where it stopped), then `pull <env> --yes` to resume. Use `--fresh` only if resume is refused. |
 | `wp envsync push <env> --force --dry-run` | looks like a fresh install | This is a first deploy. See [First deploy](#first-deploy-onto-a-fresh-install). |
 | `wp envsync pull <env>` | no baseline | Run `pull <env> --dry-run`, show it, then `pull <env> --yes`. The pull overwrites the local site. |
+| `wp envsync prune-jobs <env> --keep=1` | N push snapshot(s) … weigh X | Tell the user the remote holds that much in rollback copies (rows, users included, and files). Run `jobs <env>` to show them, then `prune-jobs <env> --keep=1 --yes` after approval: only the last push can still be rolled back afterwards. |
 | `wp envsync diff <env>` | baseline is N days old | Suggest pulling first. If the user declines, continue as for "ready". |
 | `wp envsync diff <env>` | ready | Run `diff <env>`, show it, then `push <env> --yes` after approval. |
 
@@ -135,7 +136,7 @@ wp --path=<site> envsync rollback prod --yes           # the last push
 wp --path=<site> envsync rollback prod --job=<id> --yes
 ```
 
-Restores the snapshot the remote took before the push. Only the last three jobs are kept (`IXES_KEEP_JOBS`), and none older than 14 days (`IXES_JOB_TTL_DAYS`): the remote prunes on every push and daily. `wp envsync prune-jobs` on the remote, or Tools → EnvSync → Push snapshots, frees the space now. A plan whose rollback copy passes 200 MB or 1000 files (`IXES_SNAPSHOT_WARN_MB`, `IXES_SNAPSHOT_WARN_FILES`) says so before you confirm.
+Restores the snapshot the remote took before the push. Only the last three jobs are kept (`IXES_KEEP_JOBS`), and none older than 14 days (`IXES_JOB_TTL_DAYS`): the remote prunes on every push and daily. `wp envsync jobs <env>` lists them from the hub, and `wp envsync prune-jobs <env>` (or Tools → EnvSync → Push snapshots on the remote) frees the space now; both need 0.9.22 on the remote. A plan whose rollback copy passes 200 MB or 1000 files (`IXES_SNAPSHOT_WARN_MB`, `IXES_SNAPSHOT_WARN_FILES`) says so before you confirm.
 
 ### Upgrade the remote's EnvSync
 

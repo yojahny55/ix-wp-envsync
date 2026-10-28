@@ -642,6 +642,19 @@ Clears a stuck push lock left by a hub that died mid-push. Rolls nothing back �
 
 - `--yes` — skip the confirmation.
 
+### `wp envsync jobs [<env>]` and `wp envsync prune-jobs [<env>]`
+
+Every push leaves a snapshot on the remote, in its storage folder: the rows (users included) and the files the push replaced, so `rollback` can put them back. The remote keeps the last three (`IXES_KEEP_JOBS`) and none older than 14 days (`IXES_JOB_TTL_DAYS`), and prunes on every push and once a day. These two commands show and free them from the hub. Without `<env>`, they act on the site they run on. A remote older than 0.9.22 needs `self-update` first.
+
+- `jobs <env>` — each snapshot's job id, start time, state (`running`, `finished`, `rolled_back`, `unlocked`, `unknown`) and size, and the total.
+- `jobs <env> --delete=<job>` — delete one snapshot. That push can no longer be rolled back. The running push's job is refused.
+- `jobs <env> --format=json`
+- `prune-jobs <env>` — apply the retention rules now.
+- `prune-jobs <env> --keep=<n>` — keep only the newest n (a whole number, 1 or more). Asks first; `--yes` skips it.
+- `prune-jobs <env> --dry-run` — list what would go.
+
+When a remote holds more than one snapshot and they weigh 500 MB or more (`IXES_SNAPSHOTS_WARN_MB`), the push ends with a warning that names `prune-jobs <env> --keep=1`, and `status` recommends it once nothing else is pending. Plain `prune-jobs` would free nothing there: the remote already applied its retention rules at the push.
+
 ### `wp envsync rescue <env>`
 
 Recovers a remote that crashes on every request, through `rescue.php` (no plugins, no theme loaded). With no flag it only reports the active plugins, the lock and the last job.

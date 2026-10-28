@@ -13,6 +13,11 @@ class IXES_Status {
 	// rule order (the contract above): unconfigured, remote_only, crashing (500), unreachable, old_remote, running, stale_lock, interrupted_pull, no_baseline, old_baseline, ready
 	// admin page renders this synchronously on a cache miss, so a dead remote must fail fast and stay under wp-admin's max_execution_time
 	const INFO_TIMEOUT = 10;
+	const SNAPSHOTS_WARN_MB = 500; // IXES_SNAPSHOTS_WARN_MB: past this, the push snapshots a remote holds are worth freeing
+
+	/** @var IXES_Client[] the default info call's client per env, reused for /jobs: a keyed hub opens one session, not two */
+	private static $clients = [];
+	private static function client( array $env ) { return self::$clients[ $env['name'] ] ?? ( self::$clients[ $env['name'] ] = new IXES_Client( $env ) ); }
 
 	private static function defaults() {
 		return [
@@ -32,12 +37,27 @@ class IXES_Status {
 				return [ 'started' => $s->get( 'started' ), 'table' => $s->get( 'table' ), 'cursor' => $s->get( 'cursor' ), 'files_done' => $s->files_count(), 'files_total' => is_array( $plan ) ? count( $plan['files']['transfer'] ?? [] ) : null, 'scope' => is_array( $plan ) ? (array) ( $plan['scope'] ?? [] ) : [] ];
 			},
 			'running'       => function ( $name ) { return IXES_Progress::running( $name ); },
+			// wp-admin builds this report in the page request: as short as /info, and never retried
+			'jobs'          => function ( array $env ) { return self::client( $env )->get( '/jobs', [ 'timeout' => self::INFO_TIMEOUT, 'no_retry' => true ] ); },
 		];
+	}
+
+	/**
+	 * One line when the push snapshots on $env weigh more than IXES_SNAPSHOTS_WARN_MB and there is more than one, else null.
+	 * They hold the rows (users included) and files each push replaced, in the remote's storage folder. The remote
+	 * already applies its own retention at every push, so the way to free them is --keep=1: keep only the last push.
+	 * @param array{count:int,bytes:int}|null $usage
+	 */
+	public static function snapshots_note( $usage, $env_name ) {
+		if ( ! is_array( $usage ) ) return null;
+		$mb = (int) ( defined( 'IXES_SNAPSHOTS_WARN_MB' ) ? IXES_SNAPSHOTS_WARN_MB : self::SNAPSHOTS_WARN_MB );
+		if ( (int) ( $usage['bytes'] ?? 0 ) < $mb * 1048576 || (int) ( $usage['count'] ?? 0 ) < 2 ) return null;
+		return "{$env_name} holds " . (int) $usage['count'] . ' push snapshot(s), ' . IXES_Report::size( (int) $usage['bytes'] ) . ", rows and files included; keep only the last one with: wp envsync prune-jobs {$env_name} --keep=1";
 	}
 
 	public static function build( $env_name = null, ?callable $info_for = null, ?array $ctx = null ) {
 		$ctx = ( $ctx ?: [] ) + self::defaults();
-		if ( $info_for === null ) $info_for = function ( array $env ) { return ( new IXES_Client( $env ) )->info( IXES_Status::INFO_TIMEOUT ); };
+		if ( $info_for === null ) $info_for = function ( array $env ) { return self::client( $env )->info( IXES_Status::INFO_TIMEOUT ); };
 		$envs = $ctx['envs'];
 		if ( $env_name !== null ) $envs = isset( $envs[ $env_name ] ) ? [ $env_name => $envs[ $env_name ] ] : [];
 		$is_hub = ! empty( $ctx['envs'] );
@@ -68,7 +88,7 @@ class IXES_Status {
 	private static function env_facts( array $env, callable $info_for, array $ctx ) {
 		$now = $ctx['now'];
 		$e = [ 'url' => $env['url'], 'label' => $env['label'] ?? '', 'reachable' => false, 'error' => null, 'remote_version' => null, 'version_ok' => null, 'auth_via' => null,
-			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'self_update' => null, 'running_job' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
+			'baseline' => null, 'interrupted_pull' => null, 'remote_lock' => null, 'remote_posts' => null, 'prefix_map' => null, 'self_update' => null, 'running_job' => null, 'snapshots' => null, 'excludes_count' => count( (array) ( $env['excludes'] ?? [] ) ) ];
 		$info = $info_for( $env );
 		if ( is_wp_error( $info ) ) { $e['error'] = $info->get_error_message(); }
 		else {
@@ -83,6 +103,11 @@ class IXES_Status {
 			$names_prefix = $info['hub_prefix'] ?? ( $info['prefix'] ?? '' );
 			foreach ( (array) ( $info['tables'] ?? [] ) as $t ) if ( $t['name'] === $names_prefix . 'posts' ) $e['remote_posts'] = (int) $t['rows'];
 			if ( ! empty( $info['hub_prefix'] ) ) $e['prefix_map'] = "{$info['prefix']} → {$info['hub_prefix']}";
+			// a remote from before 0.9.22 has no /jobs; one that fails to answer just shows nothing here
+			if ( in_array( 'jobs', $caps, true ) ) {
+				$j = $ctx['jobs']( $env );
+				if ( is_array( $j ) && ! is_wp_error( $j ) && isset( $j['usage'] ) ) $e['snapshots'] = [ 'count' => (int) $j['usage']['count'], 'bytes' => (int) $j['usage']['bytes'] ];
+			}
 			if ( ! empty( $info['lock']['job'] ) ) {
 				$st = $info['lock']['started'] ?? null;
 				$e['remote_lock'] = [ 'job' => $info['lock']['job'], 'started' => $st, 'age_minutes' => $st ? (int) floor( ( $now - $st ) / 60 ) : null ];
@@ -117,6 +142,7 @@ class IXES_Status {
 		if ( empty( $e['baseline']['created_at'] ) && $e['remote_posts'] !== null && $e['remote_posts'] <= self::FRESH_MAX_POSTS ) return $cmd( "wp envsync push {$name} --force --dry-run", "no baseline and {$env['url']} looks like a fresh install ({$e['remote_posts']} posts): first deploy? pulling would overwrite this site with it" . ( $e['remote_posts'] > 0 ? '; what only it has stays unless you add --mirror' : '' ) );
 		if ( empty( $e['baseline']['created_at'] ) ) return $cmd( "wp envsync pull {$name}", 'no baseline: pull before any push' );
 		if ( $e['baseline']['age_days'] >= self::BASELINE_OLD_DAYS ) return $cmd( "wp envsync diff {$name}", "baseline is {$e['baseline']['age_days']} days old; consider pulling first" );
+		if ( self::snapshots_note( $e['snapshots'], $name ) ) return $cmd( "wp envsync prune-jobs {$name} --keep=1", "{$e['snapshots']['count']} push snapshot(s) on {$env['url']} weigh " . IXES_Report::size( $e['snapshots']['bytes'] ) . '; nothing else is pending' );
 		return $cmd( "wp envsync diff {$name}", 'ready' );
 	}
 
@@ -151,6 +177,7 @@ class IXES_Status {
 					: ( $j['phase'] === 'db' ? "tables {$j['tables_done']}/{$j['tables_total']}" : $j['phase'] );
 				$o[] = "  running: {$j['kind']}, {$what}, updated " . max( 0, time() - (int) $j['updated'] ) . 's ago';
 			}
+			if ( $s = $e['snapshots'] ?? null ) $o[] = "  snapshots: {$s['count']} push job(s), " . IXES_Report::size( $s['bytes'] );
 			if ( $l = $e['remote_lock'] ) $o[] = "  lock: job {$l['job']}, " . ( $l['age_minutes'] === null ? 'unknown age' : "{$l['age_minutes']} min old" );
 			$o[] = '';
 		}

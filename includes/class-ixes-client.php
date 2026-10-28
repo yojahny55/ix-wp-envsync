@@ -280,7 +280,7 @@ class IXES_Client {
 		return $out;
 	}
 
-	public function get( $route )                    { return $this->request( 'GET', $route ); }
+	public function get( $route, $opts = [] )        { return $this->request( 'GET', $route, null, $opts ); }
 
 	/** A plain page request to the site, as a visitor (through Basic Auth when the env has it): for smoke tests. */
 	public function probe( $url ) {
