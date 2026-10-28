@@ -3,6 +3,13 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
+## 0.9.21 — 2026-10-28
+- Push snapshots no longer pile up on the remote: it keeps the last three jobs (`IXES_KEEP_JOBS`) and none older than 14 days (`IXES_JOB_TTL_DAYS`). It prunes at every job start, finish, abort and unlock, and once a day by cron, so an aborted, unlocked or crashed push no longer leaves its copy behind for good. The locked job is never touched, and a rolled-back job does not count toward the three.
+- Each job's `meta.json` records whether it finished, was rolled back cleanly or was unlocked.
+- Tools → EnvSync lists the push snapshots with their state and size, with a Delete button per job and "Delete all but the last".
+- `wp envsync prune-jobs [--dry-run]` frees the space now, on the remote.
+- A plan whose rollback copy passes 200 MB or 1000 files (`IXES_SNAPSHOT_WARN_MB`, `IXES_SNAPSHOT_WARN_FILES`) warns before you confirm, and `push --yes` prints the warning.
+
 ## 0.9.20 — 2026-10-26
 - A self-update rolled back by the health check no longer leaves a keyed remote answering 404 on `/session` with no guidance: the 404 now says to run `env add --token`.
 - After the rollback the hub forgets the key only when the restored remote answers 404 on `/session`; any other failure keeps it, so a slow or failing remote is not silently downgraded to token mode.
