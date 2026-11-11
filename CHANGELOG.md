@@ -3,6 +3,10 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
+## Unreleased
+- Path excludes honour globs (`*`, `?`, `[...]`), as table and option excludes already did (#89). `uploads/wpo_wcpdf_*/` used to match nothing, so the folder it named travelled on push. A folder glob is matched against the same number of leading segments, so it stays anchored at wp-content. A file glob matches the path or the file name. Patterns without glob characters behave as before. The remote filters its own list with the same rule once it runs this version.
+- `env add --add-exclude=` warns when a path matches no local file.
+
 ## 0.9.22 — 2026-10-28
 - A push that turns on a plugin the remote had installed but never activated now runs its activation as the first administrator, through `activate_plugin()`, instead of writing `active_plugins` raw. Before, the plugin's first install ran on the next request with no user, and a plugin like Elementor Pro could fail it with `Access denied.` (#85). Plugins are activated in passes, so one listed before the plugin it `Requires Plugins` waits for it. A plugin whose files are not on the remote is listed without activation. An activation error fails the step with the plugin named, and the hub rolls back. If the hub aborts during the step, the remote writes back the list the job started from.
 - The hub sends that step with the batch timeout, since a plugin's first install can take minutes.

@@ -478,6 +478,7 @@ Options for `add`:
 - `--basic-auth=<user:pass>` — credentials for a remote whose web server asks for a password (HTTP Basic Auth), common on staging sites. Pass `--basic-auth=` to remove them. Stored in plain text in the hub's database, like the token.
 - `--exclude=<paths>` — comma-separated wp-content paths to leave out of sync entirely, e.g. `--exclude=ai1wm-backups/,cache/`. Replaces the whole list.
 - `--add-exclude=<paths>` — add to the existing list without retyping it.
+  A path holds globs (`*`, `?`, `[...]`) like table and option excludes do. A folder pattern such as `uploads/wpo_wcpdf_*/` matches the same number of leading segments, so it stays anchored at wp-content; a file pattern such as `*.log` matches the whole path or the file name of a file, never a folder, so end a folder pattern with `/`. A name that holds `[`, `*` or `?` literally still matches itself. `*` never crosses a `/`. `env add` warns when an added path matches no local file.
 - `--remove-exclude=<paths>` — drop entries from the existing list.
 - `--exclude-tables=<tables>`, `--add-exclude-tables=`, `--remove-exclude-tables=` — tables or globs this environment always leaves out; `@logs` covers common log tables. See [Leaving tables out](#leaving-tables-out).
 - `--exclude-options=<globs>`, `--add-exclude-options=`, `--remove-exclude-options=` — option name globs whose `wp_options` rows never travel. See [Leaving options out](#leaving-options-out).

@@ -297,12 +297,57 @@ class IXES_Transfer {
 		if ( $own !== '' && strpos( $rel, $own ) === 0 ) return true;
 		foreach ( $excludes as $ex ) {
 			$ex = ltrim( $ex, '/' );
+			if ( strpbrk( $ex, '*?[' ) !== false ) {
+				if ( self::glob_excluded( $rel, $ex ) ) return true;
+				// and fall through: a literal name with brackets, like report[1].pdf, must still match itself
+			}
 			if ( substr( $ex, -1 ) === '/' ) {
 				// folders are anchored at wp-content: 'cache/' must not swallow plugins/polylang/src/integrations/cache/
 				if ( strpos( $rel, $ex ) === 0 ) return true;
 				if ( in_array( $ex, self::ANY_DEPTH, true ) && strpos( $rel, '/' . $ex ) !== false ) return true;
 			}
 			elseif ( $rel === $ex || basename( $rel ) === $ex ) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * An exclude with glob characters (* ? [...]), matched the same way as the literal ones.
+	 * A folder (uploads/wpo_wcpdf_* with a trailing slash) is matched against as many leading segments of $rel as it has,
+	 * so it stays anchored at wp-content and covers everything below. A file ('*.log', 'uploads/export-*.csv')
+	 * matches the whole path or the base name of a file, never a folder, like a literal file exclude: a walk
+	 * and a flat file list must agree. '*' never crosses a '/'.
+	 */
+	private static function glob_excluded( $rel, $ex ) {
+		if ( substr( $ex, -1 ) === '/' ) {
+			$want  = explode( '/', rtrim( $ex, '/' ) );
+			$parts = explode( '/', $rel );
+			// $rel must lie inside the folder: one more segment at least (a file, or '' for 'dir/')
+			if ( count( $parts ) <= count( $want ) ) return false;
+			return fnmatch( implode( '/', $want ), implode( '/', array_slice( $parts, 0, count( $want ) ) ), FNM_PATHNAME );
+		}
+		if ( substr( $rel, -1 ) === '/' ) return false;
+		return fnmatch( $ex, $rel, FNM_PATHNAME ) || fnmatch( $ex, basename( $rel ) );
+	}
+
+	/**
+	 * Whether a path exclude matches at least one local file under wp-content, so `env add` can flag
+	 * a dead pattern. The walk starts at the exclude's leading literal folders, when it has any.
+	 */
+	public static function exclude_matches_any( $ex ) {
+		$ex   = ltrim( (string) $ex, '/' );
+		$segs = explode( '/', $ex );
+		array_pop( $segs ); // a file's name, or '' after a folder's trailing slash
+		$lit = [];
+		foreach ( $segs as $seg ) {
+			if ( strpbrk( $seg, '*?[' ) !== false ) break;
+			$lit[] = $seg;
+		}
+		// node_modules/ and .git/ match at any depth, so they need the whole walk
+		$root = $lit && ! in_array( $ex, self::ANY_DEPTH, true ) ? implode( '/', $lit ) . '/' : '';
+		if ( $root !== '' && ! is_dir( untrailingslashit( WP_CONTENT_DIR ) . '/' . $root ) ) return false;
+		foreach ( self::all_files( [], $root === '' ? [] : [ $root ] ) as $rel ) {
+			if ( self::excluded_path( $rel, [ $ex ] ) ) return true;
 		}
 		return false;
 	}
