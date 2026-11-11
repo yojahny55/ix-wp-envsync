@@ -220,6 +220,9 @@ class IXES_CLI {
 				IXES_Env::add( $env );
 			} catch ( InvalidArgumentException $e ) { WP_CLI::error( $e->getMessage() ); }
 			$this->forget_status();
+			foreach ( array_filter( explode( ',', (string) ( $assoc['add-exclude'] ?? '' ) ) ) as $p ) {
+				if ( ! IXES_Transfer::exclude_matches_any( $p ) ) WP_CLI::warning( "exclude {$p} matches no local file under wp-content; check the spelling" );
+			}
 			WP_CLI::success( $existing ? "env {$args[1]} updated" : "env {$args[1]} saved" );
 			return;
 		}
