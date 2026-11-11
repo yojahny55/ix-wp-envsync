@@ -3,7 +3,7 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
-## Unreleased
+## 0.9.23 — 2026-11-11
 - Path excludes honour globs (`*`, `?`, `[...]`), as table and option excludes already did (#89). `uploads/wpo_wcpdf_*/` used to match nothing, so the folder it named travelled on push. A folder glob is matched against the same number of leading segments, so it stays anchored at wp-content. A file glob matches the path or the file name. Patterns without glob characters behave as before. The remote filters its own list with the same rule once it runs this version.
 - `env add --add-exclude=` warns when a path matches no local file.
 
