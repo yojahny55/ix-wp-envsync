@@ -422,6 +422,10 @@ From 0.9.4 on the remote, `status` then recommends `wp envsync self-update <env>
 
 ---
 
+## Reading the hub's label on a remote
+
+`job/start`'s `plan_meta` carries the hub's label (`prod`, `staging` or `local`) for that environment. A site plugin on the remote can read it with `IXES_Applier::job_label()` (empty argument = the locked job; returns `''` when unknown) to apply its own policy, for example refusing database writes on prod.
+
 ## Upgrading EnvSync on a remote
 
 A sync never copies the plugin's own folder, in either direction, so a pull or push cannot replace the code that is running it. `self-update` installs a new version on a remote from the hub instead:

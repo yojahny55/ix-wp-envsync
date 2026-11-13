@@ -14,11 +14,19 @@ class ApplierLockTest extends TestCase {
 		$this->assertSame( [ 'job' => '', 'started' => null ], IXES_Applier::parse_lock( false ) );
 	}
 	public function test_plan_meta_shape_survives_garbage() {
-		$this->assertSame( [ 'tables' => [], 'files' => [ 'push' => [], 'delete' => [] ] ], IXES_Applier::plan_meta_shape( 'not an array' ) );
+		$this->assertSame( [ 'tables' => [], 'files' => [ 'push' => [], 'delete' => [] ], 'label' => '' ], IXES_Applier::plan_meta_shape( 'not an array' ) );
 		$s = IXES_Applier::plan_meta_shape( [ 'tables' => [ 'wp_posts' => [ 'pk' => 'ID' ] ], 'files' => [ 'push' => 'x' ] ] );
 		$this->assertSame( [ 'wp_posts' => [ 'pk' => 'ID' ] ], $s['tables'] );
 		$this->assertSame( [ 'x' ], $s['files']['push'] );
 		$this->assertSame( [], $s['files']['delete'] );
+	}
+	public function test_plan_meta_shape_keeps_a_valid_label_and_blanks_others() {
+		foreach ( [ 'prod', 'staging', 'local' ] as $l ) {
+			$this->assertSame( $l, IXES_Applier::plan_meta_shape( [ 'label' => $l ] )['label'] );
+		}
+		foreach ( [ 'production', 'PROD', '', null, 7, [ 'prod' ] ] as $bad ) {
+			$this->assertSame( '', IXES_Applier::plan_meta_shape( [ 'label' => $bad ] )['label'] );
+		}
 	}
 	private function upgrading_for( array $server ) {
 		$f = tempnam( sys_get_temp_dir(), 'ixes' );
