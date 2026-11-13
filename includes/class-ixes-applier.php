@@ -29,7 +29,26 @@ class IXES_Applier {
 		return [
 			'tables' => is_array( $raw['tables'] ?? null ) ? $raw['tables'] : [],
 			'files'  => [ 'push' => (array) ( $files['push'] ?? [] ), 'delete' => (array) ( $files['delete'] ?? [] ) ],
+			'label'  => ( is_string( $raw['label'] ?? null ) && in_array( $raw['label'], [ 'prod', 'staging', 'local' ], true ) ) ? $raw['label'] : '',
 		] + $raw;
+	}
+	/**
+	 * The hub's label (prod|staging|local) for the environment that started a job, as stored in its meta.json.
+	 * '' when unknown. $job === '' means the currently locked job, else the most recent one (the job rollback() picks
+	 * when called without a job). A site plugin can use it to apply its own policy. In job/step the request's job is
+	 * reliable: job_step() refuses with 409 any job that is not the locked one, so it always equals current_job().
+	 * Not for job/start: that job has no meta.json yet, so read the label from the request body
+	 * (plan_meta_shape( $p['plan_meta'] )['label']) instead. The label is what the hub says, not a remote fact.
+	 */
+	public static function job_label( $job = '' ) {
+		$job = (string) $job;
+		if ( $job === '' ) $job = self::current_job();
+		if ( $job === '' ) $job = (string) self::last_job();
+		$dir = $job === '' ? null : self::job_dir( $job );
+		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return '';
+		$meta = json_decode( (string) file_get_contents( $dir . '/meta.json' ), true );
+		$label = is_array( $meta ) && is_array( $meta['plan'] ?? null ) ? ( $meta['plan']['label'] ?? '' ) : '';
+		return ( is_string( $label ) && in_array( $label, [ 'prod', 'staging', 'local' ], true ) ) ? $label : '';
 	}
 
 	private static function jobs_dir() { $d = ixes_storage_dir() . '/jobs'; wp_mkdir_p( $d ); return $d; }
@@ -837,7 +856,7 @@ class IXES_Applier {
 		foreach ( $plan['tables'] as $name => $t ) {
 			$touch[ $name ] = [ 'pk' => $t['pk'], 'touch' => array_merge( (array) $t['push'], (array) $t['insert'] ), 'delete' => (array) $t['delete'] ];
 		}
-		$plan_meta = [ 'env' => $env['name'], 'created' => $plan['created'], 'tables' => $touch, 'files' => [ 'push' => $plan['files']['push'], 'delete' => $plan['files']['delete'] ] ];
+		$plan_meta = [ 'env' => $env['name'], 'label' => (string) ( $env['label'] ?? '' ), 'created' => $plan['created'], 'tables' => $touch, 'files' => [ 'push' => $plan['files']['push'], 'delete' => $plan['files']['delete'] ] ];
 
 		$caps = $c->caps();
 		if ( ! empty( $plan['new_tables'] ) && ! in_array( 'create_table', $caps, true ) ) {
