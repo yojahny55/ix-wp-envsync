@@ -37,6 +37,8 @@ class IXES_Applier {
 	 * '' when unknown. $job === '' means the currently locked job, else the most recent one (the job rollback() picks
 	 * when called without a job). A site plugin can use it to apply its own policy. In job/step the request's job is
 	 * reliable: job_step() refuses with 409 any job that is not the locked one, so it always equals current_job().
+	 * Not for job/start: that job has no meta.json yet, so read the label from the request body
+	 * (plan_meta_shape( $p['plan_meta'] )['label']) instead. The label is what the hub says, not a remote fact.
 	 */
 	public static function job_label( $job = '' ) {
 		$job = (string) $job;
