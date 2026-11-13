@@ -4,7 +4,7 @@ All notable changes to IX WP EnvSync. Versions follow the plugin header. Release
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
 ## 0.9.24 — 2026-11-13
-- `job/start`'s `plan_meta` now carries the hub's label for the environment (`prod`, `staging` or `local`), stored in the job's `meta.json` under `plan.label` (blank when invalid). `IXES_Applier::job_label( $job = '' )` reads it back on the remote (empty argument = the locked job; `''` when unknown), so a site plugin can apply its own policy, for example refusing database writes on prod.
+- `job/start`'s `plan_meta` now carries the hub's label for the environment (`prod`, `staging` or `local`), stored in the job's `meta.json` under `plan.label` (blank when invalid). `IXES_Applier::job_label( $job = '' )` reads it back on the remote (empty argument = the locked job, else the most recent one; `''` when unknown; in `job/step` the request's job always equals the locked one), so a site plugin can apply its own policy, for example refusing database writes on prod.
 
 ## 0.9.23 — 2026-11-11
 - Path excludes honour globs (`*`, `?`, `[...]`), as table and option excludes already did (#89). `uploads/wpo_wcpdf_*/` used to match nothing, so the folder it named travelled on push. A folder glob is matched against the same number of leading segments, so it stays anchored at wp-content. A file glob matches the path or the file name. Patterns without glob characters behave as before. The remote filters its own list with the same rule once it runs this version.

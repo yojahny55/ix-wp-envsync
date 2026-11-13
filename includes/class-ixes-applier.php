@@ -34,11 +34,14 @@ class IXES_Applier {
 	}
 	/**
 	 * The hub's label (prod|staging|local) for the environment that started a job, as stored in its meta.json.
-	 * '' when unknown. $job === '' means the currently locked job. A site plugin can use it to apply its own policy.
+	 * '' when unknown. $job === '' means the currently locked job, else the most recent one (the job rollback() picks
+	 * when called without a job). A site plugin can use it to apply its own policy. In job/step the request's job is
+	 * reliable: job_step() refuses with 409 any job that is not the locked one, so it always equals current_job().
 	 */
 	public static function job_label( $job = '' ) {
 		$job = (string) $job;
 		if ( $job === '' ) $job = self::current_job();
+		if ( $job === '' ) $job = (string) self::last_job();
 		$dir = $job === '' ? null : self::job_dir( $job );
 		if ( ! $dir || ! is_file( $dir . '/meta.json' ) ) return '';
 		$meta = json_decode( (string) file_get_contents( $dir . '/meta.json' ), true );

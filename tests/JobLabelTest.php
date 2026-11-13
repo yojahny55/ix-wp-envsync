@@ -29,10 +29,17 @@ class JobLabelTest extends TestCase {
 
 	public function test_empty_job_means_the_locked_job() {
 		$this->job( '20260101-000000-bbbbbb', [ 'plan' => [ 'label' => 'staging' ] ] );
-		$this->assertSame( '', IXES_Applier::job_label( '' ) );
+		$this->job( '20260102-000000-cccccc', [ 'plan' => [ 'label' => 'prod' ] ] );
 		set_transient( IXES_Applier::LOCK, '20260101-000000-bbbbbb|1758535000' );
 		$this->assertSame( 'staging', IXES_Applier::job_label( '' ) );
 		$this->assertSame( 'staging', IXES_Applier::job_label() );
+	}
+
+	public function test_without_a_lock_the_most_recent_job_is_used() {
+		$this->assertSame( '', IXES_Applier::job_label() );
+		$this->job( '20260101-000000-bbbbbb', [ 'plan' => [ 'label' => 'staging' ] ] );
+		$this->job( '20260102-000000-cccccc', [ 'plan' => [ 'label' => 'prod' ] ] );
+		$this->assertSame( 'prod', IXES_Applier::job_label() );
 	}
 
 	public function test_missing_or_bad_data_is_empty() {

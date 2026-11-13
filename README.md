@@ -424,7 +424,7 @@ From 0.9.4 on the remote, `status` then recommends `wp envsync self-update <env>
 
 ## Reading the hub's label on a remote
 
-`job/start`'s `plan_meta` carries the hub's label (`prod`, `staging` or `local`) for that environment. A site plugin on the remote can read it with `IXES_Applier::job_label()` (empty argument = the locked job; returns `''` when unknown) to apply its own policy, for example refusing database writes on prod.
+`job/start`'s `plan_meta` carries the hub's label (`prod`, `staging` or `local`) for that environment. A site plugin on the remote can read it with `IXES_Applier::job_label( $job )` (empty argument = the locked job, else the most recent one; returns `''` when unknown) to apply its own policy, for example refusing database writes on prod. In `job/step` the request's `job` is a reliable source: the remote refuses with 409 any job that is not the locked one. A hub older than 0.9.24 sends no label, so the site plugin should fall back to its own rule (for example `WP_ENVIRONMENT_TYPE`).
 
 ## Upgrading EnvSync on a remote
 
