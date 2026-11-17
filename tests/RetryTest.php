@@ -27,28 +27,47 @@ class RetryTest extends TestCase {
 		$c = $this->client( [ self::curl( 'cURL error 28: Resolving timed out after 10001 milliseconds' ), self::ok() ] );
 		$this->assertSame( [ 'ok' => true ], $c->post( '/job/step', [ 'job' => 'j' ] ) );
 		$this->assertCount( 2, $c->calls );
-		$this->assertSame( [ 5 ], $c->slept );
+		$this->assertSame( [ 2 ], $c->slept ); // first contact: a wrong host fails as fast as before
 	}
 
 	public function test_connect_failures_are_retried_on_a_write_route() {
 		$c = $this->client( [
+			self::ok(),
 			self::curl( 'cURL error 6: Could not resolve host: p.test' ),
 			self::curl( 'cURL error 7: Failed to connect to p.test port 443' ),
 			self::curl( 'cURL error 28: Connection timed out after 10001 milliseconds' ),
 			self::ok(),
 		] );
+		$c->get( '/ping' );
 		$this->assertSame( [ 'ok' => true ], $c->post( '/job/start', [] ) );
-		$this->assertSame( [ 5, 15, 30 ], $c->slept );
+		$this->assertSame( [ 5, 15, 30 ], $c->slept ); // the remote answered before: the network dropped, wait longer
 	}
 
 	public function test_a_connect_failure_gives_up_after_five_retries_and_says_how_many_attempts() {
 		$e = self::curl( 'cURL error 28: Connection timed out after 10001 milliseconds' );
-		$c = $this->client( [ $e, $e, $e, $e, $e, $e ] );
+		$c = $this->client( [ self::ok(), $e, $e, $e, $e, $e, $e ] );
+		$c->get( '/ping' );
 		$r = $c->post( '/job/step', [ 'job' => 'j' ] );
 		$this->assertInstanceOf( WP_Error::class, $r );
 		$this->assertSame( [ 5, 15, 30, 60, 120 ], $c->slept );
 		$this->assertStringContainsString( 'after 6 attempts', $r->get_error_message() );
 		$this->assertStringContainsString( 'Connection timed out', $r->get_error_message() );
+	}
+
+	public function test_a_wrong_host_on_first_contact_gives_up_after_the_short_waits() {
+		$e = self::curl( 'cURL error 6: Could not resolve host: p.test' );
+		$c = $this->client( [ $e, $e, $e, $e ] );
+		$r = $c->get( '/info' );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertSame( [ 2, 5, 15 ], $c->slept );
+		$this->assertStringContainsString( 'after 4 attempts', $r->get_error_message() );
+	}
+
+	public function test_an_error_status_counts_as_the_remote_answering() {
+		$c = $this->client( [ self::status( 404 ), self::curl( 'cURL error 7: Failed to connect to p.test port 443' ), self::ok() ] );
+		$c->get( '/missing' );
+		$this->assertSame( [ 'ok' => true ], $c->post( '/job/step', [ 'job' => 'j' ] ) );
+		$this->assertSame( [ 5 ], $c->slept );
 	}
 
 	public function test_a_read_timeout_still_uses_the_short_waits() {

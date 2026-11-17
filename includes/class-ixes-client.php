@@ -17,6 +17,8 @@ class IXES_Client {
 	/** @var array|null [ id, key, until ]: the signed session every request rides once the remote holds our public key */
 	private $session = null;
 	private $tried_session = false;
+	/** Whether the remote answered anything in this run: only then is a connect failure a dropped network, not a wrong host. */
+	private $reached = false;
 	private $prefix_header = '';
 	/** This site's table prefix; null reads $wpdb. Set by tests. */
 	public $hub_prefix = null;
@@ -72,7 +74,7 @@ class IXES_Client {
 	 */
 	private function request( $method, $route, $body = null, array $opts = [] ) {
 		$waits = empty( $opts['no_retry'] ) ? self::RETRY_WAIT : [];
-		// a connection that never opened waits longer: the network dropped, and nothing reached the remote
+		// a connection that never opened, once the remote has answered, waits longer: the network dropped, and nothing reached the remote
 		$cwaits = empty( $opts['no_retry'] ) ? self::CONNECT_WAIT : [];
 		$reopened = false;
 		for ( $n = 1; ; $n++ ) {
@@ -89,7 +91,8 @@ class IXES_Client {
 				continue;
 			}
 			if ( ! is_wp_error( $r ) ) break;
-			if ( self::unreached( $r ) ) {
+			// before the remote ever answered, a wrong host or port is likelier than an outage: fail as fast as before
+			if ( $this->reached && self::unreached( $r ) ) {
 				if ( ! $cwaits ) break;
 				$w = array_shift( $cwaits );
 			} else {
@@ -240,6 +243,7 @@ class IXES_Client {
 
 	private function parse( $res, $route, array $opts ) {
 		if ( is_wp_error( $res ) ) return $res;
+		$this->reached = true; // any HTTP answer, even an error status
 		$code = wp_remote_retrieve_response_code( $res );
 		if ( $code >= 300 && $code < 400 ) return new WP_Error( 'remote_redirect', 'remote redirected to ' . wp_remote_retrieve_header( $res, 'location' ) . '; register the final URL with env add' );
 		$body_s = wp_remote_retrieve_body( $res );
