@@ -6,8 +6,11 @@ class IXES_Planner {
 	/**
 	 * $mirror (push --mirror, first deploy only): rows, files and tables only the remote has, within the scope, are deleted there.
 	 * $drop (push --drop-tables): tables only the remote has that are dropped there even though the baseline does not know them.
+	 * $opts['resume']: keep each finished table's remote row hashes, and reuse the ones a failed plan left (IXES_Planstash).
+	 * Only a plan that is going to be shown or applied may, never one built to check a saved plan against the remote now.
+	 * $opts['say']: callable( string ) that hears how many tables a resumed plan skips.
 	 */
-	public static function build( array $env, IXES_Client $c, ?IXES_Scope $scope = null, $mirror = false, array $drop = [] ) {
+	public static function build( array $env, IXES_Client $c, ?IXES_Scope $scope = null, $mirror = false, array $drop = [], array $opts = [] ) {
 		global $wpdb;
 		if ( $scope === null ) $scope = IXES_Scope::from_array( [], $wpdb->prefix );
 		$info = $c->info();
@@ -32,6 +35,9 @@ class IXES_Planner {
 		$bytes = IXES_Hasher::bytes_mode( $caps, ! $two_way, $two_way ? null : $bl->meta( 'bytes_hash' ) );
 		$cells = $bytes ? [ 'cells' => 1 ] : [];
 		$byte_warn = in_array( IXES_Hasher::CAP, $caps, true ) && ! $bytes ? [ "the {$env['name']} baseline predates 0.9.3: rows with binary cells are compared as before until the next pull" ] : [];
+		// everything a remote row hash depends on besides its table: another value never reads these tables
+		$stash = empty( $opts['resume'] ) ? null : new IXES_Planstash( $env['name'], [ IXES_VERSION, self::env_key( $env ), $scope->to_array(), $algo, $bytes,
+			(string) ( $info['plugin'] ?? '' ), (string) ( $info['prefix'] ?? '' ), $wpdb->prefix ] );
 		// hub_version .. local: what a later push checks before it reuses this plan instead of building it again (reuse_refusal(), local_change())
 		// remote_active_plugins: the push writes active_plugins without any check on the remote, so a reuse needs the list it merged
 		$plan = [ 'hub_version' => IXES_VERSION, 'remote_version' => (string) ( $info['plugin'] ?? '' ), 'remote_active_plugins' => array_values( (array) ( $info['active_plugins'] ?? [] ) ), 'env_key' => self::env_key( $env ), 'local' => [ 'tables' => [], 'files' => null, 'local_only' => [] ],
@@ -55,13 +61,23 @@ class IXES_Planner {
 
 		$in_scope = [];
 		// empty and small remote tables up front: an empty one costs no request, small ones share requests
-		$cheap = [];
+		$cheap = []; $count = []; $saved = []; $hashable = 0;
 		foreach ( $candidates as $t ) {
-			if ( empty( $t['new'] ) && $scope->table_in( $t['name'] ) && IXES_Transfer::valid_table( $t['name'] ) ) $cheap[] = $t;
+			if ( ! empty( $t['new'] ) || ! $scope->table_in( $t['name'] ) || ! IXES_Transfer::valid_table( $t['name'] ) ) continue;
+			$count[ $t['name'] ] = isset( $t['rows'] ) ? (int) $t['rows'] : null;
+			// an empty table costs nothing to ask for again, so it is never saved nor counted
+			if ( $stash && $count[ $t['name'] ] !== 0 ) {
+				$hashable++;
+				$got = $stash->get( $t['name'], $count[ $t['name'] ] );
+				if ( $got !== null ) { $saved[ $t['name'] ] = $got; continue; }
+			}
+			$cheap[] = $t;
 		}
+		if ( $saved && isset( $opts['say'] ) ) call_user_func( $opts['say'], 'resuming plan: ' . count( $saved ) . " of {$hashable} tables already hashed" );
 		$byte_key_tables = [];
 		$pre = self::remote_hashes( $c, $cheap, $caps, $algo, $extra_prod, $bytes, $byte_key_tables );
 		if ( is_wp_error( $pre ) ) return $pre;
+		if ( $stash ) foreach ( $pre as $n => $rows ) if ( ( $count[ $n ] ?? null ) !== 0 ) $stash->put( $n, $count[ $n ] ?? null, $rows, ! empty( $byte_key_tables[ $n ] ) );
 		foreach ( $candidates as $t ) {
 			if ( ! $scope->table_in( $t['name'] ) ) continue;
 			$in_scope[] = $t['name']; // every in-scope table, not just ones that ended up with diffs, so family_warnings() sees the real --tables list
@@ -71,13 +87,15 @@ class IXES_Planner {
 			$pk = $t['pk'] === null ? null : IXES_Transfer::safe_pk( $name, $t['pk'] );
 			if ( $t['pk'] !== null && ! $pk ) return new WP_Error( 'bad_pk', "remote reports unknown pk column '{$t['pk']}' for {$name}" );
 			$remote = []; $byte_keys = ! empty( $byte_key_tables[ $name ] );
-			if ( isset( $pre[ $name ] ) ) $remote = $pre[ $name ];
+			if ( isset( $saved[ $name ] ) ) { $remote = $saved[ $name ]['rows']; $byte_keys = $saved[ $name ]['byte_keys']; }
+			elseif ( isset( $pre[ $name ] ) ) $remote = $pre[ $name ];
 			elseif ( empty( $t['new'] ) ) {
 				$r = $c->paged( '/hash/rows', [ 'table' => $name, 'algo' => $algo, 'extra' => $extra_prod, 'limit' => 5000 ] + $cells, function ( $res ) use ( &$remote, &$byte_keys, $pk ) {
 					if ( $pk ) $remote += $res['rows']; else $remote = array_merge( $remote, $res['rows'] );
 					if ( ! empty( $res['byte_keys'] ) ) { $byte_keys = true; return false; } // skipped below: no need for the rest
 				} );
 				if ( is_wp_error( $r ) ) return $r;
+				if ( $stash ) $stash->put( $name, $count[ $name ] ?? null, $remote, $byte_keys );
 			}
 			$local = self::local_rows( $name, $pk, $local_pairs, $algo, $bytes, $byte_keys );
 			if ( is_wp_error( $local ) ) return $local;
@@ -151,6 +169,8 @@ class IXES_Planner {
 			// only after env add --remove-exclude took a host's own path back into the sync
 			$plan['warnings'] = array_merge( $plan['warnings'], IXES_Mu::host_warnings( $plan['files']['push'], $plan['remote_file_hashes'], $env['name'] ) );
 		}
+		// the plan is whole: the next one starts from fresh remote hashes
+		if ( $stash ) IXES_Planstash::forget( $env['name'] );
 		return $plan;
 	}
 
