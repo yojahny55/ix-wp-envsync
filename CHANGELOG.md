@@ -3,6 +3,11 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
+## Unreleased
+- A connect or DNS failure during a paged read (`/hash/rows`, `/dump`, ...) no longer shrinks the page: no byte reached the remote, so the page size is not the cause (#93). The hub keeps the page and retries after 5, 15, 30, 60 and 120 seconds instead of 2, 5 and 15, so a short network outage no longer kills a long plan. curl errors 6 and 7 and error 28 with `Connection timed out` or `Resolving timed out` count as connect failures; `Operation timed out` is still a transfer timeout and still halves the page.
+- When it gives up on a connect failure, the error says that the network dropped and that the command can be relaunched, instead of suggesting a larger `--timeout`.
+- The connect timeout, DNS included, is no longer fixed at 10 seconds. It defaults to 30 seconds, never above the request's own timeout. `env add --connect-timeout=<seconds>` stores another value for an environment, and `--connect-timeout` on `pull`, `diff`, `push`, `self-update` and `status` overrides it for one run. It applies to single requests too, through `http_api_curl`, not only to parallel ones.
+
 ## 0.9.24 — 2026-11-13
 - `job/start`'s `plan_meta` now carries the hub's label for the environment (`prod`, `staging` or `local`), stored in the job's `meta.json` under `plan.label` (blank when invalid). `IXES_Applier::job_label( $job = '' )` reads it back on the remote (empty argument = the locked job, else the most recent one; `''` when unknown; in `job/step` the request's job always equals the locked one), so a site plugin can apply its own policy, for example refusing database writes on prod.
 

@@ -154,4 +154,80 @@ class RetryTest extends TestCase {
 		$this->assertNull( $c->paged( '/dump', [ 'table' => 'wp_posts', 'limit' => 5000 ], function ( $res ) use ( &$rows ) { $rows += $res['rows']; } ) );
 		$this->assertSame( [ 1 => 'a' ], $rows );
 	}
+	/** #93: a connect or DNS failure says nothing about the page size; it waits longer for the network instead. */
+	public function test_paging_keeps_the_page_and_waits_longer_when_the_network_drops() {
+		$c = $this->client( [
+			self::ok( [ 'rows' => [ 1 => 'a' ], 'next' => 1 ] ),
+			self::curl( 'cURL error 28: Connection timed out after 10000 milliseconds' ),
+			self::curl( 'cURL error 28: Resolving timed out after 10001 milliseconds' ),
+			self::curl( 'cURL error 6: Could not resolve host: p.test' ),
+			self::curl( 'cURL error 7: Failed to connect to p.test port 443' ),
+			self::ok( [ 'rows' => [ 2 => 'b' ], 'next' => null ] ),
+		] );
+		$rows = [];
+		$r = $c->paged( '/hash/rows', [ 'table' => 'wp_posts', 'limit' => 5000, 'bytes' => 8388608 ], function ( $res ) use ( &$rows ) { $rows += $res['rows']; } );
+		$this->assertNull( $r );
+		$this->assertSame( [ 1 => 'a', 2 => 'b' ], $rows );
+		$this->assertSame( [ 5, 15, 30, 60 ], $c->slept );
+		$first = json_decode( $c->calls[1][1]['body'], true );
+		foreach ( [ 2, 3, 4, 5 ] as $n ) {
+			$retry = json_decode( $c->calls[ $n ][1]['body'], true );
+			$this->assertSame( 1, $retry['from'] );
+			$this->assertSame( $first['limit'], $retry['limit'] );
+			$this->assertSame( 8388608, $retry['bytes'] );
+		}
+	}
+
+	public function test_paging_gives_up_after_the_network_wait_and_says_to_relaunch() {
+		$e = self::curl( 'cURL error 28: Resolving timed out after 10001 milliseconds' );
+		$c = $this->client( [ self::ok( [ 'rows' => [], 'next' => 637 ] ), $e, $e, $e, $e, $e, $e ] );
+		$r = $c->paged( '/hash/rows', [ 'table' => 'wp_posts', 'limit' => 5000 ], function () {} );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertSame( [ 5, 15, 30, 60, 120 ], $c->slept );
+		$this->assertSame( 5000, json_decode( $c->calls[6][1]['body'], true )['limit'] );
+		$m = $r->get_error_message();
+		$this->assertStringContainsString( 'after 6 attempt(s)', $m );
+		$this->assertStringContainsString( 'page after 637', $m );
+		$this->assertStringContainsString( 'network dropped', $m );
+		$this->assertStringContainsString( 'Relaunch', $m );
+		$this->assertStringNotContainsString( '--timeout', $m );
+	}
+
+	public function test_paging_still_halves_the_page_on_a_transfer_timeout_with_the_short_wait() {
+		$e = self::curl( 'cURL error 28: Operation timed out after 120000 milliseconds with 0 bytes received' );
+		$c = $this->client( [ self::ok( [ 'rows' => [], 'next' => 1 ] ), $e, $e, $e, $e ] );
+		$r = $c->paged( '/hash/rows', [ 'table' => 'wp_posts', 'limit' => 5000 ], function () {} );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertSame( [ 2, 5, 15 ], $c->slept );
+		$this->assertSame( 625, json_decode( $c->calls[4][1]['body'], true )['limit'] );
+		$this->assertStringContainsString( 'larger --timeout', $r->get_error_message() );
+		$this->assertStringNotContainsString( 'network dropped', $r->get_error_message() );
+	}
+
+	public function test_unreached_tells_connect_failures_from_transfer_timeouts() {
+		foreach ( [ 'cURL error 6: Could not resolve host: p.test', 'cURL error 7: Failed to connect to p.test port 443', 'cURL error 28: Connection timed out after 10000 milliseconds', 'cURL error 28: Resolving timed out after 10001 milliseconds' ] as $m ) {
+			$this->assertTrue( IXES_Client::unreached( self::curl( $m ) ), $m );
+		}
+		foreach ( [ 'cURL error 28: Operation timed out after 120000 milliseconds with 0 bytes received', 'cURL error 56: Connection reset by peer', 'cURL error 52: Empty reply from server' ] as $m ) {
+			$this->assertFalse( IXES_Client::unreached( self::curl( $m ) ), $m );
+		}
+		$this->assertFalse( IXES_Client::unreached( new WP_Error( 'remote_503', 'remote 503 on /dump: Connection timed out', [ 'status' => 503 ] ) ) );
+	}
+
+	public function test_connect_timeout_defaults_to_30_and_never_exceeds_the_request_timeout() {
+		$c = $this->client( [ self::ok() ] );
+		$c->post( '/job/finish', [] );
+		$this->assertSame( 120, $c->calls[0][1]['timeout'] );
+		$this->assertSame( 30, $c->calls[0][1]['connect_timeout'] );
+		$this->assertSame( 30, $c->connect_timeout( 600 ) );
+		$this->assertSame( 5, $c->connect_timeout( 5 ) );
+	}
+
+	public function test_connect_timeout_comes_from_the_env() {
+		$c = new RetryClient( [ 'name' => 'p', 'url' => 'https://p.test', 'token' => str_repeat( 'a', 64 ), 'timeout' => 600, 'connect_timeout' => 90 ] );
+		$c->script = [ self::ok() ];
+		$c->post( '/job/finish', [] );
+		$this->assertSame( 90, $c->calls[0][1]['connect_timeout'] );
+		$this->assertSame( 20, $c->connect_timeout( 20 ) );
+	}
 }
