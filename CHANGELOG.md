@@ -3,7 +3,7 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
-## Unreleased
+## 0.9.26 — 2026-11-16
 - A `diff` or `push` whose plan fails partway (a network outage longer than the retries, a crash, Ctrl-C) no longer starts over from the first table (#96). Each table whose remote row hashes it finished is saved under `plan-resume/<env>/` in the storage folder, keyed by everything those hashes depend on: scope, environment settings, hash algo, byte mode, remote plugin version and table prefixes. The relaunch prints `resuming plan: N of M tables already hashed` and asks only for the rest. A saved table is used for up to 60 minutes and only while the remote's row count for it is unchanged. The saved hashes are dropped once a plan finishes and by `--flush-cache`, which `push` now takes too. A plan built only to check a saved `--plan` file against the remote never uses them, and the push still checks every remote row it touches.
 
 ## 0.9.25 — 2026-11-16
