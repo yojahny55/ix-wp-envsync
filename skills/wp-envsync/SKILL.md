@@ -206,16 +206,16 @@ All commands take `--path=<site>`.
 | Command | Purpose |
 |---|---|
 | `envsync status [<env>] [--json]` | Role, each environment's state, and the one next command |
-| `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--timeout=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--tables=] [--exclude-tables=] [--add-exclude-tables=] [--remove-exclude-tables=] [--exclude-options=] [--add-exclude-options=] [--remove-exclude-options=] [--replace=]` | Register a remote, or update only the options you pass |
+| `envsync env add <name> [<url>] [--token=] [--label=] [--only=] [--timeout=] [--connect-timeout=] [--basic-auth=] [--exclude=] [--add-exclude=] [--remove-exclude=] [--tables=] [--exclude-tables=] [--add-exclude-tables=] [--remove-exclude-tables=] [--exclude-options=] [--add-exclude-options=] [--remove-exclude-options=] [--replace=]` | Register a remote, or update only the options you pass |
 | `envsync env list` / `remove <name>` / `ping <name>` | List, remove or test environments |
 | `envsync env excludes <name>` | Every excluded path with its source, and the file count still in scope |
-| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--no-seed] [--timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
-| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--table= --list=<column>] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=]` | Preview a push. Changes nothing. |
-| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--replan] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=] [--parallel=<n>]` | Apply changes to the remote |
+| `envsync pull <env> [--dry-run] [--details] [--yes] [--fresh] [--verbose] [--format=json] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--no-seed] [--timeout=] [--connect-timeout=] [--parallel=<n>]` | Overwrite this site from the remote and record the baseline. Resumes an interrupted pull. |
+| `envsync diff <env> [--format=json] [--details] [--table= --id=] [--table= --list=<column>] [--flush-cache] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=] [--connect-timeout=]` | Preview a push. Changes nothing. |
+| `envsync push <env> [--dry-run] [--yes] [--force] [--mirror] [--drop-tables=] [--backup-dir=] [--verbose] [--format=json] [--plan=<file>] [--replan] [--only=] [--tables=] [--paths=] [--exclude-tables=] [--timeout=] [--connect-timeout=] [--parallel=<n>]` | Apply changes to the remote |
 | `envsync unlock <env> [--yes]` | Clear a stuck push lock. Rolls nothing back. |
 | `envsync rollback <env> [--job=<id>] [--yes]` | Restore a pre-push snapshot |
 | `envsync rescue <env> [--rollback] [--job=<id>] [--plugins-off] [--quarantine-mu] [--restore-self [--from=<version>]] [--yes]` | Recover a remote that crashes on every request (loads no plugins; `--quarantine-mu` does not boot WordPress at all) |
-| `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
+| `envsync self-update <env> [--zip=<file>] [--force] [--dry-run] [--yes] [--timeout=] [--connect-timeout=]` | Install this hub's EnvSync (or a release zip) on the remote, check the site, restore the old version if it breaks |
 | `envsync token [--rotate]` | Show or reissue this site's token (run on a remote) |
 
 `--only` takes `db,files,uploads,themes,plugins,mu-plugins`. `--tables` takes table names or globs and implies `--only=db`. `--paths` takes wp-content paths or globs and implies `--only=files`.
@@ -243,6 +243,8 @@ Warn them that the `chmod 664` sweep strips execute bits from any scripts under 
 **A pull that stopped partway**: `status` shows `interrupted_pull`. Fix the cause (usually permissions or a timeout), then resume with `pull <env> --dry-run` and `pull <env> --yes`. Already-transferred files are not sent again. Until it finishes, the local site can be half-updated. If a half-updated plugin crashes the site, get it up first with `wp --path=<site> --skip-plugins --skip-themes plugin deactivate <plugin>`. A resume keeps the interrupted pull's own scope, not the environment's default: `status` puts that scope's flags in `next.command`, and the same flags may be passed again. Different scope flags are refused. If resume is refused (a different scope, or the remote's plugin version, excludes or replace pairs changed), use `pull <env> --fresh --yes`.
 
 **`cURL error 28: Operation timed out`** on a slow remote: pass `--timeout=<seconds>` on that one command, or set it once with `env add <name> --timeout=<seconds>` so every future pull/diff/push against it uses it (a one-off `--timeout` still overrides it). Default is 120s.
+
+**`cURL error 28: Connection timed out` / `Resolving timed out`, or curl 6/7**: the network dropped before the request reached the remote; `--timeout` does not help. Every request already retries it five times, waiting up to 120s, and paged reads keep their page size. If the run still gives up, relaunch the same command once the network is back. On a slow DNS or link, raise the connect timeout (default 30s) with `--connect-timeout=<seconds>`, or store it with `env add <name> --connect-timeout=<seconds>`.
 
 **`503 … no available server`**: the host's proxy (Traefik on Coolify) has no healthy container for the site. WordPress never saw the request. Retrying will not help. Tell the user to restart the container in Coolify and to check that the site files are on a persistent volume. If the remote runs a plugin older than 0.4.2, maintenance mode during a push fails the health check and causes exactly this, so the remote needs the new zip first.
 

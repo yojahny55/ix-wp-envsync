@@ -25,6 +25,10 @@ class IXES_Env {
 			if ( ! is_numeric( $env['timeout'] ) || (int) $env['timeout'] < 1 ) throw new InvalidArgumentException( 'timeout must be a positive number of seconds' );
 			$env['timeout'] = (int) $env['timeout'];
 		}
+		if ( isset( $env['connect_timeout'] ) ) {
+			if ( ! is_numeric( $env['connect_timeout'] ) || (int) $env['connect_timeout'] < 1 ) throw new InvalidArgumentException( 'connect-timeout must be a positive number of seconds' );
+			$env['connect_timeout'] = (int) $env['connect_timeout'];
+		}
 		$env['url'] = untrailingslashit( $env['url'] );
 		$all = self::all();
 		$all[ $env['name'] ] = $env;

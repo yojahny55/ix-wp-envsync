@@ -28,6 +28,16 @@ class EnvTest extends TestCase {
 		$this->assertArrayNotHasKey( 'timeout', IXES_Env::get( 'prod' ) );
 	}
 
+	public function test_add_stores_a_valid_connect_timeout() {
+		IXES_Env::add( $this->base( [ 'connect_timeout' => '60' ] ) );
+		$this->assertSame( 60, IXES_Env::get( 'prod' )['connect_timeout'] );
+	}
+
+	public function test_add_rejects_a_zero_connect_timeout() {
+		$this->expectException( InvalidArgumentException::class );
+		IXES_Env::add( $this->base( [ 'connect_timeout' => 0 ] ) );
+	}
+
 	public function test_re_adding_without_timeout_keeps_the_stored_one() {
 		IXES_Env::add( $this->base( [ 'timeout' => 300 ] ) );
 		// mimics the CLI's update path: start from the existing env, only overwrite what was passed

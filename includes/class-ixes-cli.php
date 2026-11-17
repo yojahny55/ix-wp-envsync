@@ -8,16 +8,20 @@ class IXES_CLI {
 		if ( ! $e ) WP_CLI::error( "unknown env '{$name}'. Run: wp envsync env list" );
 		return $e;
 	}
-	/** $timeout (from --timeout on pull/diff/push) overrides the env's own --timeout for this run only; it is never saved. */
-	private function client( $name, $timeout = null ) {
+	/**
+	 * $timeout and $connect (from --timeout and --connect-timeout on pull/diff/push) override the env's own values
+	 * for this run only; they are never saved.
+	 */
+	private function client( $name, $timeout = null, $connect = null ) {
 		$env = $this->get_env( $name );
 		if ( $timeout !== null ) $env['timeout'] = $timeout;
+		if ( $connect !== null ) $env['connect_timeout'] = $connect;
 		return new IXES_Client( $env );
 	}
-	private function timeout_override( $assoc ) {
-		if ( ! isset( $assoc['timeout'] ) ) return null;
-		if ( ! is_numeric( $assoc['timeout'] ) || (int) $assoc['timeout'] < 1 ) WP_CLI::error( '--timeout must be a positive number of seconds' );
-		return (int) $assoc['timeout'];
+	private function timeout_override( $assoc, $key = 'timeout' ) {
+		if ( ! isset( $assoc[ $key ] ) ) return null;
+		if ( ! is_numeric( $assoc[ $key ] ) || (int) $assoc[ $key ] < 1 ) WP_CLI::error( "--{$key} must be a positive number of seconds" );
+		return (int) $assoc[ $key ];
 	}
 	private function fail_if_error( $v ) { if ( is_wp_error( $v ) ) WP_CLI::error( $v->get_error_message() ); return $v; }
 	private function confirm( $assoc, $msg ) { if ( empty( $assoc['yes'] ) ) WP_CLI::confirm( $msg ); }
@@ -141,6 +145,9 @@ class IXES_CLI {
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for every request to this environment (for add). Default: 120. --timeout on pull/diff/push overrides it for that run. Pass an empty value to remove it.
 	 *
+	 * [--connect-timeout=<seconds>]
+	 * : Seconds to open each connection to this environment, DNS included (for add). Default: 30, never above --timeout. --connect-timeout on pull/diff/push overrides it for that run. Pass an empty value to remove it.
+	 *
 	 * [--basic-auth=<credentials>]
 	 * : HTTP Basic Auth credentials as user:pass, for a remote behind a password-protected proxy (for add). Pass an empty value to remove them.
 	 *
@@ -202,6 +209,10 @@ class IXES_CLI {
 			if ( isset( $assoc['timeout'] ) ) {
 				if ( $assoc['timeout'] === '' || $assoc['timeout'] === true ) unset( $env['timeout'] );
 				else $env['timeout'] = $assoc['timeout']; // IXES_Env::add() validates it
+			}
+			if ( isset( $assoc['connect-timeout'] ) ) {
+				if ( $assoc['connect-timeout'] === '' || $assoc['connect-timeout'] === true ) unset( $env['connect_timeout'] );
+				else $env['connect_timeout'] = $assoc['connect-timeout']; // IXES_Env::add() validates it
 			}
 			if ( isset( $assoc['basic-auth'] ) ) {
 				if ( $assoc['basic-auth'] === '' || $assoc['basic-auth'] === true ) unset( $env['basic_auth'] );
@@ -310,6 +321,9 @@ class IXES_CLI {
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this pull, overriding the environment's own --timeout (env add).
 	 *
+	 * [--connect-timeout=<seconds>]
+	 * : Seconds to open each connection, DNS included, for this run, overriding the environment's own --connect-timeout (env add).
+	 *
 	 * [--parallel=<n>]
 	 * : File requests in flight at once, 1 to 16. Batching and parallel requests need 0.8.0 on the remote; an older one gets one file per request.
 	 * ---
@@ -318,7 +332,7 @@ class IXES_CLI {
 	 */
 	public function pull( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) ); $par = $this->parallel( $assoc );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ), $this->timeout_override( $assoc, 'connect-timeout' ) ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['fresh'] ) ) IXES_Pull::discard( $env );
 		$progress = $this->tracked( 'pull', $env['name'], $assoc );
 		$state = IXES_PullState::load( $env['name'] );
@@ -429,10 +443,13 @@ class IXES_CLI {
 	 *
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this diff, overriding the environment's own --timeout (env add).
+	 *
+	 * [--connect-timeout=<seconds>]
+	 * : Seconds to open each connection, DNS included, for this run, overriding the environment's own --connect-timeout (env add).
 	 */
 	public function diff( $args, $assoc ) {
 		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ), $this->timeout_override( $assoc, 'connect-timeout' ) );
 		$table = empty( $assoc['table'] ) ? '' : $this->table_arg( $assoc['table'] );
 		if ( ( isset( $assoc['id'] ) || isset( $assoc['list'] ) ) && $table === '' ) WP_CLI::error( '--id and --list go with --table' );
 		if ( isset( $assoc['id'] ) ) { $this->row_diff( $env, $c, $table, (string) $assoc['id'] ); return; }
@@ -598,6 +615,9 @@ class IXES_CLI {
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this push, overriding the environment's own --timeout (env add).
 	 *
+	 * [--connect-timeout=<seconds>]
+	 * : Seconds to open each connection, DNS included, for this run, overriding the environment's own --connect-timeout (env add).
+	 *
 	 * [--parallel=<n>]
 	 * : File requests in flight at once, 1 to 16. Batching and parallel requests need 0.8.0 on the remote; an older one gets one file per request.
 	 * ---
@@ -605,7 +625,7 @@ class IXES_CLI {
 	 * ---
 	 */
 	public function push( $args, $assoc ) {
-		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ) ); $par = $this->parallel( $assoc );
+		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ), $this->timeout_override( $assoc, 'connect-timeout' ) ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
 		$saved = null;
 		if ( ! empty( $assoc['plan'] ) ) {
@@ -918,11 +938,14 @@ class IXES_CLI {
 	 * [--timeout=<seconds>]
 	 * : HTTP timeout for this run, overriding the environment's own --timeout (env add).
 	 *
+	 * [--connect-timeout=<seconds>]
+	 * : Seconds to open each connection, DNS included, for this run, overriding the environment's own --connect-timeout (env add).
+	 *
 	 * @subcommand self-update
 	 */
 	public function self_update( $args, $assoc ) {
 		$env = $this->get_env( $args[0] ); $t = $this->timeout_override( $assoc );
-		$c = $this->client( $args[0], $t );
+		$c = $this->client( $args[0], $t, $this->timeout_override( $assoc, 'connect-timeout' ) );
 		$zip = isset( $assoc['zip'] ) ? (string) $assoc['zip'] : null;
 		if ( $zip !== null && ! is_file( $zip ) ) WP_CLI::error( "no such file: {$zip}" );
 		$plan = $this->fail_if_error( IXES_Selfupdate::plan( $c, $zip, ! empty( $assoc['force'] ) ) );
@@ -974,6 +997,9 @@ class IXES_CLI {
 	 * [--timeout=<seconds>]
 	 * : Per-request timeout for this run only.
 	 *
+	 * [--connect-timeout=<seconds>]
+	 * : Seconds to open each connection, DNS included, for this run, overriding the environment's own --connect-timeout (env add).
+	 *
 	 * [--format=<format>]
 	 * : Machine-readable list. WP-CLI rewrites --json to --format=json itself.
 	 * ---
@@ -984,7 +1010,7 @@ class IXES_CLI {
 	 * ---
 	 */
 	public function plugins( $args, $assoc ) {
-		$info = $this->fail_if_error( $this->client( $args[0], $this->timeout_override( $assoc ) )->info() );
+		$info = $this->fail_if_error( $this->client( $args[0], $this->timeout_override( $assoc ), $this->timeout_override( $assoc, 'connect-timeout' ) )->info() );
 		if ( ! isset( $info['inventory'] ) ) WP_CLI::error( "{$args[0]} runs an EnvSync too old to report its plugins. Run: wp envsync self-update {$args[0]}" );
 		$rows = IXES_Report::plugin_inventory( IXES_Transfer::inventory(), (array) $info['inventory'], (array) get_option( 'active_plugins', [] ), (array) ( $info['active_plugins'] ?? [] ) );
 		if ( $this->wants_json( $assoc ) ) { WP_CLI::line( wp_json_encode( [ 'env' => $args[0], 'plugins' => $rows ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) ); return; }

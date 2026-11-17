@@ -6,6 +6,10 @@ class IXES_Client {
 	const DEFAULT_TIMEOUT = 120;
 	const BATCH_TIMEOUT = 300; // floor for one batch request: a 4 MB batch of media that does not compress, on a slow link
 	const RETRY_WAIT = [ 2, 5, 15 ]; // seconds before each retry of a transient failure
+	// seconds before each retry of a request whose connection never opened (DNS, refused, connect timeout): the
+	// network dropped, and a short outage often lasts longer than RETRY_WAIT's 22 s
+	const CONNECT_WAIT = [ 5, 15, 30, 60, 120 ];
+	const CONNECT_TIMEOUT = 30; // default connect/DNS timeout, never above the request's own timeout
 	// routes that change nothing on the remote: any transient failure is safe to send again
 	const READ_ROUTES = [ '/ping', '/info', '/hash/rows', '/hash/tables', '/hash/files', '/schema', '/dump', '/file/get', '/file/batch', '/dirs' ];
 
@@ -13,6 +17,8 @@ class IXES_Client {
 	/** @var array|null [ id, key, until ]: the signed session every request rides once the remote holds our public key */
 	private $session = null;
 	private $tried_session = false;
+	/** Whether the remote answered anything in this run: only then is a connect failure a dropped network, not a wrong host. */
+	private $reached = false;
 	private $prefix_header = '';
 	/** This site's table prefix; null reads $wpdb. Set by tests. */
 	public $hub_prefix = null;
@@ -24,11 +30,37 @@ class IXES_Client {
 	}
 
 	/** Overridden by tests. */
-	protected function transport( $url, array $args ) { return wp_remote_request( $url, $args ); }
+	protected function transport( $url, array $args ) {
+		self::hook_connect_timeout();
+		return wp_remote_request( $url, $args );
+	}
+
+	private static $hooked = false;
+
+	/** wp_remote_request() has no connect timeout argument (Requests uses 10 s): curl reads ours from the request args. */
+	private static function hook_connect_timeout() {
+		if ( self::$hooked || ! function_exists( 'add_action' ) ) return;
+		self::$hooked = true;
+		add_action( 'http_api_curl', [ __CLASS__, 'apply_connect_timeout' ], 10, 2 );
+	}
+
+	/** http_api_curl: runs after Requests set its own connect timeout, so this one wins. Only for requests that carry it. */
+	public static function apply_connect_timeout( $handle, $r ) {
+		if ( is_array( $r ) && isset( $r['connect_timeout'] ) && defined( 'CURLOPT_CONNECTTIMEOUT_MS' ) ) curl_setopt( $handle, CURLOPT_CONNECTTIMEOUT_MS, (int) $r['connect_timeout'] * 1000 );
+	}
 	protected function sleep_s( $s ) { sleep( (int) $s ); }
 
 	/** This env's own --timeout (env add), or 0 when it never set one. */
 	private function raw_timeout() { return max( 0, (int) ( $this->env['timeout'] ?? 0 ) ); }
+
+	/**
+	 * Seconds to open the connection, DNS included, for a request allowed $timeout in all: this env's --connect-timeout,
+	 * else CONNECT_TIMEOUT, never above $timeout.
+	 */
+	public function connect_timeout( $timeout ) {
+		$c = max( 0, (int) ( $this->env['connect_timeout'] ?? 0 ) );
+		return max( 1, min( $c > 0 ? $c : self::CONNECT_TIMEOUT, (int) $timeout ) );
+	}
 
 	/** raw_timeout(), else the built-in default. A caller's own $opts['timeout'] always wins over this. */
 	public function effective_timeout() {
@@ -42,6 +74,8 @@ class IXES_Client {
 	 */
 	private function request( $method, $route, $body = null, array $opts = [] ) {
 		$waits = empty( $opts['no_retry'] ) ? self::RETRY_WAIT : [];
+		// a connection that never opened, once the remote has answered, waits longer: the network dropped, and nothing reached the remote
+		$cwaits = empty( $opts['no_retry'] ) ? self::CONNECT_WAIT : [];
 		$reopened = false;
 		for ( $n = 1; ; $n++ ) {
 			$ready = $this->ready( $route, $opts );
@@ -56,8 +90,15 @@ class IXES_Client {
 				$this->caps = array_values( array_diff( $this->caps !== null ? $this->caps : (array) ( $this->info['caps'] ?? [] ), [ 'nonce' ] ) );
 				continue;
 			}
-			if ( ! is_wp_error( $r ) || ! $waits || ! self::transient( $r, $route ) ) break;
-			$w = array_shift( $waits );
+			if ( ! is_wp_error( $r ) ) break;
+			// before the remote ever answered, a wrong host or port is likelier than an outage: fail as fast as before
+			if ( $this->reached && self::unreached( $r ) ) {
+				if ( ! $cwaits ) break;
+				$w = array_shift( $cwaits );
+			} else {
+				if ( ! $waits || ! self::transient( $r, $route ) ) break;
+				$w = array_shift( $waits );
+			}
 			if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry {$n} on {$route} in {$w}s: " . $r->get_error_message() );
 			$this->sleep_s( $w );
 		}
@@ -75,8 +116,18 @@ class IXES_Client {
 		$read = in_array( $route, self::READ_ROUTES, true );
 		if ( $status !== null ) return $read && in_array( $status, [ 429, 502, 503, 504 ], true );
 		$m = $e->get_error_message();
-		if ( preg_match( '/cURL error (6|7):|cURL error 28: (Resolving|Connection) timed out|Failed to connect|Could not resolve/i', $m ) ) return true;
+		if ( self::unreached( $e ) ) return true;
 		return $read && preg_match( '/cURL error (28|52|56):|timed out|Connection reset|Empty reply/i', $m ) === 1;
+	}
+
+	/**
+	 * Whether the connection never opened: DNS failed, the host refused, or the connect or resolve step timed out
+	 * (curl 6, 7, or 28 "Connection timed out" / "Resolving timed out"). No byte reached the remote. A transfer
+	 * timeout (28 "Operation timed out") is not one: the remote was answering, just too slowly.
+	 */
+	public static function unreached( WP_Error $e ) {
+		if ( self::err_code( $e ) !== null ) return false;
+		return preg_match( '/cURL error (6|7):|cURL error 28: (Resolving|Connection) timed out|Failed to connect|Could not resolve/i', $e->get_error_message() ) === 1;
 	}
 
 	/** Whether a paged read that crashed the remote may succeed with a smaller page: a 500 on a read route, above the floor. */
@@ -183,7 +234,8 @@ class IXES_Client {
 		if ( $excl !== '' ) $headers['X-Envsync-Exclude-Options'] = $excl;
 		if ( $nonce !== '' ) $headers['X-Envsync-Nonce'] = $nonce;
 		if ( ! empty( $opts['headers'] ) ) $headers = array_merge( $headers, $opts['headers'] );
-		$args = [ 'method' => $method, 'timeout' => (int) ( $opts['timeout'] ?? $this->effective_timeout() ), 'redirection' => 0, 'headers' => $headers ];
+		$timeout = (int) ( $opts['timeout'] ?? $this->effective_timeout() );
+		$args = [ 'method' => $method, 'timeout' => $timeout, 'connect_timeout' => $this->connect_timeout( $timeout ), 'redirection' => 0, 'headers' => $headers ];
 		if ( $raw !== '' || $body !== null ) $args['body'] = $raw;
 		// ponytail: ?rest_route= works with any permalink structure; /wp-json/ 301s on plain permalinks and drops the Authorization header
 		return [ $opts['url'] ?? $this->env['url'] . '/?rest_route=' . $path, $args ];
@@ -191,6 +243,7 @@ class IXES_Client {
 
 	private function parse( $res, $route, array $opts ) {
 		if ( is_wp_error( $res ) ) return $res;
+		$this->reached = true; // any HTTP answer, even an error status
 		$code = wp_remote_retrieve_response_code( $res );
 		if ( $code >= 300 && $code < 400 ) return new WP_Error( 'remote_redirect', 'remote redirected to ' . wp_remote_retrieve_header( $res, 'location' ) . '; register the final URL with env add' );
 		$body_s = wp_remote_retrieve_body( $res );
@@ -240,7 +293,7 @@ class IXES_Client {
 		foreach ( $wire as $k => $w ) {
 			list( $url, $a ) = $w;
 			$reqs[ $k ] = [ 'url' => $url, 'type' => $a['method'], 'headers' => $a['headers'], 'data' => $a['body'] ?? '', 'options' => [
-				'timeout' => $a['timeout'], 'connect_timeout' => min( 10, $a['timeout'] ), 'follow_redirects' => false,
+				'timeout' => $a['timeout'], 'connect_timeout' => $a['connect_timeout'] ?? min( self::CONNECT_TIMEOUT, $a['timeout'] ), 'follow_redirects' => false,
 				'useragent' => 'WordPress/' . get_bloginfo( 'version' ) . '; ' . home_url( '/' ),
 				// wp_remote_request's own default: WordPress's CA bundle, unless a filter turned verification off
 				'verify' => apply_filters( 'https_ssl_verify', true, $url ) ? ABSPATH . WPINC . '/certificates/ca-bundle.crt' : false,
@@ -367,15 +420,22 @@ class IXES_Client {
 		$limit = isset( $body['limit'] ) ? (int) $body['limit'] : 5000;
 		$max   = $limit;
 		$next  = $body[ $cursor_key ] ?? null;
-		$waits = self::RETRY_WAIT; $tries = 1;
+		$waits = self::RETRY_WAIT; $cwaits = self::CONNECT_WAIT; $tries = 1;
 		while ( true ) {
 			$body['limit'] = $limit;
 			$body[ $cursor_key ] = $next;
 			$t0  = microtime( true );
 			$res = $this->post( $route, $body, [ 'no_retry' => true ] );
 			if ( is_wp_error( $res ) ) {
+				// the connection never opened: the page size is not the cause, so keep it and wait longer for the network
+				if ( $cwaits && self::unreached( $res ) ) {
+					$w = array_shift( $cwaits ); $tries++;
+					if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry on {$route} in {$w}s, network unreachable: " . $res->get_error_message() );
+					$this->sleep_s( $w );
+					continue;
+				}
 				// a page too big for a slow link times out whole: ask for the same cursor again, half as much
-				if ( $waits && self::transient( $res, $route ) ) {
+				if ( $waits && ! self::unreached( $res ) && self::transient( $res, $route ) ) {
 					$w = array_shift( $waits ); $tries++;
 					$limit = max( 100, (int) ( $limit / 2 ) );
 					if ( isset( $body['bytes'] ) ) $body['bytes'] = max( 262144, (int) ( $body['bytes'] / 2 ) );
@@ -396,9 +456,12 @@ class IXES_Client {
 				}
 				$t = isset( $body['table'] ) ? " {$body['table']}" : '';
 				$at = $next === null ? 'the first page' : 'the page after ' . ( is_scalar( $next ) ? $next : wp_json_encode( $next ) );
-				return new WP_Error( $res->get_error_code(), "paging {$route}{$t} failed at {$at} after {$tries} attempt(s): " . $res->get_error_message() . ( self::transient( $res, $route ) ? '. A slow remote may need a larger --timeout.' : '' ) . ( $tries > 1 && self::oversized( $res, $route, PHP_INT_MAX ) ? '. Even a smaller page crashed the remote; check its PHP error log and memory_limit.' : '' ), $res->get_error_data() );
+				if ( self::unreached( $res ) ) $hint = '. The network dropped (connect or DNS failure): the remote was never reached. Relaunch the same command once the connection is back.';
+				elseif ( self::transient( $res, $route ) ) $hint = '. A slow remote may need a larger --timeout.';
+				else $hint = '';
+				return new WP_Error( $res->get_error_code(), "paging {$route}{$t} failed at {$at} after {$tries} attempt(s): " . $res->get_error_message() . $hint . ( $tries > 1 && self::oversized( $res, $route, PHP_INT_MAX ) ? '. Even a smaller page crashed the remote; check its PHP error log and memory_limit.' : '' ), $res->get_error_data() );
 			}
-			$waits = self::RETRY_WAIT; $tries = 1;
+			$waits = self::RETRY_WAIT; $cwaits = self::CONNECT_WAIT; $tries = 1;
 			$dt  = microtime( true ) - $t0;
 			if ( $each( $res ) === false ) return;
 			$prev = $next;

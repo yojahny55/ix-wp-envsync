@@ -488,7 +488,8 @@ Options for `add`:
 - `--exclude-options=<globs>`, `--add-exclude-options=`, `--remove-exclude-options=` — option name globs whose `wp_options` rows never travel. See [Leaving options out](#leaving-options-out).
 - `--tables=<tables>` — optional default table list, applied with `--only` when no scope flag is given. `--tables=` removes it.
 - `--only=<parts>` — optional default scope for this environment's `pull`, `diff` and `push`, e.g. `db,uploads` when code travels by git. `--only=` or `--only=all` removes it. See [A default scope per environment](#a-default-scope-per-environment-optional).
-- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two. A request that fails on the network is retried up to three times (after 2, 5 and 15 seconds): a DNS or connect failure on any request, since it never reached the remote, and a 429/502/503/504 or a timeout only on requests that read. A paged read (`/dump`, `/hash/*`) that times out asks for half the page. A 500 is never retried.
+- `--timeout=<seconds>` — HTTP timeout for every request to this environment. Default: 120. `--timeout=` removes it. `env list` shows it. A `--timeout` on `pull`/`diff`/`push` overrides it for that one run; the short timeouts on `/info` (30s) and `rescue.php` (60s) still use the larger of the two. A DNS or connect failure (curl 6 or 7, or 28 with `Connection timed out` or `Resolving timed out`) is retried on any request, since it never reached the remote. Once the remote has answered in that run, it is retried up to five times (after 5, 15, 30, 60 and 120 seconds); before that, a wrong host or port is likelier than an outage, so it gets the short waits below. A 429/502/503/504 or a timeout is retried only on requests that read, up to three times (after 2, 5 and 15 seconds). A paged read (`/dump`, `/hash/*`) that times out asks for half the page. A paged read whose connection never opened keeps its page; relaunching after it gives up is safe. A 500 is never retried.
+- `--connect-timeout=<seconds>` — time to open each connection to this environment, DNS included. Default: 30, never above the request's timeout. `--connect-timeout=` removes it. A `--connect-timeout` on `pull`/`diff`/`push` overrides it for that one run.
 - `--replace=<pairs>` — extra comma-separated `search:replace` pairs applied alongside the URL rewrite, for cases like a per-environment domain constant.
 
 ### `wp envsync status [<env>]`
@@ -528,6 +529,7 @@ Replaces this site with a copy of `<env>` and records a new baseline.
 - `--backup-dir=<dir>` — where to write the `.sql` copy of every table the pull drops here. See [Dropped tables](#dropped-tables).
 - `--no-seed` — never try downloads.wordpress.org for plugin/theme files (see [Seeding from wordpress.org](#seeding-from-wordpressorg) below). Default: `ENVSYNC_NO_SEED`, else seeding is on.
 - `--timeout=<seconds>` — HTTP timeout for this pull, overriding the environment's own `--timeout` (`env add`).
+- `--connect-timeout=<seconds>` — connect timeout, DNS included, for this pull, overriding the environment's own `--connect-timeout`.
 - `--parallel=<n>` — file requests in flight at once, 1 to 16 (default 4). `1` sends them one after another. See [How files travel](#how-files-travel).
 
 This **overwrites the local database and wp-content**. It is the destructive one. It is also the one you run most.
@@ -558,6 +560,7 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 - `--exclude-tables=<tables>` — Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 - `--timeout=<seconds>` — HTTP timeout for this diff, overriding the environment's own `--timeout` (`env add`).
+- `--connect-timeout=<seconds>` — connect timeout, DNS included, for this diff, overriding the environment's own `--connect-timeout`.
 
 ### `wp envsync push <env>`
 
@@ -576,6 +579,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
 - `--exclude-tables=<tables>` — Comma list of table names or globs to leave out, added to the environment's own. @logs covers common log tables.
 - `--timeout=<seconds>` — HTTP timeout for this push, overriding the environment's own `--timeout` (`env add`).
+- `--connect-timeout=<seconds>` — connect timeout, DNS included, for this push, overriding the environment's own `--connect-timeout`.
 
 Before applying, the remote snapshots every row and file the plan touches, and goes into maintenance mode for the duration.
 
