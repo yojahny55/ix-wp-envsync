@@ -27,7 +27,7 @@ class RetryTest extends TestCase {
 		$c = $this->client( [ self::curl( 'cURL error 28: Resolving timed out after 10001 milliseconds' ), self::ok() ] );
 		$this->assertSame( [ 'ok' => true ], $c->post( '/job/step', [ 'job' => 'j' ] ) );
 		$this->assertCount( 2, $c->calls );
-		$this->assertSame( [ 2 ], $c->slept );
+		$this->assertSame( [ 5 ], $c->slept );
 	}
 
 	public function test_connect_failures_are_retried_on_a_write_route() {
@@ -38,16 +38,30 @@ class RetryTest extends TestCase {
 			self::ok(),
 		] );
 		$this->assertSame( [ 'ok' => true ], $c->post( '/job/start', [] ) );
+		$this->assertSame( [ 5, 15, 30 ], $c->slept );
+	}
+
+	public function test_a_connect_failure_gives_up_after_five_retries_and_says_how_many_attempts() {
+		$e = self::curl( 'cURL error 28: Connection timed out after 10001 milliseconds' );
+		$c = $this->client( [ $e, $e, $e, $e, $e, $e ] );
+		$r = $c->post( '/job/step', [ 'job' => 'j' ] );
+		$this->assertInstanceOf( WP_Error::class, $r );
+		$this->assertSame( [ 5, 15, 30, 60, 120 ], $c->slept );
+		$this->assertStringContainsString( 'after 6 attempts', $r->get_error_message() );
+		$this->assertStringContainsString( 'Connection timed out', $r->get_error_message() );
+	}
+
+	public function test_a_read_timeout_still_uses_the_short_waits() {
+		$e = self::curl( 'cURL error 28: Operation timed out after 120000 milliseconds with 0 bytes received' );
+		$c = $this->client( [ $e, $e, $e, $e ] );
+		$this->assertInstanceOf( WP_Error::class, $c->post( '/hash/tables', [] ) );
 		$this->assertSame( [ 2, 5, 15 ], $c->slept );
 	}
 
-	public function test_gives_up_after_three_retries_and_says_how_many_attempts() {
-		$e = self::curl( 'cURL error 28: Connection timed out after 10001 milliseconds' );
-		$c = $this->client( [ $e, $e, $e, $e ] );
-		$r = $c->post( '/job/step', [ 'job' => 'j' ] );
-		$this->assertInstanceOf( WP_Error::class, $r );
-		$this->assertStringContainsString( 'after 4 attempts', $r->get_error_message() );
-		$this->assertStringContainsString( 'Connection timed out', $r->get_error_message() );
+	public function test_no_retry_skips_the_network_wait_too() {
+		$c = $this->client( [ self::curl( 'cURL error 7: Failed to connect to p.test port 443' ) ] );
+		$this->assertInstanceOf( WP_Error::class, $c->get( '/jobs', [ 'no_retry' => true ] ) );
+		$this->assertSame( [], $c->slept );
 	}
 
 	public function test_a_gateway_error_is_retried_on_a_read_route() {

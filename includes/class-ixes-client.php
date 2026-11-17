@@ -6,7 +6,7 @@ class IXES_Client {
 	const DEFAULT_TIMEOUT = 120;
 	const BATCH_TIMEOUT = 300; // floor for one batch request: a 4 MB batch of media that does not compress, on a slow link
 	const RETRY_WAIT = [ 2, 5, 15 ]; // seconds before each retry of a transient failure
-	// seconds before each retry of a paged read whose connection never opened (DNS, refused, connect timeout): the
+	// seconds before each retry of a request whose connection never opened (DNS, refused, connect timeout): the
 	// network dropped, and a short outage often lasts longer than RETRY_WAIT's 22 s
 	const CONNECT_WAIT = [ 5, 15, 30, 60, 120 ];
 	const CONNECT_TIMEOUT = 30; // default connect/DNS timeout, never above the request's own timeout
@@ -72,6 +72,8 @@ class IXES_Client {
 	 */
 	private function request( $method, $route, $body = null, array $opts = [] ) {
 		$waits = empty( $opts['no_retry'] ) ? self::RETRY_WAIT : [];
+		// a connection that never opened waits longer: the network dropped, and nothing reached the remote
+		$cwaits = empty( $opts['no_retry'] ) ? self::CONNECT_WAIT : [];
 		$reopened = false;
 		for ( $n = 1; ; $n++ ) {
 			$ready = $this->ready( $route, $opts );
@@ -86,8 +88,14 @@ class IXES_Client {
 				$this->caps = array_values( array_diff( $this->caps !== null ? $this->caps : (array) ( $this->info['caps'] ?? [] ), [ 'nonce' ] ) );
 				continue;
 			}
-			if ( ! is_wp_error( $r ) || ! $waits || ! self::transient( $r, $route ) ) break;
-			$w = array_shift( $waits );
+			if ( ! is_wp_error( $r ) ) break;
+			if ( self::unreached( $r ) ) {
+				if ( ! $cwaits ) break;
+				$w = array_shift( $cwaits );
+			} else {
+				if ( ! $waits || ! self::transient( $r, $route ) ) break;
+				$w = array_shift( $waits );
+			}
 			if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry {$n} on {$route} in {$w}s: " . $r->get_error_message() );
 			$this->sleep_s( $w );
 		}
