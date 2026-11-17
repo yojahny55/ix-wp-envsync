@@ -4,7 +4,7 @@ Tags: sync, deploy, staging, migration, wp-cli
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 0.9.24
+Stable tag: 0.9.25
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -59,6 +59,9 @@ Yes. Run `wp envsync rollback <env>` from the hub.
 See CHANGELOG.md in the repository.
 
 == Upgrade Notice ==
+
+= 0.9.25 =
+A short network outage no longer aborts a long plan or push: connect and DNS failures keep the page and wait longer, and the connect timeout is configurable.
 
 = 0.9.24 =
 The hub's environment label travels with each push and can be read on the remote with IXES_Applier::job_label().
