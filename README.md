@@ -186,6 +186,8 @@ Add `--verbose` for the old one-line-per-file output. When the output is piped, 
 
 Planning hashes both sides, which on a slow link can take as long as the transfer. A `push` right after a `diff` or a `push --dry-run` with the same flags does not plan again: when that plan is less than an hour old and nothing changed on this site since, it prints `reusing plan from 14:02` and applies it. Anything the remote changed in the meantime is still checked row by row and file by file, and skipped as stale. `--replan` plans again anyway.
 
+A plan that fails partway (a network outage longer than the retries, a crash, Ctrl-C) does not start over either. Every table whose remote row hashes it finished is kept in `wp-content/envsync-*/plan-resume/<env>/`, and the next `diff` or `push` with the same scope and environment settings prints `resuming plan: 12 of 40 tables already hashed` and asks only for the rest. A saved table is used for up to an hour, and only while the remote still counts the same number of rows in it; otherwise it is hashed again. The saved hashes are dropped once a plan finishes, and by `--flush-cache`. They only shorten planning: the push still checks every remote row it touches.
+
 ---
 
 ## Day to day
@@ -554,7 +556,7 @@ Shows what a push would do. Reads nothing but hashes over the wire, changes noth
 - `--format=json` (or `--json`) — print the manifest instead of the tables. See [For AI agents](#for-ai-agents).
 - `--table=<table> --id=<pk>` — where one row is (only here, only on the remote, on both sides and the same, different, or on neither) and its fields: the ones that differ, or all of them when only one side has it. The table name may leave out the prefix.
 - `--table=<table> --list=<column>` — the keys in one column: `local-only`, `differs`, `remote-only`, or `push`, `insert`, `delete`, `remote-wins`, `kept-remote`. Core tables add a few fields that name each row (for posts: type, status, date, title). Rows on the remote are looked up one request each, so only the first 50 get names.
-- `--flush-cache` — rehash all files.
+- `--flush-cache` — rehash all files, and drop the remote row hashes a failed plan kept.
 - `--only=<parts>` — Comma list of db,files,uploads,themes,plugins,mu-plugins. Default: everything.
 - `--tables=<tables>` — Comma list of table names or globs (posts, wp_wc_*). Implies --only=db.
 - `--paths=<paths>` — Comma list of wp-content paths (themes/mk/) or globs (uploads/2026/*). Implies --only=files.
@@ -569,6 +571,7 @@ Applies your changes to `<env>`. Production-changed rows are always kept.
 - `--dry-run`, `--yes`, `--verbose` — as above. `--format=json` with `--dry-run` prints the manifest.
 - `--plan=<file>` — apply a plan saved earlier (`diff` and `push --dry-run` print its path) without planning again. Refuses if anything changed on this site since, if the remote's active plugins changed, or if that plan was already pushed; rows and files the remote changed since are skipped as stale. A plan saved before 0.9.11 is checked the old way: planned again, and refused if anything it covers changed on the remote.
 - `--replan` — plan again even when the last `diff` or `--dry-run` made the same plan less than an hour ago.
+- `--flush-cache` — rehash all files, and drop the remote row hashes a failed plan kept.
 - `--force` — only when there is no baseline. Overwrites rows that would otherwise be treated as conflicts. Use it for a [first deploy](#first-deploy-local-to-a-new-site) onto a fresh install; for a site with real content, pull first instead.
 - `--mirror` — with `--force` only. Also deletes, within the scope, the rows, files and tables only the remote has. See [`--mirror`](#replacing-what-the-remote-already-has---mirror).
 - `--drop-tables=<tables>` — comma list of tables only the remote has (with or without the prefix) to drop there although the baseline does not know them. See [Dropped tables](#dropped-tables).

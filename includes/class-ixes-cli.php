@@ -43,6 +43,8 @@ class IXES_CLI {
 			return [ 'r' => 'retry', 'b' => 'rollback', 'p' => 'plugins_off', 'l' => 'leave' ][ $k ] ?? 'rollback';
 		};
 	}
+	/** A plan that is shown or applied resumes from the tables a failed one finished (IXES_Planstash). */
+	private function resume_opts( $assoc ) { return [ 'resume' => true, 'say' => $this->wants_json( $assoc ) ? function () {} : $this->logger() ]; }
 	private function wants_json( $assoc ) { return ! empty( $assoc['json'] ) || ( $assoc['format'] ?? 'text' ) === 'json'; }
 	private function show_report( array $report, $assoc ) {
 		$path = IXES_Report::save( $report );
@@ -427,7 +429,7 @@ class IXES_CLI {
 	 * : With --table: the keys in one column of the diff, with a few fields that name each row in core tables. local-only, differs, remote-only, or push, insert, delete, remote-wins, kept-remote.
 	 *
 	 * [--flush-cache]
-	 * : Discard the file hash cache and rehash everything.
+	 * : Discard the file hash cache and the remote row hashes a failed plan left, and rehash everything.
 	 *
 	 * [--only=<parts>]
 	 * : Comma list of db,files,uploads,themes,plugins,mu-plugins, or all. Default: the environment's --only from env add, else everything.
@@ -448,13 +450,13 @@ class IXES_CLI {
 	 * : Seconds to open each connection, DNS included, for this run, overriding the environment's own --connect-timeout (env add).
 	 */
 	public function diff( $args, $assoc ) {
-		if ( ! empty( $assoc['flush-cache'] ) ) IXES_Hashcache::flush();
+		if ( ! empty( $assoc['flush-cache'] ) ) { IXES_Hashcache::flush(); IXES_Planstash::forget( (string) $args[0] ); }
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ), $this->timeout_override( $assoc, 'connect-timeout' ) );
 		$table = empty( $assoc['table'] ) ? '' : $this->table_arg( $assoc['table'] );
 		if ( ( isset( $assoc['id'] ) || isset( $assoc['list'] ) ) && $table === '' ) WP_CLI::error( '--id and --list go with --table' );
 		if ( isset( $assoc['id'] ) ) { $this->row_diff( $env, $c, $table, (string) $assoc['id'] ); return; }
 		$progress = $this->tracked( 'diff', $env['name'], $assoc );
-		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ) ) );
+		$plan = $this->fail_if_error( IXES_Planner::build( $env, $c, $this->scope( $assoc, $env ), false, [], $this->resume_opts( $assoc ) ) );
 		$progress->finish();
 		$path = IXES_Planner::save( $plan );
 		IXES_Planner::save_latest( $plan );
@@ -582,6 +584,9 @@ class IXES_CLI {
 	 * [--replan]
 	 * : Plan again even when the last dry run or diff made the same plan less than an hour ago and nothing changed here since.
 	 *
+	 * [--flush-cache]
+	 * : Discard the file hash cache and the remote row hashes a failed plan left, and rehash everything.
+	 *
 	 * [--verbose]
 	 * : One line per file and table instead of progress bars.
 	 *
@@ -625,6 +630,7 @@ class IXES_CLI {
 	 * ---
 	 */
 	public function push( $args, $assoc ) {
+		if ( ! empty( $assoc['flush-cache'] ) ) { IXES_Hashcache::flush(); IXES_Planstash::forget( (string) $args[0] ); }
 		$env = $this->get_env( $args[0] ); $c = $this->client( $args[0], $this->timeout_override( $assoc ), $this->timeout_override( $assoc, 'connect-timeout' ) ); $par = $this->parallel( $assoc );
 		if ( ! empty( $assoc['plan'] ) && ( isset( $assoc['only'] ) || isset( $assoc['tables'] ) || isset( $assoc['paths'] ) ) ) WP_CLI::error( '--plan carries its own scope; drop --only/--tables/--paths' );
 		$saved = null;
@@ -661,7 +667,7 @@ class IXES_CLI {
 			else $say( "planning again: {$why}" );
 		}
 		if ( $plan === null ) {
-			$plan = $guard( IXES_Planner::build( $env, $c, $scope, $mirror, $drop ) );
+			$plan = $guard( IXES_Planner::build( $env, $c, $scope, $mirror, $drop, $this->resume_opts( $assoc ) ) );
 			if ( ! empty( $assoc['dry-run'] ) ) { $saved_path = IXES_Planner::save( $plan, 'push' ); IXES_Planner::save_latest( $plan ); }
 		}
 		if ( $plan['two_way'] ) {
