@@ -421,10 +421,13 @@ class IXES_Client {
 		$max   = $limit;
 		$next  = $body[ $cursor_key ] ?? null;
 		$waits = self::RETRY_WAIT; $cwaits = self::CONNECT_WAIT; $tries = 1;
+		// slow-page shrink state: the size and time of the page before the last halving, and whether the time
+		// turned out not to depend on the size (a remote whose every request pays a fixed bootstrap cost)
+		$before = null; $fixed = false;
 		while ( true ) {
 			$body['limit'] = $limit;
 			$body[ $cursor_key ] = $next;
-			$t0  = microtime( true );
+			$t0  = $this->now();
 			$res = $this->post( $route, $body, [ 'no_retry' => true ] );
 			if ( is_wp_error( $res ) ) {
 				// the connection never opened: the page size is not the cause, so keep it and wait longer for the network
@@ -437,7 +440,7 @@ class IXES_Client {
 				// a page too big for a slow link times out whole: ask for the same cursor again, half as much
 				if ( $waits && ! self::unreached( $res ) && self::transient( $res, $route ) ) {
 					$w = array_shift( $waits ); $tries++;
-					$limit = max( 100, (int) ( $limit / 2 ) );
+					$limit = max( 100, (int) ( $limit / 2 ) ); $before = null;
 					if ( isset( $body['bytes'] ) ) $body['bytes'] = max( 262144, (int) ( $body['bytes'] / 2 ) );
 					if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry on {$route} in {$w}s with {$limit} rows a page: " . $res->get_error_message() );
 					$this->sleep_s( $w );
@@ -447,7 +450,7 @@ class IXES_Client {
 				// changes nothing there, so ask a quarter as much, and never grow back past the size that crashed
 				if ( $waits && self::oversized( $res, $route, $limit ) ) {
 					$w = array_shift( $waits ); $tries++;
-					$limit = max( 100, (int) ( $limit / 4 ) );
+					$limit = max( 100, (int) ( $limit / 4 ) ); $before = null;
 					$max   = $limit;
 					if ( isset( $body['bytes'] ) ) $body['bytes'] = max( 262144, (int) ( $body['bytes'] / 4 ) );
 					if ( class_exists( 'WP_CLI' ) ) WP_CLI::log( "retry on {$route} in {$w}s with {$limit} rows a page: " . $res->get_error_message() );
@@ -462,7 +465,7 @@ class IXES_Client {
 				return new WP_Error( $res->get_error_code(), "paging {$route}{$t} failed at {$at} after {$tries} attempt(s): " . $res->get_error_message() . $hint . ( $tries > 1 && self::oversized( $res, $route, PHP_INT_MAX ) ? '. Even a smaller page crashed the remote; check its PHP error log and memory_limit.' : '' ), $res->get_error_data() );
 			}
 			$waits = self::RETRY_WAIT; $cwaits = self::CONNECT_WAIT; $tries = 1;
-			$dt  = microtime( true ) - $t0;
+			$dt  = $this->now() - $t0;
 			if ( $each( $res ) === false ) return;
 			$prev = $next;
 			$next = isset( $res['next'] ) ? $res['next'] : null;
@@ -472,11 +475,25 @@ class IXES_Client {
 				$t = isset( $body['table'] ) ? " for {$body['table']}" : '';
 				return new WP_Error( 'no_progress', "paging {$route}{$t} stopped: the remote returned the same cursor twice. A binary primary key needs plugin 0.9.3 or newer on the remote." );
 			}
-			if ( $dt > 10 ) $limit = max( 100, (int) ( $limit / 2 ) );
-			elseif ( $dt < 2 ) $limit = min( $max, $limit * 2 );
+			if ( $dt > 10 && ! $fixed ) {
+				if ( $before && $dt > 0.75 * $before[1] ) {
+					// halving the page did not make it clearly faster: the time is a per-request cost, not the
+					// size, and smaller pages only mean more of them. Go back to the bigger page and stay there.
+					$limit = min( $max, $before[0] ); $fixed = true; $before = null;
+				} elseif ( $limit > 100 ) {
+					$before = [ $limit, $dt ];
+					$limit  = max( 100, (int) ( $limit / 2 ) );
+				}
+			} else {
+				$before = null;
+				if ( $dt < 2 ) $limit = min( $max, $limit * 2 );
+			}
 			if ( $next === null ) return;
 		}
 	}
+
+	/** Seconds, as a float; a seam for tests. */
+	protected function now() { return microtime( true ); }
 
 	/** @return int|null HTTP status carried by a WP_Error from request(), null for transport errors */
 	private static function err_code( WP_Error $e ) {
