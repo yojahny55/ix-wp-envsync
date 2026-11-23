@@ -3,7 +3,7 @@
 All notable changes to IX WP EnvSync. Versions follow the plugin header. Releases from
 0.9.13 on are tagged `vX.Y.Z`; earlier entries are reconstructed from the commit history.
 
-## Unreleased
+## 0.9.27 — 2026-11-23
 - A paged read (`/hash/rows`, `/dump`, ...) on a remote where every request pays a high fixed cost (a slow WordPress bootstrap on shared hosting) no longer slides its page down to 100 rows (#99). A page slower than 10 seconds is still halved, but if the smaller page is not clearly faster (more than 75% of the bigger page's time), the hub goes back to the bigger page and stops shrinking on time for that table. A dry run on a ~117k-row table then takes about 25 requests again instead of about 1,200. Shrinking after a timeout or a 500 is unchanged.
 
 ## 0.9.26 — 2026-11-16
