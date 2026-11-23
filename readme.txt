@@ -4,7 +4,7 @@ Tags: sync, deploy, staging, migration, wp-cli
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 0.9.26
+Stable tag: 0.9.27
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -59,6 +59,9 @@ Yes. Run `wp envsync rollback <env>` from the hub.
 See CHANGELOG.md in the repository.
 
 == Upgrade Notice ==
+
+= 0.9.27 =
+A paged read on a remote with a high fixed cost per request no longer shrinks its pages to 100 rows.
 
 = 0.9.26 =
 A `diff` or `push` whose plan fails partway resumes from the last table it finished hashing instead of starting over.
